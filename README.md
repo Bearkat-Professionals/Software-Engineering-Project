@@ -1,4 +1,4 @@
-# Network Scanner
+# Network Device Scanner
 
 ## Contributers (add your name here for practice)
 * Blaine Pavlock
