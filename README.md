@@ -58,7 +58,7 @@ Software-Engineering-Project/
 * Skyler Geary
 * Mason Murphy
 * Jayden Harper
-* (replace here)
+* Josemir Soto
 * (replace here)
 * Jason Thomas
 * (replace here)
