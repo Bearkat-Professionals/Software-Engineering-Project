@@ -1,6 +1,7 @@
 # Network Device Scanner
 
 ## Project structure
+```text
 Software-Engineering-Project/
 ├── README
 ├── docs/                                # user spec, system design, diagrams
@@ -8,7 +9,7 @@ Software-Engineering-Project/
 ├── frontend/                            # Tier 1: 1.0 Web UI Manager
 │   ├── components/
 │   ├── views/
-|   |   ├── login/
+│   │   ├── login/
 │   │   ├── devices/
 │   │   ├── scans/
 │   │   ├── reference_settings/
@@ -33,7 +34,7 @@ Software-Engineering-Project/
 │   │   └── backup/
 │   ├── shared_modules/
 │   ├── black_boxes/
-|   |   ├── read_arp_cache/
+│   │   ├── read_arp_cache/
 │   │   └── read_gateway_config/
 │   └── data_access/                     # 3.0 Data Storage Manager (code only)
 │       ├── network_data/
@@ -41,16 +42,18 @@ Software-Engineering-Project/
 │       ├── account_settings/
 │       ├── audit_trail/
 │       └── backup_recovery/
-└── tests/
+│
+├── tests/
 │   ├── services/
 │   ├── data_access/
-│   └── fakes/                       # fake ARP data, fake mail, in-memory DB
+│   └── fakes/                           # fake ARP data, fake mail, in-memory DB
 │
-└── database/                        # the database itself, no application code
+└── database/                            # the database itself, no application code
     ├── schema/
-    ├── migrations/                  # numbered changes, e.g. add version column
+    ├── migrations/                      # numbered changes, e.g. add version column
     ├── seed/
     └── scripts/
+```
 
 ## Contributers (add your name here for practice)
 * Blaine Pavlock
