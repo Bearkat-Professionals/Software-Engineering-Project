@@ -79,6 +79,14 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# Visual Studio Code
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+
+docs/
+
 # IPython
 profile_default/
 ipython_config.py
