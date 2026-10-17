@@ -55,7 +55,13 @@ Software-Engineering-Project/
     └── scripts/
 ```
 
-## Contributers (add your name here for practice)
+## Tech Stack
+- Python
+- MySQL
+- MAMP/LAMP
+- Git
+
+## Contributers
 * Blaine Pavlock
 * Cullen Tolmsoff
 * Skyler Geary
