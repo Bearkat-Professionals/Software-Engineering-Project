@@ -35,7 +35,8 @@ Software-Engineering-Project/
 │   ├── shared_modules/
 │   ├── black_boxes/
 │   │   ├── read_arp_cache/
-│   │   └── read_gateway_config/
+│   │   ├── read_gateway_config/
+│   │   └── timed_network_request/       # BB-3: ping and parallel probes
 │   └── data_access/                     # 3.0 Data Storage Manager (code only)
 │       ├── network_data/
 │       ├── reference_data/
@@ -60,6 +61,30 @@ Software-Engineering-Project/
 - MySQL
 - MAMP/LAMP
 - Git
+
+## Ping (BB-3 Timed Network Request)
+Sends pings through the operating system's `ping` command, so no admin rights are needed. A probe never raises: every call returns a `ProbeResult` with a status of `ok`, `no_reply`, `timeout` or `unavailable`.
+
+```python
+from backend.black_boxes.timed_network_request import ping, run_probes
+
+ping("192.168.1.1")                 # one address, 1 second timeout
+run_probes(addresses, ping)         # many addresses, 32 at a time, results in the same order
+```
+
+Import only from the package as shown above, not from the files inside it.
+
+Check it against your own network (replace the addresses with your gateway, an unused address and your subnet):
+```
+python -m backend.black_boxes.timed_network_request.check_ping 192.168.1.1 192.168.1.250 --sweep 192.168.1.0/24
+```
+
+Run the unit tests (they use no network, so they pass offline):
+```
+python -m unittest discover tests
+```
+
+For other modules' tests, use `tests/fakes/fake_network.py` instead of real pings.
 
 ## Contributers
 * Blaine Pavlock
