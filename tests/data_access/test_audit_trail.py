@@ -1,4 +1,4 @@
-"""Integration tests for the audit trail (#14, section 3.4).
+﻿"""Integration tests for the audit trail (#14, section 3.4).
 
 Same TEST database setup as test_repository.py; skipped if it is not available.
 
@@ -7,7 +7,7 @@ Same TEST database setup as test_repository.py; skipped if it is not available.
 import unittest
 from dataclasses import replace
 
-from backend.data_access.audit_trail import AuditTrail
+from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.database_engine import IntegrityConstraintError
 from backend.data_access.repository import Repository
 from backend.records import Device, User, Vendor
