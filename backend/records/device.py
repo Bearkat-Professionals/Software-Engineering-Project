@@ -13,9 +13,9 @@ class Device(Entity):
     PK: ClassVar[str] = "device_id"
     ENUM_FIELDS: ClassVar[dict] = {"network_status": NetworkStatus}
     BOOL_FIELDS: ClassVar[tuple] = ("is_randomized_mac", "trusted_status", "flagged_status")
-    # DEVICE.device_type_id is NOT NULL and defaults to the "unknown" type (DI-03),
+    # DEVICE.device_type_id and DEVICE.vendor_id are NOT NULL and defaults to the "unknown" type (DI-03),
     # so a device with no type yet is saved without that column.
-    OMIT_IF_NONE: ClassVar[tuple] = ("device_type_id",)
+    OMIT_IF_NONE: ClassVar[tuple] = ("device_type_id", "vendor_id")
 
     device_id: int | None = None
     mac_address: str                       # identity (DI-01), not the IP
@@ -23,7 +23,7 @@ class Device(Entity):
     current_ip: str | None = None          # current or last known
     hostname: str | None = None
     device_type_id: int | None = None      # FK -> device_type
-    vendor_id: int | None = None           # FK -> vendor (nullable)
+    vendor_id: int | None = None           # FK -> vendor ("unknown" vendor if no OUI match)
     device_name: str | None = None         # plain-English name
     model: str | None = None
     trusted_status: bool = False

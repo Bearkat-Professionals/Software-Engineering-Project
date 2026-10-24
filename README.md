@@ -86,6 +86,17 @@ python -m unittest discover tests
 
 For other modules' tests, use `tests/fakes/fake_network.py` instead of real pings.
 
+## Setting up your .env file
+Make sure to create a .env file in your workspace. Git ignores this file so you are able to put your database credentials here securely.
+Paste the below into the file and replace with your information.
+```
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER= <your_username>
+DB_PASSWORD= <your_database_password>
+DB_NAME=network_device_scanner
+```
+
 ## Contributers
 * Blaine Pavlock
 * Cullen Tolmsoff
@@ -93,6 +104,4 @@ For other modules' tests, use `tests/fakes/fake_network.py` instead of real ping
 * Mason Murphy
 * Jayden Harper
 * Josemir Soto
-* (replace here)
 * Jason Thomas
-* (replace here)
