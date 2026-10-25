@@ -37,6 +37,7 @@ Software-Engineering-Project/
 │   │   ├── read_arp_cache/
 │   │   ├── read_gateway_config/
 │   │   └── timed_network_request/       # BB-3: ping and parallel probes
+│   ├── dev_tools/
 │   └── data_access/                     # 3.0 Data Storage Manager (code only)
 │       ├── network_data/
 │       ├── reference_data/
@@ -47,6 +48,8 @@ Software-Engineering-Project/
 ├── tests/
 │   ├── services/
 │   ├── data_access/
+│   ├── black_boxes/
+│   ├── dev_tools/
 │   └── fakes/                           # fake ARP data, fake mail, in-memory DB
 │
 └── database/                            # the database itself, no application code
@@ -96,6 +99,33 @@ DB_USER= <your_username>
 DB_PASSWORD= <your_database_password>
 DB_NAME=network_device_scanner
 ```
+
+## CRUD test server (development only)
+A small Flask server for checking the database by hand: list, add, edit and delete rows in any table, through the HTML test page or the API. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine (`127.0.0.1`) and the real application never imports it.
+
+Start it from the project root, then open http://127.0.0.1:5000/
+```
+python -m backend.dev_tools.crud_server                                    # uses the test database
+python -m backend.dev_tools.crud_server --database network_device_scanner  # uses the real database
+```
+or
+```
+py -m backend.dev_tools.crud_server                                    # uses the test database
+py -m backend.dev_tools.crud_server --database network_device_scanner  # uses the real database
+```
+By default it uses the test database (`DB_NAME` + `_test`, or `TEST_DB_NAME` from your `.env`). Create that database with the same schema and seed files as the real one.
+
+| Request | Does |
+|---|---|
+| `GET /api/<table>` | List rows (filter with `?column=value`) |
+| `GET /api/<table>/<id>` | Get one row |
+| `POST /api/<table>` | Create a row from a JSON body |
+| `PUT /api/<table>/<id>` | Replace a row (send every column, not only the changed ones) |
+| `DELETE /api/<table>/<id>` | Delete a row |
+| `GET /api/tables` | Every table with its primary key and columns |
+
+Errors come back as `{"error": "message"}`. Add rows in dependency order: `device_type` and `vendor` before `device`, and an `app_user` before a `scan`.
+
 
 ## Contributers
 * Blaine Pavlock
