@@ -36,6 +36,7 @@ Software-Engineering-Project/
 │   ├── black_boxes/
 │   │   ├── read_arp_cache/
 │   │   ├── read_gateway_config/
+│   │   ├── backup_media/
 │   │   └── timed_network_request/       # BB-3: ping and parallel probes
 │   ├── dev_tools/
 │   └── data_access/                     # 3.0 Data Storage Manager (code only)
@@ -126,6 +127,44 @@ By default it uses the test database (`DB_NAME` + `_test`, or `TEST_DB_NAME` fro
 
 Errors come back as `{"error": "message"}`. Add rows in dependency order: `device_type` and `vendor` before `device`, and an `app_user` before a `scan`.
 
+## Backup and recovery (3.5)
+Backups copy the database's rows into a compressed file in `backups/` (or the folder in `BACKUP_DIR` in your `.env`). The folder is in `.gitignore` because backups contain password hashes. The schema is not in the backup; it lives in `database/schema/`.
+
+```python
+from backend.black_boxes.backup_media import BackupMedia
+from backend.data_access.backup_recovery.create_full_backup import create_full_backup
+from backend.data_access.backup_recovery.verify_backup import verify_backup
+from backend.data_access.backup_recovery.restore_from_backup import restore_from_backup
+
+media = BackupMedia.from_env()
+stored = create_full_backup(engine, media)        # every table
+verify_backup(media, stored.name).ok              # True if complete and unchanged
+restore_from_backup(engine, media, stored.name)   # all or nothing
+```
+
+- **Full backup** (3.5.1): every table. **Partial backup** (3.5.2): the reference tables (vendor, OUI prefixes, device types, signatures).
+- **Verify** (3.5.3) checks every table's row count and checksum against the backup's manifest, and lists every problem it finds.
+- **Restore** (3.5.4) verifies first, then replaces the rows inside one transaction. If anything is wrong (damaged file, schema changed, a row left pointing at a missing parent) nothing is changed.
+
+### Trying it by hand
+`check_backup` is a developer tool for running backups from the command line. It uses the **test database** unless you pass `--database`. Run it from the project root:
+```
+py -m backend.data_access.backup_recovery.check_backup full                  # back up every table
+py -m backend.data_access.backup_recovery.check_backup partial               # back up the reference tables
+py -m backend.data_access.backup_recovery.check_backup list                  # stored backups, newest first
+py -m backend.data_access.backup_recovery.check_backup verify NAME           # is it complete and unchanged?
+py -m backend.data_access.backup_recovery.check_backup restore NAME          # asks before changing anything
+py -m backend.data_access.backup_recovery.check_backup compare DB_A DB_B     # do two databases hold the same rows?
+```
+Add `--database network_device_scanner` to `full`, `partial` or `restore` to use the real database. Backing up only reads it, but restoring into any database whose name doesn't end in `_test` also needs `--allow-real`. Use `--help` after any command for its options.
+
+Example: check that a backup of the real database rebuilds it exactly in the test database:
+```
+py -m backend.data_access.backup_recovery.check_backup full --database network_device_scanner
+py -m backend.data_access.backup_recovery.check_backup restore NAME
+py -m backend.data_access.backup_recovery.check_backup compare network_device_scanner network_device_scanner_test
+```
+The last command should end with `All tables match.`
 
 ## Contributers
 * Blaine Pavlock
