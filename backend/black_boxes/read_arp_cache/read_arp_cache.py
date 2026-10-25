@@ -16,6 +16,10 @@ from backend.black_boxes.read_arp_cache.parser import parse_arp_output
 
 TIMEOUT_SECONDS = 10
 
+# Stops a console window flashing up on Windows. The constant only exists on
+# Windows, so other systems get 0 (no flags) - same approach as BB-3.
+_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 def read_arp_cache(ip: str | None = None) -> list[ArpEntry] | None:
     if ip is not None:
@@ -34,7 +38,7 @@ def _read_windows(ip: str | None) -> list[ArpEntry] | None:
             encoding="oem",               # console code page, so translated text decodes
             errors="replace",             # never crash on an odd character
             timeout=TIMEOUT_SECONDS,
-            creationflags=subprocess.CREATE_NO_WINDOW,   # no console window pops up
+            creationflags=_NO_WINDOW,             # no console window pops up
         )
     except (OSError, subprocess.TimeoutExpired):
         return None                       # arp missing, blocked, or hung
