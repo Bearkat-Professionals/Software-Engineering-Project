@@ -87,6 +87,9 @@ target/
 
 docs/
 
+# Database backups (contain password hashes)
+backups/
+
 # IPython
 profile_default/
 ipython_config.py
