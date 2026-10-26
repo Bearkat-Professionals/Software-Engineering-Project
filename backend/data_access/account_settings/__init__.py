@@ -4,6 +4,6 @@
 """
 from backend.data_access.account_settings.alert_settings import (AlertSettingStore,
                                                                  UnknownAlertEventError)
-from backend.data_access.account_settings.users import UserStore
+from backend.data_access.account_settings.users import FirstUserExistsError, UserStore
 
-__all__ = ["AlertSettingStore", "UnknownAlertEventError", "UserStore"]
+__all__ = ["AlertSettingStore", "FirstUserExistsError", "UnknownAlertEventError", "UserStore"]

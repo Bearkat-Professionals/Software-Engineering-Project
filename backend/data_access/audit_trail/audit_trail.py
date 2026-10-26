@@ -13,6 +13,8 @@ There is deliberately no update or delete: audit entries are never changed.
 """
 from __future__ import annotations
 
+import json
+
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Any, Generator
@@ -30,12 +32,16 @@ class AuditTrail:
         self._logs = Repository(engine, AuditLog)
 
     def record(self, user_id: int, action: AuditAction,
-               before: Entity | None, after: Entity | None, unit: Any) -> AuditLog:
+               before: Entity | None, after: Entity | None, unit: Any,
+               extra: dict[str, Any] | None = None) -> AuditLog:
         """Write one audit entry inside the caller's unit of work (required).
 
         INSERT: before=None, after=new record
         UPDATE: before=record as loaded, after=record as saved
         DELETE: before=record as loaded, after=None
+
+        extra is merged into new_value for facts the snapshot can't show,
+        e.g. {"password_changed": True} when the hash itself is left out.
         """
         if unit is None:
             raise ValueError("record() must run inside the caller's unit of work")
@@ -48,7 +54,7 @@ class AuditTrail:
             record_id=target.pk,
             action=action,
             old_value=_snapshot(before),
-            new_value=_snapshot(after),
+            new_value=_merge(_snapshot(after), extra),
             changed_at=datetime.now(),   # schema has no DEFAULT; DATETIME(6) keeps microseconds
         )
         return self._logs.create(entry, unit)
@@ -85,7 +91,30 @@ class AuditTrail:
 
 
 def _snapshot(entity: Entity | None) -> dict[str, Any] | None:
-    """JSON-safe copy of an entity's columns, for old_value/new_value."""
+    """JSON-safe copy of an entity, for old_value/new_value.
+
+    Child fields (e.g. AlertSetting.events) are included when they are plain
+    values, so "events changed from X to Y" shows up in the audit log.
+    """
     if entity is None:
         return None
-    return {k: v for k, v in entity.to_dict().items() if k not in entity.CHILD_FIELDS}
+    snapshot = {}
+    for name, value in entity.to_dict().items():
+        if name in entity.CHILD_FIELDS and not _json_ok(value):
+            continue
+        snapshot[name] = value
+    return snapshot
+
+
+def _json_ok(value: Any) -> bool:
+    try:
+        json.dumps(value)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+def _merge(snapshot: dict[str, Any] | None, extra: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not extra:
+        return snapshot
+    return {**(snapshot or {}), **extra}
