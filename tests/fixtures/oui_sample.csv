@@ -1,0 +1,14 @@
+Registry,Assignment,Organization Name,Organization Address
+MA-L,286FB9,"Nokia Shanghai Bell Co., Ltd.","No.388 Ning Qiao Road,Jin Qiao Pudong Shanghai   CN 201206 "
+MA-L,f0d1a9,"Apple, Inc.",1 Infinite Loop Cupertino CA US 95014 
+MA-L,3C0754,"Apple, Inc.",1 Infinite Loop Cupertino CA US 95014 
+MA-L,A4C361,"APPLE, INC.",1 Infinite Loop Cupertino CA US 95014 
+
+MA-L,E80AB9,"Cisco Systems, Inc",80 West Tasman Drive San Jose CA US 94568 
+MA-L,70B3D5,  Katun Corporation  ,7760 France Ave S Bloomington MN US 55438 
+MA-L,ZZ1234,Bad Hex Ltd,Nowhere
+MA-L,12345,Short Prefix Ltd,Nowhere
+MA-L,701301,,Nowhere
+,,,
+MA-L,ABCDEF
+MA-L,E80AB9,"Cisco Systems, Inc.",80 West Tasman Drive San Jose CA US 94568 
