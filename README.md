@@ -127,6 +127,70 @@ By default it uses the test database (`DB_NAME` + `_test`, or `TEST_DB_NAME` fro
 
 Errors come back as `{"error": "message"}`. Add rows in dependency order: `device_type` and `vendor` before `device`, and an `app_user` before a `scan`.
 
+## Starting and setting up the Server
+
+### MariaDB on Linux
+Step 1: Installing MariaDB & Start it (Run the following commands in your terminal)
+
+- sudo pacman -S mariaDB (If on Arch Linux)
+- sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
+- sudo systemctl enable --now mariadb
+
+Step 2: Create the account and test database (Run the following commands in your terminal)
+
+You're going to start MariaDB and run the following commands.
+
+- CREATE USER '[your_user_here]'@'127.0.0.1' IDENTIFIED BY '[your_password_here]';
+- CREATE DATABASE IF NOT EXISTS network_device_scanner_test
+      CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+- GRANT ALL PRIVILEGES ON network_device_scanner_test.* TO '[your_user_here]'@'127.0.0.1';
+- FLUSH PRIVILEGES;
+EXIT;
+
+Step 2.1: Creating your .env
+
+- Create your .env file and then input the following
+- DB_HOST=127.0.0.1
+- DB_PORT=3306
+- DB_USER=[your_user_here]
+- DB_NAME=network_device_scanner
+
+Step 3: Load the schema and the seed (I ran these commands in my IDE)
+
+- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/schema/database_schema.sql
+- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/seed/seed_reference_data.sql
+
+Step 4: Install python requirements (Run the following commands inside your IDE terminal)
+
+- python3 -m venv .venv
+- source .venv/bin/activate
+- python -m pip install -r requirements.txt
+
+Step 5: Start the CRUD server with the virtual environment (Run the following commands inside your IDE termnial)
+
+- source .venv/bin/activate
+- python3 -m backend.dev_tools.crud_server
+
+If everything was setup and ran correctly you should see a message stating:
+
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+
+### MAMP on Windows/MacOS
+
+Step 1: Start MAMP and make sure MySQL is green
+
+Step 2: Open a terminal in the project root folder
+
+Step 3: Run the server with the following command (test database ONLY):
+    - `py -3.13 -m backend.dev_tools.crud_server`
+    - if port 5000 is busy, add `--port -5001`
+Step 4: Checked that it started. It should print:
+    `DEVELOPMENT ONLY: CRUD server on http://127.0.0.1:5000/ using database 'network_device_scanner_test'`
+
+Step 5: Open http://127.0.0.1:5000/ in your browser. That's the test page.
+
+Step 6: Stop it with **Ctrl+C** in the terminal.
+
 ## Backup and recovery (3.5)
 Backups copy the database's rows into a compressed file in `backups/` (or the folder in `BACKUP_DIR` in your `.env`). The folder is in `.gitignore` because backups contain password hashes. The schema is not in the backup; it lives in `database/schema/`.
 
