@@ -97,13 +97,13 @@ def create_app(make_repository: RepositoryFactory, page: Path = TEST_PAGE) -> Fl
     def create_row(table: str):
         repository = repository_for(table)
         created = repository.create(entity_from_body(table))
-        return jsonify(created.to_dict()), 201           # 201 Created
+        return jsonify(repository.get(created.pk).to_dict()), 201           # 201 Created
 
     @app.put("/api/<table>/<int:pk>")
     def update_row(table: str, pk: int):
         repository = repository_for(table)
-        updated = repository.update(entity_from_body(table, pk))
-        return jsonify(updated.to_dict())
+        repository.update(entity_from_body(table, pk))
+        return jsonify(repository.get(pk).to_dict())        # as stored
 
     @app.delete("/api/<table>/<int:pk>")
     def delete_row(table: str, pk: int):

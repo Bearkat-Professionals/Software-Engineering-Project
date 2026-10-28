@@ -12,6 +12,7 @@ from unittest import mock
 
 from backend.data_access.database_engine import IntegrityConstraintError
 from backend.dev_tools.crud_server import create_app
+from backend.records import Device
 from tests.fakes.memory_repository import InMemoryRepository
 
 
@@ -89,6 +90,16 @@ class CrudServerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertIn("parent row", response.get_json()["error"])
 
+    # ---- responses show the row as stored ------------------------------------------
+
+    def test_create_and_update_return_the_row_as_stored(self):
+        stored = Device(device_id=1, mac_address="AA:BB:CC:00:00:01", vendor_id=1, device_type_id=1)
+        with mock.patch.object(self.repositories["device"], "get", return_value=stored):
+            created = self.client.post("/api/device", json={"mac_address": "AA:BB:CC:00:00:01"})
+            changed = self.client.put("/api/device/1", json={"mac_address": "AA:BB:CC:00:00:01"})
+        self.assertEqual(created.get_json()["vendor_id"], 1)                 # the database default, not null
+        self.assertEqual(changed.get_json()["vendor_id"], 1)
+
     # ---- the HTML page -----------------------------------------------------------
 
     def test_serves_the_test_page_or_says_it_is_missing(self):
@@ -96,7 +107,8 @@ class CrudServerTests(unittest.TestCase):
             page = Path(folder) / "index.html"
             page.write_text("<h1>CRUD test</h1>")
             with_page = create_app(InMemoryRepository, page=page).test_client()
-            self.assertIn("CRUD test", with_page.get("/").get_data(as_text=True))
+            with with_page.get("/") as response:
+                self.assertIn("CRUD test", response.get_data(as_text=True))
 
             without_page = create_app(InMemoryRepository, page=Path(folder) / "missing.html").test_client()
             self.assertEqual(without_page.get("/").status_code, 404)
