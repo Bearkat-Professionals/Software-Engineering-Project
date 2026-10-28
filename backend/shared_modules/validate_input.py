@@ -80,22 +80,25 @@ def validate_scope(text):
     address_part, _, prefix_part = cleaned.partition("/")
     if not validate_ip(address_part):
         return ValidationResult.reject(f"{cleaned} is not a valid scan range: {address_part} is not a valid IP address.")
-    if not prefix_part.isdigit() or not 0 <= int(prefix_part) <= 32:
+
+    if not (prefix_part.isascii() and prefix_part.isdigit()) or not 0 <= int(prefix_part) <= 32:
         return ValidationResult.reject(f"{cleaned} is not a valid scan range.")
 
     try:
-        network = ipaddress.IPv4Network(cleaned, strict = True)
-    except ValueError: 
-        suggested = ipaddress.IPv4Network(cleaned, strict = False)
-        return ValidationResult.reject(f"Range should start at {suggested}, not {cleaned}.")
-    
+        network = ipaddress.IPv4Network(cleaned, strict = False)
+    except ValueError:
+        return ValidationResult.reject(f"{cleaned} is not a valid scan range.")
+
+    if str(network.network_address) != address_part:
+        return ValidationResult.reject(f"Range should start at {network}, not {cleaned}.")
+
     if not any(network.subnet_of(private) for private in PRIVATE_NETWORKS):
         return ValidationResult.reject(f"Can't scan {network}: scans must stay inside 10.x.x.x, 172.16–31.x.x or 192.168.x.x.")
 
     if network.prefixlen < MAX_SCOPE_PREFIX:
         return ValidationResult.reject(f"{network} is too big. Use a range of /{MAX_SCOPE_PREFIX} or smaller, like /24.")
 
-    return ValidationResult.ok(str (network))
+    return ValidationResult.ok(str(network))
 
 #Confidence Score 
 def validate_confidence(value):
@@ -111,7 +114,7 @@ def validate_confidence(value):
         number = int(value)
     elif isinstance(value, str):
         cleaned = value.strip()
-        if len(cleaned) > 10 or not re.fullmatch(r"[+-]?\d+", cleaned):
+        if len(cleaned) > 10 or not re.fullmatch(r"[+-]?[0-9]+", cleaned):
             return ValidationResult.reject(reason_bad)
         number = int(cleaned)
     else:
@@ -128,15 +131,14 @@ def validate_timeout(seconds):
     if isinstance(seconds, bool):
         return ValidationResult.reject(reason_bad)
 
-    if isinstance(seconds, (int, float)):
-        number = float(seconds)
-    elif isinstance(seconds, str):
-        try:
-            number = float(seconds.strip())
-        except ValueError:
-            return ValidationResult.reject(reason_bad)
-    else:
+    if not isinstance(seconds, (int, float, str)):
         return ValidationResult.reject(reason_bad)
+
+    try:
+        number = float(seconds.strip() if isinstance(seconds, str) else seconds)
+    except (ValueError, OverflowError):
+        return ValidationResult.reject(reason_bad)
+
     if not math.isfinite(number) or not 0 < number <= MAX_TIMEOUT_SECONDS:
         return ValidationResult.reject(reason_bad)
     return ValidationResult.ok(number)
