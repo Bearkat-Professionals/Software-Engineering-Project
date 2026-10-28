@@ -20,11 +20,16 @@ class TestListHostAddresses(unittest.TestCase):
     def test_slash_32_is_one_address(self):
         self.assertEqual(list_host_addresses("192.168.1.50/32"), ["192.168.1.50"])
 
-    def test_bad_scope_returns_none(self):
+    def test_bad_scope_raises_with_reason(self):
         for scope in ["8.8.8.0/24", "10.0.0.0/8", "192.168.1.0", "", None]:
             with self.subTest(scope=scope):
-                self.assertIsNone(list_host_addresses(scope))
+                with self.assertRaises(ValueError):
+                    list_host_addresses(scope)
 
+    def test_error_message_is_the_validation_reason(self):
+        with self.assertRaises(ValueError) as error:
+            list_host_addresses("8.8.8.0/24")
+        self.assertIn("Can't scan 8.8.8.0/24", str(error.exception))
 
 #Sweep Subnet
 class TestSweepSubnet(unittest.TestCase):
@@ -79,9 +84,8 @@ class TestSweepSubnet(unittest.TestCase):
         for scope in ["8.8.8.0/24", "10.0.0.0/8", "not a range"]:
             with self.subTest(scope=scope):
                 network = FakeNetwork(responding={"8.8.8.8"})
-                hosts, status = sweep_subnet(scope, probe=network.probe)
-                self.assertEqual(status, "unavailable")
-                self.assertEqual(hosts, [])
+                with self.assertRaises(ValueError):
+                    sweep_subnet(scope, probe=network.probe)
                 self.assertEqual(network.probed, [])
 
     def test_max_workers_one_still_works(self):
