@@ -89,6 +89,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2) |
+| `save` | `backend.services.scan.check_save_devices` | scan a range and save what it finds to the test database; run it twice to see updates, not new rows (2.2.5.2) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
 | `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
 
