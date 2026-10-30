@@ -90,6 +90,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
+| `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
 
 Add `--help` after any command for that tool's own options, e.g. `.\dev chd --help`. The long `python -m ...` commands still work. To add a tool, add one line to `COMMANDS` in `dev.py`.
 
@@ -264,3 +265,4 @@ The last command should end with `All tables match.`
 * Jayden Harper
 * Josemir Soto
 * Jason Thomas
+* Javier Gonzalez
