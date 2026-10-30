@@ -87,6 +87,9 @@ target/
 
 docs/
 
+# Frontend Stuff
+frontend/crud-react/node_modules/
+
 # Database backups (contain password hashes)
 backups/
 
