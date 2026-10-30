@@ -39,6 +39,8 @@ COMMANDS: dict[str, Command] = {
                       "run Host Discovery on a range and list the devices (2.2.2)"),
     "backup": Command("backend.data_access.backup_recovery.check_backup",
                       "back up, list, verify, restore or compare databases (3.5)"),
+    "oui":    Command("database.scripts.load_oui_data",
+                      "load the IEEE OUI list (oui.csv) into vendor and oui_prefix (test DB by default)"),
 }
 
 
