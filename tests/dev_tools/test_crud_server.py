@@ -5,13 +5,11 @@ routes, status codes and error messages without a database.
 
     python -m unittest discover tests
 """
-import tempfile
 import unittest
-from pathlib import Path
 from unittest import mock
 
 from backend.data_access.database_engine import IntegrityConstraintError
-from backend.dev_tools.crud_server import create_app
+from backend.dev_tools.crud_server import REACT_PAGE, create_app
 from backend.records import Device
 from tests.fakes.memory_repository import InMemoryRepository
 
@@ -100,18 +98,15 @@ class CrudServerTests(unittest.TestCase):
         self.assertEqual(created.get_json()["vendor_id"], 1)                 # the database default, not null
         self.assertEqual(changed.get_json()["vendor_id"], 1)
 
-    # ---- the HTML page -----------------------------------------------------------
+    # ---- the old page's address --------------------------------------------------
 
-    def test_serves_the_test_page_or_says_it_is_missing(self):
-        with tempfile.TemporaryDirectory() as folder:
-            page = Path(folder) / "index.html"
-            page.write_text("<h1>CRUD test</h1>")
-            with_page = create_app(InMemoryRepository, page=page).test_client()
-            with with_page.get("/") as response:
-                self.assertIn("CRUD test", response.get_data(as_text=True))
-
-            without_page = create_app(InMemoryRepository, page=Path(folder) / "missing.html").test_client()
-            self.assertEqual(without_page.get("/").status_code, 404)
+    def test_root_points_to_the_react_page(self) -> None:
+        with self.client.get("/") as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertTrue(response.content_type.startswith("text/plain"))
+            text = response.get_data(as_text=True)
+        self.assertIn(REACT_PAGE, text)
+        self.assertIn("npm run dev", text)
 
 
 if __name__ == "__main__":

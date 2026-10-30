@@ -1,5 +1,5 @@
 """Development-only CRUD server (#19): list, get, create, update and delete rows
-in every table, plus the HTML test page (#20).
+in every table. The page that uses it is the React app in frontend/crud-react.
 
 NOT part of the product. It skips login, roles, validation, auditing and
 conflict checks (SEC-01, POL-01 to POL-04, CM-01), so it:
@@ -8,18 +8,18 @@ conflict checks (SEC-01, POL-01 to POL-04, CM-01), so it:
   * never returns password hashes (User.to_dict() removes them)
 Remove or switch it off before submission (M7).
 
-Start it from the project root, then open http://127.0.0.1:5000/
+Start it from the project root, then start the React page and open http://localhost:5173/
 
-    python -m backend.dev_tools.crud_server                                    # test database
-    python -m backend.dev_tools.crud_server --database network_device_scanner  # real database
+    .\\dev crud                                    # test database
+    .\\dev crud --database network_device_scanner  # real database
+    cd frontend\\crud-react && npm run dev          # the page (npm install once first)
 """
 import argparse
 import os
 from dataclasses import replace
-from pathlib import Path
 from typing import Any, Callable
 
-from flask import Flask, abort, jsonify, request, send_file
+from flask import Flask, abort, jsonify, request
 from werkzeug.exceptions import HTTPException
 
 from backend.config import DatabaseConfig
@@ -29,14 +29,23 @@ from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import ALL_ENTITIES
 from backend.records.entity import Entity
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-TEST_PAGE = PROJECT_ROOT / "frontend" / "crud_test" / "index.html"
+REACT_PAGE = "http://localhost:5173/"
 TABLES: dict[str, type[Entity]] = {entity.TABLE: entity for entity in ALL_ENTITIES}
 
 RepositoryFactory = Callable[[type[Entity]], Any]
 
+WHERE_IS_THE_PAGE = (
+    "This is the CRUD server's API (the /api routes). The test page is the React app.\n"
+    "\n"
+    "    cd frontend\\crud-react\n"
+    "    npm install        (first time only)\n"
+    "    npm run dev\n"
+    "\n"
+    f"Then open {REACT_PAGE}\n"
+)
 
-def create_app(make_repository: RepositoryFactory, page: Path = TEST_PAGE) -> Flask:
+
+def create_app(make_repository: RepositoryFactory) -> Flask:
     app = Flask(__name__)
     app.json.sort_keys = False          # keep fields in column order instead of A-Z
     app.config["TRUSTED_HOSTS"] = ["127.0.0.1", "localhost"]   # refuse DNS-rebinding requests
@@ -66,10 +75,9 @@ def create_app(make_repository: RepositoryFactory, page: Path = TEST_PAGE) -> Fl
     # ---- routes ------------------------------------------------------------
 
     @app.get("/")
-    def test_page():
-        if not page.exists():
-            abort(404, description=f"test page not found at {page} (built in #20)")
-        return send_file(page)
+    def where_is_the_page():
+        """The old HTML page lived here; point anyone with an old link to the React page."""
+        return WHERE_IS_THE_PAGE, 200, {"Content-Type": "text/plain; charset=utf-8"}
 
     @app.get("/api/tables")
     def list_tables():
@@ -132,7 +140,7 @@ def create_app(make_repository: RepositoryFactory, page: Path = TEST_PAGE) -> Fl
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Development-only CRUD server for the HTML test page.")
+    parser = argparse.ArgumentParser(description="Development-only CRUD server (the API behind the React test page).")
     parser.add_argument("--database", help="database to use (default: DB_NAME + '_test')")
     parser.add_argument("--port", type=int, default=5000)
     args = parser.parse_args()
@@ -145,7 +153,8 @@ def main() -> None:
         parser.exit(1, f"{exc}\n")
 
     app = create_app(lambda entity: Repository(engine, entity))
-    print(f"DEVELOPMENT ONLY: CRUD server on http://127.0.0.1:{args.port}/ using database '{database}'")
+    print(f"DEVELOPMENT ONLY: CRUD API on http://127.0.0.1:{args.port}/api using database '{database}'")
+    print(f"Test page: run 'npm run dev' in frontend/crud-react, then open {REACT_PAGE}")
     app.run(host="127.0.0.1", port=args.port)
 
 
