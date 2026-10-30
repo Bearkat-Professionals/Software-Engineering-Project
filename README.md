@@ -9,6 +9,7 @@ Software-Engineering-Project/
 ├── docs/                                # user spec, system design, diagrams
 │
 ├── frontend/                            # Tier 1: 1.0 Web UI Manager
+│   ├── crud-react/                      # dev-only CRUD test page (React + Vite), not the product UI
 │   ├── components/
 │   ├── views/
 │   │   ├── login/
@@ -85,7 +86,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 |---|---|---|
 | `test` | `unittest discover tests` | run every unit test (`-v` shows names, `-k sweep` runs only matching tests) |
 | `conn` | `backend.check_connection` | check the database settings in your `.env` |
-| `crud` | `backend.dev_tools.crud_server` | start the CRUD test server (test database) |
+| `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2) |
@@ -128,15 +129,32 @@ DB_PASSWORD= <your_database_password>
 DB_NAME=network_device_scanner
 ```
 
-## CRUD test server (development only)
-A small Flask server for checking the database by hand: list, add, edit and delete rows in any table, through the HTML test page or the API. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine (`127.0.0.1`) and the real application never imports it.
+## CRUD test page and server (development only)
+A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.
 
-Start it from the project root, then open http://127.0.0.1:5000/
+It is two programs, so it uses two terminals:
+- the **CRUD server** (Flask, http://127.0.0.1:5000/api): the API that reads and writes the database
+- the **test page** (React, http://localhost:5173): the page you use; it sends its `/api` requests to the server
+
+**First time only:** install the page's packages. You need Node.js 20.19 or newer (`node -v` to check).
+```
+cd frontend\crud-react
+npm install
+```
+
+**Terminal 1**, from the project root: start the server
 ```
 .\dev crud                                    # uses the test database
 .\dev crud --database network_device_scanner  # uses the real database
 ```
 (Long form: `py -3.13 -m backend.dev_tools.crud_server`)
+
+**Terminal 2**: start the page, then open http://localhost:5173
+```
+cd frontend\crud-react
+npm run dev
+```
+Stop each one with **Ctrl+C**. Opening http://127.0.0.1:5000/ only shows a note pointing to the page.
 
 By default it uses the test database (`DB_NAME` + `_test`, or `TEST_DB_NAME` from your `.env`). Create that database with the same schema and seed files as the real one.
 
@@ -194,6 +212,8 @@ Step 5: Start the CRUD server with the virtual environment (Run the following co
 
 - source .venv/bin/activate
 - python3 -m backend.dev_tools.crud_server
+- Then start the test page in a second terminal: see "CRUD test page and server" above
+
 
 If everything was setup and ran correctly you should see a message stating:
 
@@ -207,13 +227,18 @@ Step 2: Open a terminal in the project root folder
 
 Step 3: Run the server with the following command (test database ONLY):
     - `.\dev crud`   (long form: `py -3.13 -m backend.dev_tools.crud_server`)
-    - if port 5000 is busy, add `--port -5001`
-Step 4: Checked that it started. It should print:
-    `DEVELOPMENT ONLY: CRUD server on http://127.0.0.1:5000/ using database 'network_device_scanner_test'`
+    - keep it on port 5000: the React page sends its requests there. To use another port, also change the `/api` line in `frontend/crud-react/vite.config.js`
 
-Step 5: Open http://127.0.0.1:5000/ in your browser. That's the test page.
+Step 4: Check that it started. It should print:
+    `DEVELOPMENT ONLY: CRUD API on http://127.0.0.1:5000/api using database 'network_device_scanner_test'`
 
-Step 6: Stop it with **Ctrl+C** in the terminal.
+Step 5: In a second terminal, start the page (run `npm install` there once first):
+    - `cd frontend\crud-react`
+    - `npm run dev`
+
+Step 6: Open http://localhost:5173 in your browser. That's the test page.
+
+Step 7: Stop both with **Ctrl+C** in their terminals.
 
 ## Backup and recovery (3.5)
 Backups copy the database's rows into a compressed file in `backups/` (or the folder in `BACKUP_DIR` in your `.env`). The folder is in `.gitignore` because backups contain password hashes. The schema is not in the backup; it lives in `database/schema/`.
