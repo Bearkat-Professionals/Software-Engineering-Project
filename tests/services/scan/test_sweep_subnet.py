@@ -1,7 +1,18 @@
 import unittest
+from unittest import mock
 
+from backend.black_boxes.timed_network_request import (DEFAULT_WORKERS, ProbeResult, ProbeStatus,
+                                                       run_probes)
+from backend.services.scan.scan_settings import DEFAULT_PROBE_TIMEOUT_S, ScanSettings
 from backend.services.scan.sweep_subnet import list_host_addresses, sweep_subnet
 from tests.fakes.fake_network import FakeNetwork
+
+SWEEP = "backend.services.scan.sweep_subnet"      # patch names where sweep_subnet looks them up
+
+
+def no_reply(ip: str, timeout_s: float) -> ProbeResult:
+    """Stands in for ping: every address is silent."""
+    return ProbeResult(ip, ProbeStatus.NO_REPLY, 0)
 
 
 #Host Addresses
@@ -88,10 +99,32 @@ class TestSweepSubnet(unittest.TestCase):
                     sweep_subnet(scope, probe=network.probe)
                 self.assertEqual(network.probed, [])
 
-    def test_max_workers_one_still_works(self):
+    def test_one_worker_still_works(self) -> None:
         network = FakeNetwork(responding={"192.168.1.2"})
-        hosts, status = sweep_subnet("192.168.1.0/30", probe=network.probe, max_workers=1)
+        hosts, status = sweep_subnet("192.168.1.0/30", probe=network.probe,
+                                     settings=ScanSettings(probe_workers=1))
         self.assertEqual((hosts, status), (["192.168.1.2"], "ok"))
+
+    def test_ping_gets_the_settings_timeout(self) -> None:
+        with mock.patch(f"{SWEEP}.ping", side_effect=no_reply) as fake_ping:
+            sweep_subnet("192.168.1.0/30", settings=ScanSettings(probe_timeout_s=0.5))
+        self.assertEqual(sorted(call.args[0] for call in fake_ping.call_args_list),
+                         ["192.168.1.1", "192.168.1.2"])
+        for call in fake_ping.call_args_list:
+            self.assertEqual(call.kwargs, {"timeout_s": 0.5})
+
+    def test_worker_count_reaches_run_probes(self) -> None:
+        network = FakeNetwork()
+        with mock.patch(f"{SWEEP}.run_probes", wraps=run_probes) as watched:
+            sweep_subnet("192.168.1.0/30", probe=network.probe, settings=ScanSettings(probe_workers=7))
+        self.assertEqual(watched.call_args.args[2], 7)
+
+    def test_no_settings_keeps_the_old_defaults(self) -> None:
+        with mock.patch(f"{SWEEP}.ping", side_effect=no_reply) as fake_ping, \
+             mock.patch(f"{SWEEP}.run_probes", wraps=run_probes) as watched:
+            sweep_subnet("192.168.1.0/30")
+        self.assertEqual(watched.call_args.args[2], DEFAULT_WORKERS)
+        self.assertEqual(fake_ping.call_args.kwargs, {"timeout_s": DEFAULT_PROBE_TIMEOUT_S})
 
 
 if __name__ == "__main__":
