@@ -2,16 +2,21 @@
 
 Scans call it for every discovered host (2.2.5.2); the add, edit and trust
 screens call it later (2.3.1.1, 2.3.1.2, 2.3.1.4). It checks the new values
-(SH-1), finds the device by MAC (3.1.2), applies only the fields that were
-set, works out the flag (SH-4.1), and stores the change with its audit entry
-(3.1.1), all inside the caller's unit of work.
+(SH-1), finds the device by MAC (3.1.2), checks any vendor or type it is given
+(3.2), applies only the fields that were set, works out the flag (SH-4.1), and
+stores the change with its audit entry (3.1.1), all inside the caller's unit
+of work. A rejection is decided before anything is written.
 
+    saver = DeviceRecordSaver(DeviceStore(engine), ReferenceStore(engine, Vendor),
+                              ReferenceStore(engine, DeviceType))
     changes = DeviceChanges(mac_address="28:6F:B9:00:00:01", current_ip="192.168.1.20",
                             seen_at=now, oui_vendor_id=7)
-    outcome = save_device(devices, changes, acting_user_id=1,
-                          level=provisional_level(7), unit=unit)
+    outcome = saver.save(changes, acting_user_id=1, level=provisional_level(7), unit=unit)
     outcome.status      # SaveStatus.CREATED, UPDATED or REJECTED
     outcome.reasons     # plain-English reasons when REJECTED (OUT-04)
+
+Text fields (hostname, device_name, model) are stored exactly as typed, so a
+screen that shows them must escape them (XSS). SH-4 only checks that they fit.
 """
 from __future__ import annotations
 
@@ -22,10 +27,15 @@ from typing import Any, Protocol
 
 from backend.records import Device
 from backend.records.enums import IdentificationLevel
+from backend.records.reference_entity import ReferenceEntity
+from backend.services.scan.detect_randomized_mac import is_randomized_mac
 from backend.shared_modules.evaluate_flag import evaluate_flag
 from backend.shared_modules.validate_input import validate_confidence, validate_ip, validate_mac
 
 UNKNOWN_VENDOR_ID = 1           # the seeded "unknown" vendor every new device starts with (DI-03)
+
+# VARCHAR sizes of the device table in database/schema/database_schema.sql
+TEXT_LIMITS: dict[str, int] = {"hostname": 255, "device_name": 255, "model": 255}
 
 # Fields copied onto the device whenever they are set. The sighting fields and
 # oui_vendor_id have their own rules in _apply.
@@ -41,10 +51,10 @@ class SaveStatus(str, Enum):
 
 @dataclass(frozen=True)
 class DeviceChanges:
-    """What to save. The MAC (with is_randomized_mac) says which device; every
-    other field left as None means "keep what is stored"."""
+    """What to save. The MAC says which device; every other field left as None
+    means "keep what is stored". Whether the MAC is randomized is worked out from
+    the MAC itself, so no caller can get it wrong (DI-01, DI-02)."""
     mac_address: str
-    is_randomized_mac: bool = False
     # A scan's sighting
     current_ip: str | None = None
     seen_at: datetime | None = None
@@ -80,25 +90,65 @@ class DeviceFinderStorer(Protocol):
               *, loaded_at: datetime | None = None) -> Device: ...
 
 
-def save_device(devices: DeviceFinderStorer, changes: DeviceChanges, acting_user_id: int,
-                level: IdentificationLevel, unit: Any = None,
-                loaded_at: datetime | None = None) -> SaveOutcome:
-    """Create or update the device with this MAC. Nothing is stored when anything is invalid."""
-    reasons, changes = _check(changes)
-    if reasons:
-        return SaveOutcome(SaveStatus.REJECTED, reasons=tuple(reasons))
+class ReferenceFinder(Protocol):
+    """3.2's find for one kind of reference record. ReferenceStore(engine, Vendor) is one."""
 
-    stored = devices.find_by_mac(changes.mac_address, changes.is_randomized_mac, unit)
-    is_new = stored is None
-    device = stored if stored is not None else Device(mac_address=changes.mac_address,
-                                                      is_randomized_mac=changes.is_randomized_mac)
-    _apply(changes, device)
-    device.flagged_status = evaluate_flag(level, device.trusted_status, is_new)
+    def find(self, pk: int, unit: Any = None) -> ReferenceEntity | None: ...
 
-    # loaded_at is not checked yet: the conflict check (CM-01) and edit holds (SH-2)
-    # come in M5. DeviceStore.store already accepts loaded_at, so M5 passes it on here.
-    saved = devices.store(device, acting_user_id, unit)
-    return SaveOutcome(SaveStatus.CREATED if is_new else SaveStatus.UPDATED, saved)
+
+class DeviceRecordSaver:
+    """SH-4. Built once with its stores, then save() is called for each device."""
+
+    def __init__(self, devices: DeviceFinderStorer, vendors: ReferenceFinder,
+                 device_types: ReferenceFinder) -> None:
+        self._devices = devices
+        self._vendors = vendors
+        self._device_types = device_types
+
+    def save(self, changes: DeviceChanges, acting_user_id: int, level: IdentificationLevel,
+             unit: Any = None, loaded_at: datetime | None = None) -> SaveOutcome:
+        """Create or update the device with this MAC. Nothing is stored when anything is invalid."""
+        reasons, changes = _check(changes)
+        if reasons:
+            return _rejected(reasons)
+
+        randomized = is_randomized_mac(changes.mac_address)     # from the MAC, never the caller (DI-02)
+        stored = self._devices.find_by_mac(changes.mac_address, randomized, unit)
+        is_new = stored is None
+        device = stored if stored is not None else Device(mac_address=changes.mac_address,
+                                                          is_randomized_mac=randomized)
+
+        reasons = self._check_references(changes, device, unit)
+        if reasons:
+            return _rejected(reasons)
+
+        _apply(changes, device)
+        device.flagged_status = evaluate_flag(level, device.trusted_status, is_new)
+
+        # loaded_at is not checked yet: the conflict check (CM-01) and edit holds (SH-2)
+        # come in M5. DeviceStore.store already accepts loaded_at, so M5 passes it on here.
+        saved = self._devices.store(device, acting_user_id, unit)
+        return SaveOutcome(SaveStatus.CREATED if is_new else SaveStatus.UPDATED, saved)
+
+    def _check_references(self, changes: DeviceChanges, device: Device, unit: Any) -> list[str]:
+        """Each vendor or type id that would change the device must exist and be active (DI-06).
+        An id the device already has is not checked, so keeping a retired vendor is fine."""
+        oui_applies = device.vendor_id in (None, UNKNOWN_VENDOR_ID)
+        checks = [
+            ("vendor", self._vendors, changes.vendor_id, device.vendor_id),
+            ("vendor", self._vendors, changes.oui_vendor_id if oui_applies else None, device.vendor_id),
+            ("device type", self._device_types, changes.device_type_id, device.device_type_id),
+        ]
+        reasons: list[str] = []
+        for label, finder, new_id, current_id in checks:
+            if new_id is None or new_id == current_id:
+                continue
+            record = finder.find(new_id, unit)
+            if record is None:
+                reasons.append(f"There is no {label} with id {new_id}.")
+            elif not record.is_active:
+                reasons.append(f"The {label} with id {new_id} is retired, so it can't be given to a device.")
+        return reasons
 
 
 def provisional_level(vendor_id: int | None) -> IdentificationLevel:
@@ -111,8 +161,12 @@ def provisional_level(vendor_id: int | None) -> IdentificationLevel:
     return IdentificationLevel.UNIDENTIFIED
 
 
+def _rejected(reasons: list[str]) -> SaveOutcome:
+    return SaveOutcome(SaveStatus.REJECTED, reasons=tuple(reasons))
+
+
 def _check(changes: DeviceChanges) -> tuple[list[str], DeviceChanges]:
-    """Every reason the changes are invalid, and the changes with SH-1's cleaned-up values."""
+    """Every reason the changes are invalid on their own, and the changes with SH-1's cleaned-up values."""
     reasons: list[str] = []
 
     mac = validate_mac(changes.mac_address)
@@ -128,6 +182,12 @@ def _check(changes: DeviceChanges) -> tuple[list[str], DeviceChanges]:
     score = validate_confidence(changes.confidence_score) if changes.confidence_score is not None else None
     if score is not None and not score:
         reasons.append(score.reason)
+
+    for name, limit in TEXT_LIMITS.items():
+        value = getattr(changes, name)
+        if value is not None and len(value) > limit:
+            label = name.replace("_", " ")
+            reasons.append(f"The {label} is {len(value)} characters long; the limit is {limit}.")
 
     if reasons:
         return reasons, changes
@@ -154,3 +214,4 @@ def _apply(changes: DeviceChanges, device: Device) -> None:
         value = getattr(changes, name)
         if value is not None:
             setattr(device, name, value)
+
