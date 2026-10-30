@@ -4,6 +4,8 @@
 ```text
 Software-Engineering-Project/
 ├── README
+├── dev.py                               # short commands: py -3.13 dev.py
+├── dev.cmd                              # Windows shortcut: .\dev
 ├── docs/                                # user spec, system design, diagrams
 │
 ├── frontend/                            # Tier 1: 1.0 Web UI Manager
@@ -62,9 +64,34 @@ Software-Engineering-Project/
 
 ## Tech Stack
 - Python
+- Javascript
 - MySQL
+- React
 - MAMP/LAMP
 - Git
+
+## Quick commands (dev.py)
+Every test and developer tool has a short command. Run them from the project root.
+
+On Windows (`dev.cmd` adds the `py -3.13` for you):
+```
+.\dev                          # list every command
+.\dev test                     # run every unit test
+.\dev chd 192.168.1.0/24       # anything after the command goes to the tool
+```
+On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python3 dev.py test`.
+
+| Command | Runs `python -m` ... | Use it to |
+|---|---|---|
+| `test` | `unittest discover tests` | run every unit test (`-v` shows names, `-k sweep` runs only matching tests) |
+| `conn` | `backend.check_connection` | check the database settings in your `.env` |
+| `crud` | `backend.dev_tools.crud_server` | start the CRUD test server (test database) |
+| `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
+| `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
+| `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2) |
+| `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
+
+Add `--help` after any command for that tool's own options, e.g. `.\dev chd --help`. The long `python -m ...` commands still work. To add a tool, add one line to `COMMANDS` in `dev.py`.
 
 ## Ping (BB-3 Timed Network Request)
 Sends pings through the operating system's `ping` command, so no admin rights are needed. A probe never raises: every call returns a `ProbeResult` with a status of `ok`, `no_reply`, `timeout` or `unavailable`.
@@ -80,12 +107,12 @@ Import only from the package as shown above, not from the files inside it.
 
 Check it against your own network (replace the addresses with your gateway, an unused address and your subnet):
 ```
-python -m backend.black_boxes.timed_network_request.check_ping 192.168.1.1 192.168.1.250 --sweep 192.168.1.0/24
+.\dev ping 192.168.1.1 192.168.1.250 --sweep 192.168.1.0/24
 ```
 
 Run the unit tests (they use no network, so they pass offline):
 ```
-python -m unittest discover tests
+.\dev test
 ```
 
 For other modules' tests, use `tests/fakes/fake_network.py` instead of real pings.
@@ -106,14 +133,11 @@ A small Flask server for checking the database by hand: list, add, edit and dele
 
 Start it from the project root, then open http://127.0.0.1:5000/
 ```
-python -m backend.dev_tools.crud_server                                    # uses the test database
-python -m backend.dev_tools.crud_server --database network_device_scanner  # uses the real database
+.\dev crud                                    # uses the test database
+.\dev crud --database network_device_scanner  # uses the real database
 ```
-or
-```
-py -m backend.dev_tools.crud_server                                    # uses the test database
-py -m backend.dev_tools.crud_server --database network_device_scanner  # uses the real database
-```
+(Long form: `py -3.13 -m backend.dev_tools.crud_server`)
+
 By default it uses the test database (`DB_NAME` + `_test`, or `TEST_DB_NAME` from your `.env`). Create that database with the same schema and seed files as the real one.
 
 | Request | Does |
@@ -182,7 +206,7 @@ Step 1: Start MAMP and make sure MySQL is green
 Step 2: Open a terminal in the project root folder
 
 Step 3: Run the server with the following command (test database ONLY):
-    - `py -3.13 -m backend.dev_tools.crud_server`
+    - `.\dev crud`   (long form: `py -3.13 -m backend.dev_tools.crud_server`)
     - if port 5000 is busy, add `--port -5001`
 Step 4: Checked that it started. It should print:
     `DEVELOPMENT ONLY: CRUD server on http://127.0.0.1:5000/ using database 'network_device_scanner_test'`
@@ -213,20 +237,22 @@ restore_from_backup(engine, media, stored.name)   # all or nothing
 ### Trying it by hand
 `check_backup` is a developer tool for running backups from the command line. It uses the **test database** unless you pass `--database`. Run it from the project root:
 ```
-py -m backend.data_access.backup_recovery.check_backup full                  # back up every table
-py -m backend.data_access.backup_recovery.check_backup partial               # back up the reference tables
-py -m backend.data_access.backup_recovery.check_backup list                  # stored backups, newest first
-py -m backend.data_access.backup_recovery.check_backup verify NAME           # is it complete and unchanged?
-py -m backend.data_access.backup_recovery.check_backup restore NAME          # asks before changing anything
-py -m backend.data_access.backup_recovery.check_backup compare DB_A DB_B     # do two databases hold the same rows?
+.\dev backup full                  # back up every table
+.\dev backup partial               # back up the reference tables
+.\dev backup list                  # stored backups, newest first
+.\dev backup verify NAME           # is it complete and unchanged?
+.\dev backup restore NAME          # asks before changing anything
+.\dev backup compare DB_A DB_B     # do two databases hold the same rows?
 ```
+(Long form: `py -3.13 -m backend.data_access.backup_recovery.check_backup ...`)
+
 Add `--database network_device_scanner` to `full`, `partial` or `restore` to use the real database. Backing up only reads it, but restoring into any database whose name doesn't end in `_test` also needs `--allow-real`. Use `--help` after any command for its options.
 
 Example: check that a backup of the real database rebuilds it exactly in the test database:
 ```
-py -m backend.data_access.backup_recovery.check_backup full --database network_device_scanner
-py -m backend.data_access.backup_recovery.check_backup restore NAME
-py -m backend.data_access.backup_recovery.check_backup compare network_device_scanner network_device_scanner_test
+.\dev backup full --database network_device_scanner
+.\dev backup restore NAME
+.\dev backup compare network_device_scanner network_device_scanner_test
 ```
 The last command should end with `All tables match.`
 
