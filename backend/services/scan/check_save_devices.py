@@ -1,7 +1,7 @@
 """Checkpoint for 2.2.5.2 Record Observations and Evidence (#41): scan your real
 network and save what it finds in the TEST database (or --database NAME).
 
-    py -m backend.services.scan.check_save_devices 10.0.0.0/24
+    .\\dev save 10.0.0.0/24
 
 Runs Host Discovery in the same order as check_host_discovery.py, loads the OUI
 lookup once, opens a scan, records every host, and prints what was saved. Run
@@ -19,7 +19,7 @@ import os
 from dataclasses import replace
 from datetime import datetime
 
-from backend.black_boxes.timed_network_request import ping
+from backend.services.scan.scan_settings import ScanSettings
 from backend.config import DatabaseConfig
 from backend.data_access.account_settings import UserStore
 from backend.data_access.database_engine import DatabaseEngine
@@ -39,10 +39,10 @@ from backend.services.scan.sweep_subnet import sweep_subnet
 from backend.shared_modules.save_device_record import UNKNOWN_VENDOR_ID, DeviceRecordSaver
 
 
-def discover(scope: str) -> list[DiscoveredHost]:
-    """Host Discovery, in check_host_discovery.py's order."""
+def discover(scope: str, settings: ScanSettings) -> list[DiscoveredHost]:
+    """Host Discovery, in check_host_discovery.py's order, with the scan settings (#81)."""
     known = read_known_hosts(scope, [])
-    swept, _ = sweep_subnet(scope, probe=ping)
+    swept, _ = sweep_subnet(scope, settings=settings)
     hosts = known.hosts + [DiscoveredHost(ip) for ip in swept]
     hosts, _ = resolve_mac_addresses(hosts, scope)
     return mark_randomized_macs(filter_addresses(hosts, scope))
@@ -63,16 +63,21 @@ def main() -> None:
     parser.add_argument("scope", help="the range to scan, e.g. 10.0.0.0/24")
     parser.add_argument("--database", help="database name (default: the test database)")
     args = parser.parse_args()
+    try:
+        settings = ScanSettings.from_env()
+    except ValueError as exc:
+        parser.error(str(exc))
 
     config = DatabaseConfig.from_env()
     database = args.database or os.getenv("TEST_DB_NAME", f"{config.database}_test")
     engine = DatabaseEngine(replace(config, database=database), pool_size=1)
 
     try:
-        hosts = discover(args.scope)
+        hosts = discover(args.scope, settings)
     except ValueError as exc:
         parser.error(str(exc))
-    print(f"Host Discovery: {len(hosts)} host(s) on {args.scope}")
+    print(f"Host Discovery: {len(hosts)} host(s) on {args.scope} "
+          f"({settings.probe_workers} at once, {settings.probe_timeout_s:g} s timeout)")
 
     lookup = load_oui_lookup(engine)                    # once per scan (design 14.1)
     if not lookup:
@@ -83,7 +88,8 @@ def main() -> None:
     user_id = scan_user(engine, database)
     scans = ScanStore(engine)
     # TEMPORARY: 2.2.1.1 Open Scan Session (the next parent) will open the scan instead
-    scan = scans.start(Scan(user_id=user_id, target_scope=args.scope))
+    scan = scans.start(Scan(user_id=user_id, target_scope=args.scope,
+                            configuration_used=settings.to_configuration()))
     saver = DeviceRecordSaver(DeviceStore(engine), ReferenceStore(engine, Vendor),
                               ReferenceStore(engine, DeviceType))
     summary = record_scan_results(scan.pk, user_id, hosts, lookup, datetime.now().replace(microsecond=0),

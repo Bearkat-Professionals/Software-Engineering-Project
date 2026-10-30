@@ -10,6 +10,6 @@ are internal details, imported directly only by this box's own unit tests.
 """
 from backend.black_boxes.timed_network_request.ping import ping
 from backend.black_boxes.timed_network_request.probe_result import ProbeResult, ProbeStatus
-from backend.black_boxes.timed_network_request.run_probes import Probe, run_probes
+from backend.black_boxes.timed_network_request.run_probes import DEFAULT_WORKERS, MAX_WORKERS, Probe, run_probes
 
-__all__ = ["Probe", "ProbeResult", "ProbeStatus", "ping", "run_probes"]
+__all__ = ["DEFAULT_WORKERS", "MAX_WORKERS", "Probe", "ProbeResult", "ProbeStatus", "ping", "run_probes"]

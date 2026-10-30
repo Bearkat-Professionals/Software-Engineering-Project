@@ -39,6 +39,8 @@ COMMANDS: dict[str, Command] = {
                       "run Host Discovery on a range and list the devices (2.2.2)"),
     "save":   Command("backend.services.scan.check_save_devices",
                       "scan a range and save the devices to the test database (2.2.5.2)"),
+    "speed":  Command("backend.services.scan.check_sweep_speed",
+                      "time a ping sweep at several worker counts (#81)"),
     "backup": Command("backend.data_access.backup_recovery.check_backup",
                       "back up, list, verify, restore or compare databases (3.5)"),
     "oui":    Command("database.scripts.load_oui_data",
