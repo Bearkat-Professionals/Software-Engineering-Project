@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+
+<!-- Contributors: Mason Ray Murphy -->
+
+<html lang="en">
+
+    <head>
+
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>CRUD test</title>
+
+        <style>
+
+            /* Dev-only layout. Padding stays inside the width you set. */
+
+            * { box-sizing: border-box; }
+
+            body {
+
+                margin: 0;
+                padding: 24px;
+                font: 15px/1.45 system-ui, sans-serif;
+                background: #f3f4f6;
+                color: #343a44;
+
+            }
+
+            /* Controls use the page font. Browsers otherwise shrink them. */
+            input, select, textarea, button { font: inherit; }
+
+            input, select, textarea {
+
+                padding: 6px 8px;
+                border: 1px solid #d8dde4;
+                border-radius: 6px;
+
+            }
+
+            /* One column per field, wrapping when the window gets narrow. */
+            form {
+
+                display: grid;
+                grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+                gap: 12px;
+                max-width: 960px;
+
+            }
+
+            label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+            /* Hide the status lines until script puts text in them. */
+            #message:empty, #error:empty { display: none; }
+            #message { background: #e7f6ef; padding: 10px; border-radius: 8px; }
+            #error { background: #fdecee; color: #9d1c1a; padding: 10px; border-radius: 8px; }
+            /* Device rows are wider than the window, so the table scrolls sideways. */
+            #rows { overflow-x: auto; }
+            table {border-collapse: collapse; background: white; }
+
+            th, td {
+
+                border-bottom: 1px solid #d8dde4;
+                padding: 8px;
+                text-align: left;
+                vertical-align: top;
+
+            }
+
+            /* Green is the main action. secondary is Edit/Cancel. danger is Delete. */
+            button {
+
+                padding: 8px 12px;
+                border: 0;
+                border-radius: 6px;
+                background: #0f6b4c;
+                color: white;
+                cursor: pointer;
+
+            }
+
+            button.secondary { background: #e6e8ec; color: #1b1e23; }
+            button.danger { background: #9d1c2a; }
+
+        </style>
+
+    </head>
+
+    <body>
+
+        <h1>CRUD Test</h1>
+        <p>This is a test of the CRUD functionality to test the database.</p>
+
+        <!-- Empty until init() fills it from GET /api/tables. -->
+        <label for="table-select">Table
+            <select id="table-select"></select>
+        </label>
+
+        <!-- Success text. role=status is for assistive tools. -->
+        <p id="message" role="status"></p>
+        <!-- Server error text from {"error": "..."}. -->
+        <p id="error" role="alert"></p>
+
+        <!-- Script rebuilds this form from the selected table's columns. -->
+        <h2 id="form-title">Add row</h2>
+        <form id="row-form" autocomplete="off"></form>
+
+        <h2>Rows</h2>
+        <!-- Script puts the row table here. -->
+        <div id="rows"></div>
+
+        <script>
+
+            // Filled by GET /api/tables: name -> {primary_key, columns}. Rows are fetched separately.
+            let tables = {};
+
+            // /api/tables sends names only. These are the only values those columns accept.
+            const ENUMS = {
+
+                vendor: { status: ["active", "retired"]},
+                device_type: { status: ["active", "retired"]},
+                device_signature: { status: ["active", "retired"], evidence_type: ["oui", "mdns", "ssdp", "netbios_llmnr", "reverse_dns"]},
+                app_user: { role: ["admin", "editor", "viewer"], account_status: ["active", "disabled"]},
+                device: { network_status: ["online", "offline"]},
+                scan: { status: ["running", "completed"], outcome: ["success", "partial", "failed"]},
+                scan_observation: { status: ["online", "offline"]},
+                identification_evidence: { evidence_type: ["oui", "mdns", "ssdp", "netbios_llmnr", "reverse_dns"]},
+                alert_event: { event_name: ["new_unidentified_device", "flagged_device", "scan_failed", "backup_failed"]},
+                audit_log: { action: ["insert", "update", "delete"]}
+
+            };
+
+            // Checkboxes. A text "false" would be stored as true.
+            const BOOLEANS = {
+
+                device: ["is_randomized_mac", "trusted_status", "flagged_status"],
+                alert_setting: ["enabled"]
+
+            };
+
+            // Id columns that should be a dropdown of the parent table's rows.
+            const FOREIGN_KEYS = {
+
+                oui_prefix: { vendor_id: { table: "vendor", label: "vendor_name"} },
+
+                device: {
+
+                    device_type_id: { table: "device_type", label: "category_name"},
+                    vendor_id: {table: "vendor", label: "vendor_name"}
+
+                },
+
+                device_signature: { device_type_id: { table: "device_type", label: "category_name"} },
+                scan: { user_id: { table: "app_user", label: "username"} },
+
+                scan_observation: {
+
+                    scan_id: { table: "scan", label: "target_scope" },
+                    device_id: { table: "device", label: "mac_address" }
+
+                },
+
+                identification_evidence: {
+
+                    device_id: { table: "device", label: "mac_address"},
+                    signature_id: { table: "device_signature", label: "pattern_value" } 
+
+                },
+
+                alert_setting: { user_id: { table: "app_user", label: "username"} },
+                audit_log: { user_id: { table: "app_user", label: "username"} }
+
+            };
+
+            // Blank sends null. device_type_id and vendor_id then use the seed "unknown" row (id 1).
+            const OPTIONAL_FK = {
+
+                device: ["device_type_id", "vendor_id"],
+                identification_evidence: ["signature_id"]
+
+            };
+
+            // Page elements the script fills. editingId is null while adding, or the row id while editing.
+            const tableSelect = document.querySelector("#table-select");
+            const rowsEl = document.querySelector("#rows");
+
+            const form = document.querySelector("#row-form");
+            const formTitle = document.querySelector("#form-title");
+            const messageEl = document.querySelector("#message");
+            const errorEl = document.querySelector("#error");
+            let editingId = null;
+
+            // Put the server's error sentence in the red box and clear any success line.
+            function showError(message) {
+
+                errorEl.textContent = message || "";
+                if (message) messageEl.textContent = "";
+
+            }
+
+            // One function for every CRUD call. Throws the JSON "error" string on failure.
+            // 204 is delete: the body is empty, so return null instead of parsing JSON.
+            async function api(path, { method = "GET", body } = {}) {
+
+                const response = await fetch(path, {
+
+                    method,
+                    headers: {
+
+                        Accept: "application/json",
+                        ...(body ? { "Content-Type": "application/json"} : {})
+                        
+                    },
+
+                    body: body ? JSON.stringify(body) : undefined
+
+                });
+
+                if (response.status === 204) return null;
+
+                const payload = await response.json().catch(() => null);
+
+                if (!response.ok) {
+                    const message = payload && payload.error ? payload.error : response.statusText;
+                    throw new Error(message);
+
+                }
+
+                return payload;
+
+            }
+
+            // GET /api/<table> and draw one row per record, plus Edit and Delete.
+            async function drawsRows() {
+
+                const table = tables[tableSelect.value];
+                const data = await api("/api/" + tableSelect.value);
+                rowsEl.replaceChildren();
+
+                if (!data.length) {
+
+                    const empty = document.createElement("p");
+                    empty.textContent = "No rows in " + tableSelect.value + ".";
+                    rowsEl.append(empty);
+                    return;
+
+                }
+
+                const grid = document.createElement("table");
+                const head = document.createElement("tr");
+
+                for (const column of table.columns) {
+
+                    const cell = document.createElement("th");
+                    cell.textContent = column;
+                    head.append(cell);
+
+                }
+
+                const actionsHead = document.createElement("th");
+                actionsHead.textContent = "Actions";
+                head.append(actionsHead);
+                grid.append(head);
+
+                for (const row of data) {
+
+                    const tr = document.createElement("tr");
+                    
+                    for (const column of table.columns) {
+
+                        const cell = document.createElement("td");
+                        const value = row[column];
+                        cell.textContent = value == null ? "" : (typeof value === "object" ? JSON.stringify(value) : String(value));
+                        tr.append(cell);
+
+                    }
+
+                    const actions = document.createElement("td");
+                    const edit = document.createElement("button");
+                    edit.type = "button";
+                    edit.className = "secondary";
+                    edit.textContent = "Edit";
+                    edit.dataset.action = "edit";
+                    edit.dataset.pk = String(row[table.primary_key]);
+                    
+                    const remove = document.createElement("button");
+                    remove.type = "button";
+                    remove.className = "danger";
+                    remove.textContent = "Delete";
+                    remove.dataset.action = "delete";
+                    remove.dataset.pk = String(row[table.primary_key]);
+                    
+                    actions.append(edit, remove);
+                    tr.append(actions);
+                    grid.append(tr);
+
+                }
+
+                rowsEl.append(grid);
+
+            }
+
+            // Build one control per column. Skip the primary key; the database assigns it on POST.
+            // row is null for Add, or the loaded record for Edit.
+            async function drawForm(row) {
+
+                const table = tables[tableSelect.value];
+                form.replaceChildren();
+                formTitle.textContent = row ? "Edit " + tableSelect.value : "Add " + tableSelect.value;
+
+                for (const column of table.columns) {
+
+                    if (column === table.primary_key) continue; // id is not typed by the user
+
+                    const label = document.createElement("label");
+                    label.textContent = column;
+                    let control;
+
+                    const choices = (ENUMS[tableSelect.value] || {})[column];
+                    const fk = (FOREIGN_KEYS[tableSelect.value] || {})[column];
+                    const isBool = (BOOLEANS[tableSelect.value] || []).includes(column);
+
+                    if (isBool) {
+
+                        control = document.createElement("input");
+                        control.type = "checkbox";
+                        control.checked = row ? row[column] === true : column === "enabled";
+
+                    } else if (choices) {
+
+                        control = document.createElement("select");
+                        for (const item of choices) control.append(new Option(item, item));
+                        control.value = row && row[column] ? row[column] : choices[0];
+
+                    } else if (fk) {
+
+                        const parents = await api("/api/" + fk.table);
+                        control = document.createElement("select");
+                        const optional = (OPTIONAL_FK[tableSelect.value] || []).includes(column);
+                        control.append(new Option(optional ? "default / none" : "Select... ", ""));
+                        const parentKey = tables[fk.table].primary_key;
+
+                        for (const parent of parents) {
+
+                            const id = parent[parentKey];
+                            control.append(new Option(id + " - " + parent[fk.label], String(id)));
+
+                        }
+
+                        if (row && row[column] != null) control.value = String(row[column]);
+
+                    } else {
+                        
+                        control = document.createElement("input");
+                        control.value = row && row[column] != null ? String(row[column]) : "";
+                    }
+
+                    control.name = column;
+                    label.append(control);
+                    form.append(label);
+                }
+
+                // type=submit fires the form listener. Cancel is type=button so it does not save.
+                const submit = document.createElement("button");
+                submit.type = "submit";
+                submit.textContent = row ? "Save Changes" : "Add Row";
+                form.append(submit);
+
+                if (row) {
+
+                    const cancel = document.createElement("button");
+                    cancel.type = "button";
+                    cancel.className = "secondary";
+                    cancel.textContent = "cancel";
+
+                    cancel.addEventListener("click", () => {
+
+                        editingId = null;
+                        drawForm(null);
+
+                    });
+
+                    form.append(cancel);
+
+                }
+
+            }
+
+            // POST creates a row. PUT replaces every column except the id, which stays in the URL.
+            form.addEventListener("submit", async (event) => {
+
+                event.preventDefault(); // stop the browser from reloading and dropping the page state
+                const table = tables[tableSelect.value];
+                const body = {};
+
+                for (const column of table.columns) {
+
+                    if (column === table.primary_key) continue;
+
+                    // Send real booleans and numbers. An empty box is null, not "".
+                    const control = form.elements[column];
+
+                    if (control.type === "checkbox") {
+
+                        body[column] = control.checked;
+
+                    } else if (control.tagName === "SELECT" && column.endsWith("_id")) {
+
+                        body[column] = control.value === "" ? null : Number(control.value);
+
+                    } else {
+
+                        const text = control.value.trim();
+                        body[column] = text === "" ? null : text;
+
+                    }
+
+                }
+
+                try {
+
+                    if (editingId == null) {
+
+                        const created = await api("/api/" + tableSelect.value, { method: "POST", body });
+                        messageEl.textContent = "Added " + tableSelect.value + " " + created[table.primary_key] + ".";
+
+                    } else {
+
+                        await api("/api/" + tableSelect.value + "/" + editingId, { method: "PUT", body });
+                        messageEl.textContent = "Saved " + tableSelect.value + " "  + editingId + "."; 
+                        editingId = null;
+                    }
+
+                    showError("");
+                    await drawForm(null);
+                    await drawsRows();
+
+                } catch (err) {
+
+                    showError(err.message);
+
+                }
+
+            });
+            
+            // One listener for every row. Edit loads GET /api/<table>/<id>. Delete calls DELETE.
+            rowsEl.addEventListener("click", async (event) => {
+
+                const button = event.target.closest("button");
+                if (!button) return;
+
+                const table = tables[tableSelect.value];
+                const pk = button.dataset.pk;
+
+                try {
+
+                    if (button.dataset.action === "edit") {
+
+                        const row = await api("/api/" + tableSelect.value + "/" + pk);
+                        editingId = row[table.primary_key];
+                        showError("");
+                        await drawForm(row);
+
+                    }
+
+                    if (button.dataset.action === "delete") {
+
+                        if (!window.confirm("Delete " + tableSelect.value + " " + pk + "?")) return;
+                        await api("/api/" + tableSelect.value + "/" + pk, { method: "DELETE"});
+
+                        if (String(editingId) === pk) {
+
+                            editingId = null;
+                            await drawForm(null);
+
+                        }
+
+                        showError("");
+                        messageEl.textContent = "Deleted " + tableSelect.value + " " + pk + ".";
+                        await drawsRows();
+                    }
+
+                } catch (err) {
+
+                    showError(err.message);
+
+                }
+
+            });
+
+            // Leave edit mode, then rebuild the form and the row list for the selected table.
+            async function openTable() {
+
+                editingId = null;
+                showError("");
+                messageEl.textContent = "";
+                await drawForm(null);
+                await drawsRows();
+
+            }
+
+            tableSelect.addEventListener("change", () => {
+                openTable().catch((err) => showError(err.message));
+            });
+
+            // Load every table name, put vendor/device_type/device first, then show vendor.
+            async function init() {
+
+                try {
+
+                    tables = await api("/api/tables");
+                    const names = Object.keys(tables);
+                    const preferred = ["vendor", "device_type", "device"];
+                    
+                    const ordered = [
+
+                        ...preferred.filter((name) => names.includes(name)),
+                        ...names.filter((name) => !preferred.includes(name))
+
+                    ];
+
+                    for (const name of ordered) {
+
+                        const option = document.createElement("option");
+                        option.value = name;
+                        option.textContent = name;
+                        tableSelect.append(option);
+
+                    }
+
+                    tableSelect.value = "vendor";
+                    await openTable();
+
+                } catch (err) {
+
+                    showError(err.message);
+
+                }
+                
+            }
+
+            init(); // runs once, after the elements above exist
+
+        </script>
+
+    </body>
+
+</html>

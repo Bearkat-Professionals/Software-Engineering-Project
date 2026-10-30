@@ -61,3 +61,9 @@ class AuditAction(str, Enum):
     INSERT = "insert"
     UPDATE = "update"
     DELETE = "delete"
+
+
+class IdentificationLevel(str, Enum):   # spec 7.2; not stored: worked out from the evidence (2.2.4.4)
+    IDENTIFIED = "identified"           # name, type, and model where known
+    PARTIAL = "partial"                 # partially identified (generic): type and vendor only
+    UNIDENTIFIED = "unidentified"       # shown as "Unknown"
