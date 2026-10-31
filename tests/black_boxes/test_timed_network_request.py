@@ -5,11 +5,13 @@ subprocess.run, so these pass with the network unplugged.
     python -m unittest discover tests
 """
 import subprocess
+import threading
 import time
 import unittest
 from unittest import mock
 
-from backend.black_boxes.timed_network_request import ProbeResult, ProbeStatus, ping, run_probes
+from backend.black_boxes.timed_network_request import (MAX_WORKERS, ProbeResult, ProbeStatus, ping,
+                                                       run_probes)
 from backend.black_boxes.timed_network_request.ping import build_ping_command, read_ping_reply
 from tests.fakes.fake_network import FakeNetwork
 
@@ -143,10 +145,37 @@ class RunProbesTests(unittest.TestCase):
         self.assertEqual([r.responded for r in results], [False, True])
         self.assertCountEqual(network.probed, ["10.0.0.1", "10.0.0.2"])
 
-    def test_no_targets_and_bad_worker_count(self):
+    def test_no_targets(self) -> None:
         self.assertEqual(run_probes([], ping), [])
-        with self.assertRaises(ValueError):
-            run_probes(["10.0.0.1"], ping, max_workers=0)
+
+    def test_worker_count_must_be_from_one_to_the_cap(self) -> None:
+        for bad in (0, -1, MAX_WORKERS + 1):
+            with self.subTest(max_workers=bad):
+                with self.assertRaisesRegex(ValueError, f"from 1 to {MAX_WORKERS}"):
+                    run_probes(["10.0.0.1"], ping, max_workers=bad)
+        network = FakeNetwork(responding={"10.0.0.1"})
+        for good in (1, MAX_WORKERS):
+            with self.subTest(max_workers=good):
+                [result] = run_probes(["10.0.0.1"], network.probe, max_workers=good)
+                self.assertTrue(result.responded)
+
+    def test_never_more_than_max_workers_at_once(self) -> None:
+        lock = threading.Lock()
+        running = 0
+        most = 0
+
+        def count_while_waiting(target: str) -> ProbeResult:
+            nonlocal running, most
+            with lock:
+                running += 1
+                most = max(most, running)
+            time.sleep(0.05)                     # long enough for the others to start
+            with lock:
+                running -= 1
+            return ProbeResult(target, ProbeStatus.NO_REPLY, 50)
+
+        run_probes([str(n) for n in range(12)], count_while_waiting, max_workers=4)
+        self.assertEqual(most, 4)                # never 5 or more, and really 4 in parallel
 
 
 if __name__ == "__main__":

@@ -89,8 +89,9 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
-| `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2) |
+| `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2); `--workers` / `--timeout` try other sweep settings |
 | `save` | `backend.services.scan.check_save_devices` | scan a range and save what it finds to the test database; run it twice to see updates, not new rows (2.2.5.2) |
+| `speed` | `backend.services.scan.check_sweep_speed` | time a ping sweep at 1, 8, 32 and 64 workers and print a table for the PR (#81) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
 | `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
 
@@ -120,15 +121,47 @@ Run the unit tests (they use no network, so they pass offline):
 
 For other modules' tests, use `tests/fakes/fake_network.py` instead of real pings.
 
+## Scan speed settings (#81)
+The ping sweep runs many pings at once. Two settings control it:
+
+| `.env` key | Default | Allowed | What it does |
+|---|---|---|---|
+| `SCAN_PROBE_WORKERS` | 32 | 1 to 128 | how many pings run at the same time |
+| `SCAN_PROBE_TIMEOUT_S` | 1.0 | more than 0, at most 5 | how long each ping waits for a reply |
+
+A sweep takes at most about (addresses ÷ workers) × timeout. A /24 has 254 addresses, so 32 workers and 1 second is 8 rounds, about 8 to 10 seconds; 64 workers is about 4 to 5 seconds. More workers are faster until your machine or network can't keep up, so check that the number of devices found stays the same.
+
+Try settings for one run without changing `.env`:
+```
+.\dev chd 192.168.1.0/24 --workers 64 --timeout 0.5
+```
+Compare several worker counts (the 1-worker run takes about 4 minutes on a /24):
+```
+.\dev speed 192.168.1.0/24                       # 1, 8, 32 and 64 workers
+.\dev speed 192.168.1.0/24 --workers 32 64 128   # only these
+```
+In code:
+```python
+from backend.services.scan.scan_settings import ScanSettings
+
+settings = ScanSettings.from_env()                      # .env, or the defaults
+hosts, status = sweep_subnet(scope, settings=settings)
+```
+A scan records its settings in `scan.configuration_used`. Saving results stays one host at a time on purpose: each save is a short database transaction, and threads would need a connection each for little gain.
+
 ## Setting up your .env file
 Make sure to create a .env file in your workspace. Git ignores this file so you are able to put your database credentials here securely.
 Paste the below into the file and replace with your information.
+
+Optional: scan speed settings (see [Scan speed settings](#scan-speed-settings-81)). Leave them out to use the defaults.
 ```
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_USER= <your_username>
 DB_PASSWORD= <your_database_password>
 DB_NAME=network_device_scanner
+SCAN_PROBE_WORKERS=32       # pings at once, 1 to 128
+SCAN_PROBE_TIMEOUT_S=1.0    # seconds each ping waits, more than 0 and at most 5
 ```
 
 ## CRUD test page and server (development only)
