@@ -104,9 +104,5 @@ def _record_host(scan_id: int, user_id: int, host: DiscoveredHost, oui_lookup: O
                                           ip_address=host.ip_address, hostname=device.hostname,
                                           status=NetworkStatus.ONLINE, observed_at=seen_at), unit)
     if match:                               # add_evidence skips evidence the device already has
-        evidence = match.evidence
-        scans.add_evidence(IdentificationEvidence(device_id=device.pk, evidence_type=evidence.evidence_type,
-                                                  raw_value=evidence.raw_value,
-                                                  signature_id=evidence.signature_id,
-                                                  weight=evidence.weight), unit)
+        scans.add_evidence(match.evidence.to_record(device.pk), unit)
     return outcome

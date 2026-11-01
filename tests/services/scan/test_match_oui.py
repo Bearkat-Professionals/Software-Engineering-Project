@@ -8,8 +8,8 @@ from backend.data_access.reference_data import ReferenceRules
 from backend.records import OuiPrefix, Vendor
 from backend.records.enums import EvidenceType, RecordStatus
 from backend.services.scan.discovered_host import DiscoveredHost
-from backend.services.scan.match_oui import (OUI_EVIDENCE_WEIGHT, EvidenceItem, OuiMatch,
-                                             build_oui_lookup, match_oui, oui_lookup_from_rules)
+from backend.services.scan.evidence import EvidenceItem, weight_for
+from backend.services.scan.match_oui import OuiMatch, build_oui_lookup, match_oui, oui_lookup_from_rules
 
 VENDORS = [
     Vendor(vendor_id=2, vendor_name="Vantiva - Connected Home"),
@@ -37,8 +37,7 @@ class MatchOuiTests(unittest.TestCase):
         self.assertEqual(match, OuiMatch(
             vendor_id=2, vendor_name="Vantiva - Connected Home",
             evidence=EvidenceItem(evidence_type=EvidenceType.OUI, raw_value="70:13:01",
-                                  signature_id=None, weight=OUI_EVIDENCE_WEIGHT)))
-        self.assertEqual(OUI_EVIDENCE_WEIGHT, 20)
+                                  signature_id=None, weight=weight_for(EvidenceType.OUI))))
 
     def test_other_mac_formats_are_normalized(self):
         for mac in ("70:13:01:65:8e:f7", "70-13-01-65-8E-F7", "70-13-01-65-8e-f7",

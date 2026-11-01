@@ -20,21 +20,10 @@ from backend.records import OuiPrefix, Vendor
 from backend.records.enums import EvidenceType
 from backend.services.scan.detect_randomized_mac import is_randomized_mac
 from backend.services.scan.discovered_host import DiscoveredHost
+from backend.services.scan.evidence import EvidenceItem, weight_for
 from backend.shared_modules.validate_input import validate_mac
 
-# PROVISIONAL: the real weights come from spec 7.1 / design open item 7, set in M3
-OUI_EVIDENCE_WEIGHT = 20
-
 OuiLookup = dict[str, tuple[int, str]]      # "28:6F:B9" -> (vendor_id, vendor_name)
-
-
-@dataclass(frozen=True)
-class EvidenceItem:
-    """One identification_evidence row, minus device_id (added once the device is known)."""
-    evidence_type: EvidenceType
-    raw_value: str
-    signature_id: int | None
-    weight: int
 
 
 @dataclass(frozen=True)
@@ -91,4 +80,4 @@ def match_oui(host: DiscoveredHost, lookup: OuiLookup) -> OuiMatch | None:
     vendor_id, vendor_name = found
     return OuiMatch(vendor_id, vendor_name, EvidenceItem(
         evidence_type=EvidenceType.OUI, raw_value=prefix, signature_id=None,
-        weight=OUI_EVIDENCE_WEIGHT))
+        weight=weight_for(EvidenceType.OUI)))
