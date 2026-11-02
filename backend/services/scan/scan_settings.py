@@ -1,4 +1,5 @@
-"""Scan settings (#81): how many probes run at once and how long each one waits.
+"""Scan settings (#81): how many probes run at once, how long each one waits,
+and which discovery methods a scan uses.
 
 Defaults work without any setup. To tune them without changing code, add to .env:
 
@@ -7,7 +8,7 @@ Defaults work without any setup. To tune them without changing code, add to .env
 
     settings = ScanSettings.from_env()
     hosts, status = sweep_subnet(scope, settings=settings)
-    settings.to_configuration()     # {"probe_workers": 64, "probe_timeout_s": 0.5} for scan.configuration_used
+    settings.to_configuration()     # JSON-ready values for scan.configuration_used
 
 A sweep takes about (hosts / probe_workers) * probe_timeout_s: a /24 is 254 hosts,
 so 32 workers and 1 second is 8 rounds, about 8 to 10 seconds.
@@ -24,7 +25,8 @@ from backend.shared_modules.validate_input import validate_timeout
 
 DEFAULT_PROBE_TIMEOUT_S = 1.0
 MAX_PROBE_TIMEOUT_S = 5.0       # tighter than SH-1's 30 s: the sweep waits this long per round
-DISCOVERY_METHODS = ("arp", "ping")        #Changed that javier did, Ask on the task. read the arp cache, then the ping sweep
+DISCOVERY_METHODS = ("arp", "ping")     # Host Discovery methods, in the order they run; also the allowed values
+
 WORKERS_KEY = "SCAN_PROBE_WORKERS"
 TIMEOUT_KEY = "SCAN_PROBE_TIMEOUT_S"
 
@@ -33,7 +35,7 @@ TIMEOUT_KEY = "SCAN_PROBE_TIMEOUT_S"
 class ScanSettings:
     probe_workers: int = DEFAULT_WORKERS
     probe_timeout_s: float = DEFAULT_PROBE_TIMEOUT_S
-    discovery_methods: tuple[str, ...] = DISCOVERY_METHODS  #javier change, added discovery methods to the scan settings
+    discovery_methods: tuple[str, ...] = DISCOVERY_METHODS     # recorded with each scan (#45)
 
     def __post_init__(self) -> None:
         workers = self.probe_workers
@@ -46,6 +48,15 @@ class ScanSettings:
             raise ValueError(f"Probe timeout must be more than 0 and at most {MAX_PROBE_TIMEOUT_S:g} seconds, "
                              f"not {timeout!r}.")
         object.__setattr__(self, "probe_timeout_s", checked.value)     # 1 -> 1.0
+
+        methods = self.discovery_methods
+        if isinstance(methods, str) or not isinstance(methods, (tuple, list)):
+            raise ValueError(f"Discovery methods must be a list of methods, not {methods!r}.")
+        unknown = [method for method in methods if method not in DISCOVERY_METHODS]
+        if not methods or unknown:
+            raise ValueError(f"Discovery methods must be one or more of {', '.join(DISCOVERY_METHODS)}, "
+                             f"not {list(methods)!r}.")
+        object.__setattr__(self, "discovery_methods", tuple(dict.fromkeys(methods)))   # list -> tuple, no repeats
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> ScanSettings:
@@ -74,4 +85,4 @@ class ScanSettings:
     def to_configuration(self) -> dict[str, Any]:
         """The settings as plain JSON-ready values, for scan.configuration_used."""
         return {"probe_workers": self.probe_workers, "probe_timeout_s": self.probe_timeout_s,
-                "discovery_methods": list(self.discovery_methods)}      #added discovery method, javier change
+                "discovery_methods": list(self.discovery_methods)}
