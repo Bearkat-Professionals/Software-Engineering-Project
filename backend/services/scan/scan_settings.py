@@ -24,7 +24,7 @@ from backend.shared_modules.validate_input import validate_timeout
 
 DEFAULT_PROBE_TIMEOUT_S = 1.0
 MAX_PROBE_TIMEOUT_S = 5.0       # tighter than SH-1's 30 s: the sweep waits this long per round
-
+DISCOVERY_METHODS = ("arp", "ping")        #Changed that javier did, Ask on the task. read the arp cache, then the ping sweep
 WORKERS_KEY = "SCAN_PROBE_WORKERS"
 TIMEOUT_KEY = "SCAN_PROBE_TIMEOUT_S"
 
@@ -33,6 +33,7 @@ TIMEOUT_KEY = "SCAN_PROBE_TIMEOUT_S"
 class ScanSettings:
     probe_workers: int = DEFAULT_WORKERS
     probe_timeout_s: float = DEFAULT_PROBE_TIMEOUT_S
+    discovery_methods: tuple[str, ...] = DISCOVERY_METHODS  #javier change, added discovery methods to the scan settings
 
     def __post_init__(self) -> None:
         workers = self.probe_workers
@@ -72,4 +73,5 @@ class ScanSettings:
 
     def to_configuration(self) -> dict[str, Any]:
         """The settings as plain JSON-ready values, for scan.configuration_used."""
-        return {"probe_workers": self.probe_workers, "probe_timeout_s": self.probe_timeout_s}
+        return {"probe_workers": self.probe_workers, "probe_timeout_s": self.probe_timeout_s,
+                "discovery_methods": list(self.discovery_methods)}      #added discovery method, javier change
