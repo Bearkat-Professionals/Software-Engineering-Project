@@ -5,6 +5,7 @@ from datetime import datetime
 from backend.records.scan import Scan
 from backend.records.user import User
 from backend.services.scan.scan_session import ScanSessionController
+from backend.services.scan.scan_settings import ScanSettings
 
 
 
@@ -14,7 +15,7 @@ from backend.services.scan.scan_session import ScanSessionController
 Javier = User(user_id = 1, username="Javier", password_hash="HateThis")
 Jason = User(user_id = 2, username="Jason", password_hash="HateThis")
 SCOPE = "192.168.1.0/24"
-
+SETTINGS = ScanSettings()
 
 class FakeScan_Database:
     def __init__(self):
@@ -31,6 +32,8 @@ class FakeScan_Database:
 
     def start(self, scan):
         time.sleep(0.05)
+        if scan.started_at is None:
+            scan.started_at = datetime.now()
         scan.scan_id = len(self.scans) + 1
         scan.status = "running"
         self.scans.append(scan)
@@ -68,14 +71,14 @@ class TestScanSession(unittest.TestCase):
         store = FakeScan_Database()
         sessions = ScanSessionController(store, FakeUserTable())
 
-        result = sessions.open(SCOPE, 1)
+        result = sessions.open(SCOPE, 1, SETTINGS)
 
 
         self.assertTrue(result.opened)
         self.assertEqual(result.scan.user_id, 1)
         self.assertEqual(result.scan.target_scope, SCOPE)
         self.assertIsNotNone(result.scan.started_at)
-        self.assertEqual(result.scan.configuration_used["max_workers"], 32)
+        self.assertEqual(result.scan.configuration_used["probe_workers"], 32)
 
 
 
@@ -83,9 +86,9 @@ class TestScanSession(unittest.TestCase):
     def test_second_scan_is_refused(self):
         store = FakeScan_Database()
         sessions = ScanSessionController(store, FakeUserTable())
-        first = sessions.open(SCOPE, 1)
+        first = sessions.open(SCOPE, 1, SETTINGS)
         first.scan.started_at = datetime(2026, 10, 30, 14 ,3)
-        second = sessions.open(SCOPE, 2)
+        second = sessions.open(SCOPE, 2, SETTINGS)
 
 
         self.assertEqual(second.reason, "A scan started by Javier at 14:03 is still running.")
@@ -95,7 +98,7 @@ class TestScanSession(unittest.TestCase):
     def test_bad_scope_is_rejected(self):
         store = FakeScan_Database()
         sessions = ScanSessionController(store, FakeUserTable())
-        result = sessions.open("8.8.8.0/24", 1)
+        result = sessions.open("8.8.8.0/24", 1, SETTINGS)
 
         self.assertFalse(result.opened)
         self.assertEqual(len(store.scans), 0)
@@ -107,8 +110,8 @@ class TestScanSession(unittest.TestCase):
         sessions = ScanSessionController(store, FakeUserTable())
         old_scan = store.start(Scan(user_id=2, target_scope=SCOPE))
 
-
-        result = sessions.open(SCOPE, 1)
+        sessions.recover_stuck_scans()
+        result = sessions.open(SCOPE, 1, SETTINGS)
 
 
         self.assertTrue(result.opened)
@@ -123,10 +126,10 @@ class TestScanSession(unittest.TestCase):
 
 
         def Javier_scan():
-            sessions.open(SCOPE, 1)
+            sessions.open(SCOPE, 1, SETTINGS)
 
         def Jason_scan():
-            sessions.open(SCOPE, 2)
+            sessions.open(SCOPE, 2, SETTINGS)
 
 
 

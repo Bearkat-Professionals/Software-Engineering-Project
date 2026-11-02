@@ -1,17 +1,10 @@
 import threading
-from datetime import datetime
 from backend.records.enums import ScanOutcome
 from backend.records.scan import Scan
+from backend.services.scan.scan_settings import ScanSettings
 from backend.shared_modules.validate_input import validate_scope
 
-
-
-
-ScanPing_Workers = 32
-Ping_timeout_Seconds = 1
-Discovery_Methods = ["arp", "ping"]
-Stuck_Scan_message = "the server stopped during this scan"
-
+STUCK_SCAN_MESSAGE = "the server stopped during this scan"
 
 
 class OpenResult:
@@ -21,68 +14,39 @@ class OpenResult:
         self.reason = reason
 
 
-
-
 class ScanSessionController:
     def __init__(self, scan_store, user_store):
         self.scan_store = scan_store
         self.user_store = user_store
         self.lock = threading.Lock()
-        self.current_scan = None
 
+    def recover_stuck_scans(self) -> int:
+        closed = 0
+        while (stuck := self.scan_store.find_running()) is not None:
+            self.scan_store.finish(stuck.scan_id, ScanOutcome.FAILED, STUCK_SCAN_MESSAGE)
+            closed += 1
+        return closed
 
-
-    def open(self, scope, user_id):
+    def open(self, scope: str, user_id: int, settings: ScanSettings) -> OpenResult:
         with self.lock:
-            user = self.user_store.find(user_id)
-            if not user:
-                return OpenResult(False, reason="User not found")
+            checked = validate_scope(scope)
+            if not checked:
+                return OpenResult(False, reason=checked.reason)
+            if self.user_store.find(user_id) is None:
+                return OpenResult(False, reason="Your account was not found. Sign in again.")
+            running = self.scan_store.find_running()
+            if running is not None:
+                return OpenResult(False, reason=self._still_running_message(running))
+            scan = self.scan_store.start(Scan(user_id=user_id, target_scope=checked.value,
+                                              configuration_used=settings.to_configuration()))
+            return OpenResult(True, scan=scan)
 
+    def _still_running_message(self, running: Scan) -> str:
+        starter = self.user_store.find(running.user_id)
+        who = starter.username if starter is not None else "another user"
+        when = "at " + running.started_at.strftime("%H:%M") if running.started_at is not None else "earlier"
+        return "A scan started by " + who + " " + when + " is still running."
 
-            running_scan = self.scan_store.find_running()
-            if running_scan and self.current_scan:
-                starter = self.user_store.find(running_scan.user_id)
-                when = running_scan.started_at.strftime("%H:%M")
-                return OpenResult(False, reason="A scan started by " + starter.username + " at " + when + " is still running.")
-
-            while running_scan:
-                self.scan_store.finish(running_scan.scan_id, ScanOutcome.FAILED, Stuck_Scan_message)
-                running_scan = self.scan_store.find_running()
-
-
-            result = validate_scope(scope)
-            if not result:
-                return OpenResult(False, reason=result.reason)
-
-
-
-
-            settings = {
-                "max_workers": ScanPing_Workers,
-                "timeout_seconds": Ping_timeout_Seconds,
-                "discovery_methods": Discovery_Methods
-            }
-
-            new_scan = Scan(
-                user_id = user_id,
-                target_scope=result.value,
-                configuration_used=settings,
-                started_at=datetime.now().replace(microsecond=0)
-
-            )
-            saved_scan = self.scan_store.start(new_scan)
-            self.current_scan = saved_scan
-            return OpenResult(True, scan=saved_scan)
-
-
-    def close(self, scan_id, outcome, error_message=None):
+    def close(self, scan_id: int, outcome: ScanOutcome, error_message: str | None = None) -> Scan:
         with self.lock:
-            finished = self.scan_store.finish(scan_id, outcome, error_message)
-            self.current_scan = None
-            return finished
-
-
-
-
-
-  
+            return self.scan_store.finish(scan_id, outcome, error_message)

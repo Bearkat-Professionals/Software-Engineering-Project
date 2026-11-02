@@ -56,7 +56,8 @@ class ScanSettingsValueTests(unittest.TestCase):
 
     def test_configuration_survives_json(self) -> None:
         configuration = ScanSettings(probe_workers=64, probe_timeout_s=0.5).to_configuration()
-        self.assertEqual(configuration, {"probe_workers": 64, "probe_timeout_s": 0.5})
+        self.assertEqual(configuration, {"probe_workers": 64, "probe_timeout_s": 0.5, "discovery_methods": ["arp", "ping"]})  #just added discover methods, javier
+
         self.assertEqual(json.loads(json.dumps(configuration)), configuration)
 
 
