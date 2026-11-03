@@ -12,7 +12,7 @@ from typing import Any
 from unittest import mock
 
 from backend.black_boxes.timed_network_request import DEFAULT_WORKERS, MAX_WORKERS
-from backend.services.scan.scan_settings import (DEFAULT_PROBE_TIMEOUT_S, MAX_PROBE_TIMEOUT_S, TIMEOUT_KEY,
+from backend.services.scan.scan_settings import (DEFAULT_PROBE_TIMEOUT_S, MAX_PROBE_TIMEOUT_S, TIMEOUT_KEY, DISCOVERY_METHODS,
                                                   WORKERS_KEY, ScanSettings)
 
 
@@ -60,6 +60,37 @@ class ScanSettingsValueTests(unittest.TestCase):
 
         self.assertEqual(json.loads(json.dumps(configuration)), configuration)
 
+class DiscoveryMethodTests(unittest.TestCase):
+    def test_default_is_every_method(self) -> None:
+        self.assertEqual(ScanSettings().discovery_methods, DISCOVERY_METHODS)
+        self.assertEqual(DISCOVERY_METHODS, ("arp", "ping"))
+
+    def test_a_list_is_stored_as_a_tuple_and_can_be_hashed(self) -> None:
+        settings = ScanSettings(discovery_methods=["ping"])
+        self.assertEqual(settings.discovery_methods, ("ping",))
+        hash(settings)                                      # a list here used to raise TypeError
+
+    def test_repeats_are_dropped_and_the_order_kept(self) -> None:
+        settings = ScanSettings(discovery_methods=["ping", "arp", "ping"])
+        self.assertEqual(settings.discovery_methods, ("ping", "arp"))
+
+    def test_wrong_types_are_refused(self) -> None:
+        bad_values: list[Any] = ["arp", None, 5, {"arp"}]
+        for methods in bad_values:
+            with self.subTest(methods=methods):
+                with self.assertRaisesRegex(ValueError, "must be a list of methods"):
+                    ScanSettings(discovery_methods=methods)
+
+    def test_empty_or_unknown_methods_are_refused(self) -> None:
+        bad_lists: list[Any] = [(), [], ("teleport",), ("arp", "teleport"), ("ARP",)]
+        for methods in bad_lists:
+            with self.subTest(methods=methods):
+                with self.assertRaisesRegex(ValueError, "one or more of arp, ping"):
+                    ScanSettings(discovery_methods=methods)
+
+    def test_configuration_lists_the_methods(self) -> None:
+        configuration = ScanSettings(discovery_methods=("ping",)).to_configuration()
+        self.assertEqual(configuration["discovery_methods"], ["ping"])
 
 class ScanSettingsFromEnvTests(unittest.TestCase):
     def test_missing_or_blank_keys_keep_the_defaults(self) -> None:
