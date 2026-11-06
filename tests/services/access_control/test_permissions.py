@@ -81,6 +81,12 @@ class AuthorizeTests(unittest.TestCase):
                     else:
                         self.assertTrue(decision.reason)
 
+    def test_role_given_as_plain_text_still_gets_a_clean_refusal(self):
+        plain = User(username="someone", password_hash="not-a-real-hash", role="viewer")
+        self.assertEqual(authorize(plain, Permission.START_SCAN),
+                         AccessDecision(False, "Your role (viewer) can't start scans."))
+        self.assertTrue(authorize(plain, Permission.VIEW_DATA).allowed)
+
     def test_role_missing_from_the_table_gets_nothing(self):
         without_viewer = {role: row for role, row in ROLE_PERMISSIONS.items() if role is not UserRole.VIEWER}
         with mock.patch.object(permissions, "ROLE_PERMISSIONS", without_viewer):

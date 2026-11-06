@@ -75,7 +75,8 @@ def authorize(user: User | None, permission: Permission) -> AccessDecision:
     if user.account_status != AccountStatus.ACTIVE:     # before the role: a disabled admin can do nothing
         return AccessDecision(False, "This account is disabled.")
     if permission not in ROLE_PERMISSIONS.get(user.role, frozenset()):      # deny by default
-        return AccessDecision(False, f"Your role ({user.role.value}) can't {ACTION_PHRASES[permission]}.")
+        role_name = getattr(user.role, "value", user.role)      # UserRole or plain text
+        return AccessDecision(False, f"Your role ({role_name}) can't {ACTION_PHRASES[permission]}.")
     return AccessDecision(True)
 
 
