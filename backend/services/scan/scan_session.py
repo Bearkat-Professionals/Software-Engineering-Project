@@ -17,7 +17,11 @@ import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol
-
+from collections.abc import Callable
+from dataclasses import field
+from datetime import datetime
+from enum import Enum
+from typing import Any
 from backend.data_access.network_data import ScanNotRunningError
 from backend.data_access.repository import RecordNotFoundError
 from backend.records import User
@@ -41,6 +45,7 @@ class ScanStoreLike(Protocol):
     def find_running(self) -> Scan | None: ...
     def start(self, scan: Scan) -> Scan: ...
     def finish(self, scan_id: int, outcome: ScanOutcome, error_message: str | None = None) -> Scan: ...
+    def latest(self) -> Scan | None: ... #added for scan status
 
 
 class UserFinder(Protocol):
@@ -53,6 +58,66 @@ class OpenResult:
     scan: Scan | None = None
     reason: str | None = None           # why it wasn't opened, in plain words
 
+#for report scan status
+class ScanPhase(str,Enum):
+    DISCOVERING_HOSTS = "discovering_hosts"
+    SAVING_RESULTS = "saving_results"
+    CLOSING = "closing"
+
+@dataclass
+class ScanProgress:
+    """How far the running scan has got. Kept in memory only."""
+    scan_id: int
+    phase: ScanPhase | None = None
+    done: int = 0
+    total: int = 0
+    errors: list[str] = field(default_factory=list)
+
+NO_SCANS = "none"
+RUNNING = "running"
+FINISHED = "finished"
+
+@dataclass(frozen = True)
+class ScanStatusReport:
+    """What the scanner is doing right now (2.2.1.3). A copy: changing it changes nothing."""
+    state: str
+    scan_id: int | None = None
+    scope: str | None = None
+    started_by: str | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    seconds_elapsed: int | None = None
+    phase: ScanPhase | None = None
+    done: int | None = None
+    total: int | None = None
+    outcome: ScanOutcome | None = None
+    errors: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain values for the API: enums as text, times as ISO text."""
+        return{
+            "state": self.state,
+            "scan_id": self.scan_id,
+            "scope": self.scope,
+            "started_by": self.started_by,
+            "started_at": _iso(self.started_at),
+            "ended_at": _iso(self.ended_at),
+            "seconds_elapsed": self.seconds_elapsed,
+            "phase": self.phase.value if self.phase is not None else None,
+            "done": self.done,
+            "total": self.total,
+            "outcome": self.outcome.value if self.outcome is not None else None,
+            "errors": list(self.errors),
+        }
+    
+def _iso(moment: datetime | None) -> str | None:
+    return moment.isoformat() if moment is not None else None
+
+def _error_lines(error_message: str | None) -> tuple[str, ...]:
+     """A saved error_message back into one error per line."""
+     if not error_message:
+         return()
+     return tuple(line for line in error_message.split ("\n") if line)
 
 @dataclass(frozen=True)
 class _Closing:
@@ -84,11 +149,16 @@ def format_errors(errors: Iterable[object] | str) -> str | None:
 
 
 class ScanSessionController:
-    def __init__(self, scan_store: ScanStoreLike, user_store: UserFinder) -> None:
+    def __init__(self, scan_store: ScanStoreLike, user_store: UserFinder,
+                 clock: Callable[[], datetime] = datetime.now) -> None:
         self.scan_store = scan_store
         self.user_store = user_store
         self.lock = threading.Lock()
-        self._pending_closes: dict[int, _Closing] = {}      # closes whose save failed; retried by open()
+        self._pending_closes: dict[int, _Closing] = {} 
+             # closes whose save failed; retried by open()
+        self._clock = clock
+        self._progress: ScanProgress | None = None
+        self._progress_lock = threading.Lock()
 
     def recover_stuck_scans(self) -> int:
         """Call once when the server starts: any scan still 'running' was cut off by a stop
@@ -114,6 +184,8 @@ class ScanSessionController:
                 return OpenResult(False, reason=self._still_running_message(running))
             scan = self.scan_store.start(Scan(user_id=user_id, target_scope=checked.value,
                                               configuration_used=settings.to_configuration()))
+            with self._progress_lock:
+                self._progress = ScanProgress(scan.scan_id)
             return OpenResult(True, scan=scan)
 
     def close(self, scan_id: int, outcome: ScanOutcome | str,
@@ -125,7 +197,70 @@ class ScanSessionController:
         """
         closing = _Closing(ScanOutcome(outcome), format_errors(errors))    # bad outcome: ValueError, nothing saved
         with self.lock:
-            return self._finish(scan_id, closing)
+            scan = self._finish(scan_id, closing)
+        with self._progress_lock:
+            if self._progress is not None and self._progress.scan_id == scan_id:
+                self._progress = None
+        return scan
+
+    #Progress (called by the Scan Manager's thread, #48)
+    def report_progress(self, phase: ScanPhase | str, done: int, total: int) -> None:
+        """Record how far the current phase has got, e.g. 120 of 254 addresses probed."""
+        phase = ScanPhase(phase)
+        if total < 0 or not 0 <= done <= total:
+            raise ValueError(f"progress must be 0 <= done <= total, not {done} of {total}")
+        with self._progress_lock:
+            if self._progress is None:
+                return
+            self._progress.phase = phase
+            self._progress.done = done
+            self._progress.total = total
+
+    def add_error(self, message: object) -> None:
+        """Record an error the running scan hit, e.g. "ping unavailable: ..." (AT-09)."""
+        text = " ".join(str(message).split())
+        if not text:
+            return
+        with self._progress_lock:
+            if self._progress is not None:
+                self._progress.errors.append(text)
+
+    #Status (2.2.1.3, polled by the scan screen)
+    def status(self) -> ScanStatusReport:
+        """What the scanner is doing now. Never waits for the scan or for open()/close()."""
+        scan = self.scan_store.latest()
+        if scan is None:
+            return ScanStatusReport(state=NO_SCANS)
+
+        starter = self.user_store.find(scan.user_id)
+        started_by = starter.username if starter is not None else "unknown user"
+
+        if not scan.is_running:
+            return ScanStatusReport(
+                state=FINISHED, scan_id=scan.scan_id, scope=scan.target_scope,
+                started_by=started_by, started_at=scan.started_at, ended_at=scan.ended_at,
+                outcome=scan.outcome, errors=_error_lines(scan.error_message))
+
+        progress = self._copy_progress(scan.scan_id)
+        elapsed = None
+        if scan.started_at is not None:
+            elapsed = max(0, int((self._clock() - scan.started_at).total_seconds()))
+        return ScanStatusReport(
+            state=RUNNING, scan_id=scan.scan_id, scope=scan.target_scope,
+            started_by=started_by, started_at=scan.started_at, seconds_elapsed=elapsed,
+            phase=progress.phase if progress else None,
+            done=progress.done if progress else None,
+            total=progress.total if progress else None,
+            errors=tuple(progress.errors) if progress else ())
+
+    def _copy_progress(self, scan_id: int) -> ScanProgress | None:
+        """A copy of the progress, taken under the lock so it's never half updated."""
+        with self._progress_lock:
+            progress = self._progress
+            if progress is None or progress.scan_id != scan_id:
+                return None
+            return ScanProgress(progress.scan_id, progress.phase, progress.done,
+                                progress.total, list(progress.errors)) 
 
     def _finish(self, scan_id: int, closing: _Closing) -> Scan | None:
         try:
