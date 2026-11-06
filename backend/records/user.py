@@ -27,3 +27,7 @@ class User(Entity):
         data = super().to_dict()
         data.pop("password_hash", None)
         return data
+
+    def has_role(self, role: UserRole) -> bool:
+        """Exact match only: what each role may do is decided in permissions.py."""
+        return self.role == role
