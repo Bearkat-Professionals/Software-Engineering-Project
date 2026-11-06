@@ -71,6 +71,11 @@ class FakeScanStore:
         """A scan left 'running', as if the server stopped during it."""
         return self.start(Scan(user_id=user_id, target_scope=SCOPE))
 
+    def latest(self) -> Scan | None:
+        """Like ScanStore.latest: newest started_at first, then the highest scan_id."""
+        newest = max(self.scans.values(), key=lambda scan: (scan.started_at, scan.scan_id), default=None)
+        return deepcopy(newest)
+
 
 class FakeUserStore:
     def __init__(self, users: tuple[User, ...] = (JAVIER, JASON)) -> None:
@@ -219,6 +224,55 @@ class CloseScanTests(SessionTestCase):
         self.assertTrue(self.sessions.open(SCOPE, JASON.user_id, SETTINGS).opened)   # third time it works
 
 
+class ErrorsCarriedToCloseTests(SessionTestCase):
+    """The #47 review fixes: errors reported while running are saved, and the list is bounded."""
+
+    def open_scan(self) -> Scan:
+        result = self.sessions.open(SCOPE, JAVIER.user_id, SETTINGS)
+        assert result.scan is not None
+        return result.scan
+
+    def test_errors_added_while_running_are_saved_at_close(self) -> None:
+        scan = self.open_scan()
+        self.sessions.add_error("ping unavailable: ping command not found")
+        closed = self.sessions.close(scan.scan_id, ScanOutcome.PARTIAL)          # none passed in
+        self.assertEqual(closed.error_message, "ping unavailable: ping command not found")
+
+    def test_errors_passed_to_close_come_first(self) -> None:
+        scan = self.open_scan()
+        self.sessions.add_error("10.0.0.5: timeout")
+        closed = self.sessions.close(scan.scan_id, ScanOutcome.FAILED, ["scan stopped: database went away"])
+        self.assertEqual(closed.error_message, "scan stopped: database went away\n10.0.0.5: timeout")
+
+    def test_only_the_first_errors_are_kept_while_running(self) -> None:
+        self.open_scan()
+        for n in range(MAX_ERROR_LINES + 30):
+            self.sessions.add_error(f"host {n}: timeout")
+        errors = self.sessions.status().errors
+        self.assertEqual(len(errors), MAX_ERROR_LINES + 1)
+        self.assertEqual(errors[0], "host 0: timeout")
+        self.assertEqual(errors[-1], "... and 30 more")
+
+    def test_close_keeps_the_reason_and_the_true_total(self) -> None:
+        scan = self.open_scan()
+        for n in range(MAX_ERROR_LINES + 30):
+            self.sessions.add_error(f"host {n}: timeout")
+        closed = self.sessions.close(scan.scan_id, ScanOutcome.FAILED, ["scan stopped: out of memory"])
+        lines = closed.error_message.split("\n")
+        # 50 kept + 30 counted while running; the reason takes the first place, pushing one more out
+        self.assertEqual(lines[0], "scan stopped: out of memory")
+        self.assertEqual(len(lines), MAX_ERROR_LINES + 1)
+        self.assertEqual(lines[-1], "... and 31 more")
+
+    def test_errors_belong_to_their_own_scan(self) -> None:
+        first = self.open_scan()
+        self.sessions.add_error("first scan's error")
+        self.sessions.close(first.scan_id, ScanOutcome.PARTIAL)
+        second = self.open_scan()
+        closed = self.sessions.close(second.scan_id, ScanOutcome.SUCCESS)
+        self.assertIsNone(closed.error_message)
+
+
 class FormatErrorsTests(unittest.TestCase):
     def test_one_error_per_line(self) -> None:
         self.assertEqual(format_errors(["ping unavailable", "ARP cache empty"]), "ping unavailable\nARP cache empty")
@@ -254,6 +308,12 @@ class FormatErrorsTests(unittest.TestCase):
         self.assertEqual(len(lines), 20)
         self.assertEqual(lines[-1], "... and 11 more")
         self.assertLessEqual(len(text), MAX_ERROR_CHARS + len(lines[-1]))
+
+    def test_hidden_errors_are_added_to_the_count(self) -> None:
+        self.assertEqual(format_errors(["ping unavailable"], hidden=5), "ping unavailable\n... and 5 more")
+
+    def test_only_hidden_errors_still_say_so(self) -> None:
+        self.assertEqual(format_errors([], hidden=3), "... and 3 more")
 
 
 if __name__ == "__main__":

@@ -10,12 +10,13 @@ work (OOD 5.1), and one host failing never stops the others (SEC-14).
     summary = record_scan_results(scan.pk, user_id, hosts, load_oui_lookup(engine), seen_at,
                                   engine=engine, saver=saver, scans=ScanStore(engine))
     summary.new_flagged_ids     # for 2.2.5.3 Detect Alert Events ("new unidentified device", spec 7.5)
+    record_scan_results(..., on_host_done=lambda done, total: print(f"{done} of {total}"))
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Iterable, Protocol
+from typing import Any, Callable, Iterable, Protocol
 
 from backend.records import Device, IdentificationEvidence, ScanObservation
 from backend.records.enums import NetworkStatus
@@ -50,27 +51,43 @@ class RecordSummary:
 
 def record_scan_results(scan_id: int, user_id: int, hosts: Iterable[DiscoveredHost],
                         oui_lookup: OuiLookup, seen_at: datetime, *, engine: UnitOfWorkSource,
-                        saver: DeviceRecordSaver, scans: ObservationEvidenceStore) -> RecordSummary:
+                        saver: DeviceRecordSaver, scans: ObservationEvidenceStore,
+                        on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
+    """Save every host; one host failing never stops the others (SEC-14).
+
+    on_host_done(done, total), if given, is called with (0, total) first, then after
+    each host, saved or not, so the Scan Manager can report progress (#48).
+    """
     summary = RecordSummary()
-    for host in _one_per_mac(hosts, summary):
+    to_save = _one_per_mac(hosts, summary)
+    total = len(to_save)
+    if on_host_done is not None:
+        on_host_done(0, total)
+
+    for done, host in enumerate(to_save, start=1):
         try:
             with engine.unit_of_work() as unit:
                 outcome = _record_host(scan_id, user_id, host, oui_lookup, seen_at, saver, scans, unit)
         except Exception as exc:            # SEC-14: this host's unit was rolled back; carry on
             summary.failures.append((host.ip_address, f"{type(exc).__name__}: {exc}"))
-            continue
-        # Counted only once the unit has committed
-        if outcome.status is SaveStatus.REJECTED:
-            summary.failures.append((host.ip_address, " ".join(outcome.reasons)))
-        elif outcome.status is SaveStatus.CREATED:
-            summary.created += 1
-            if outcome.flagged:
-                summary.new_flagged_ids.append(outcome.device.pk)
         else:
-            summary.updated += 1
-        if outcome.device is not None:
-            summary.devices.append(outcome.device)
+            _count(outcome, host, summary)  # only once the unit has committed
+        if on_host_done is not None:
+            on_host_done(done, total)
     return summary
+
+
+def _count(outcome: SaveOutcome, host: DiscoveredHost, summary: RecordSummary) -> None:
+    if outcome.status is SaveStatus.REJECTED:
+        summary.failures.append((host.ip_address, " ".join(outcome.reasons)))
+    elif outcome.status is SaveStatus.CREATED:
+        summary.created += 1
+        if outcome.flagged:
+            summary.new_flagged_ids.append(outcome.device.pk)
+    else:
+        summary.updated += 1
+    if outcome.device is not None:
+        summary.devices.append(outcome.device)
 
 
 def _one_per_mac(hosts: Iterable[DiscoveredHost], summary: RecordSummary) -> list[DiscoveredHost]:
