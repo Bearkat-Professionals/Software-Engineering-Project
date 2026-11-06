@@ -90,7 +90,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2); `--workers` / `--timeout` try other sweep settings |
-| `save` | `backend.services.scan.check_save_devices` | scan a range and save what it finds to the test database; run it twice to see updates, not new rows (2.2.5.2) |
+| `scan` | `backend.services.scan.check_scan` | run a whole scan in the background as a user, watch its progress, then see the outcome and devices (#44) |
 | `speed` | `backend.services.scan.check_sweep_speed` | time a ping sweep at 1, 8, 32 and 64 workers and print a table for the PR (#81) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
 | `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
@@ -148,6 +148,36 @@ settings = ScanSettings.from_env()                      # .env, or the defaults
 hosts, status = sweep_subnet(scope, settings=settings)
 ```
 A scan records its settings in `scan.configuration_used`. Saving results stays one host at a time on purpose: each save is a short database transaction, and threads would need a connection each for little gain.
+
+## Running a scan (#44)
+A scan runs in the background: it opens a session, discovers hosts, saves them, then closes with an outcome (`success`, `partial` or `failed`) and any errors. Only one scan runs at a time.
+
+```
+.\dev scan 192.168.1.0/24 --user blaine                  # watch it, then see the devices
+.\dev scan 192.168.1.0/24 --user blaine --no-ping        # ping unavailable: ends partial
+.\dev scan 192.168.1.0/24 --user blaine --force-error    # saving fails: ends failed, still closed
+```
+
+Before the first run (the database tests empty these tables, so redo it after `.\dev test`):
+1. Create the user in the CRUD page (`app_user`), or use `scanner`, which the tests leave behind.
+2. Load the OUI list for vendor names: `.\dev oui path\to\oui.csv`.
+
+| Outcome | When |
+|---|---|
+| `success` | every discovery method worked and every host was saved |
+| `partial` | the scan finished, but ping or the ARP cache was unavailable, or some hosts couldn't be saved |
+| `failed` | no discovery method worked, or the scan stopped with an error (the first error line says why) |
+
+**"Refused: A scan started by ... is still running."** Another scan really is running, or one was cut off by a crash or Ctrl+C before it could close. If you're sure nothing else is scanning, add `--recover` once: it closes scans left running as failed. Don't use it while a teammate's scan is running on the same database; it would close theirs too.
+
+In code (for the Application Controller, #50):
+```python
+sessions = ScanSessionController(ScanStore(engine), UserStore(engine))   # ONE, shared by every request
+sessions.recover_stuck_scans()                                           # once, at startup
+manager = build_scan_manager(engine, sessions, ScanSettings.from_env(), on_finished=send_alerts)
+manager.start(scope, user_id)        # returns at once; the scan screen polls sessions.status()
+```
+`on_finished` gets the `ScanResult` after the outcome is saved, with `alerts` listing `scan_failed` and each new flagged device. The manager itself sends nothing.
 
 ## Setting up your .env file
 Make sure to create a .env file in your workspace. Git ignores this file so you are able to put your database credentials here securely.

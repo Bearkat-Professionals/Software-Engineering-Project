@@ -6,9 +6,10 @@ SH-4 runs for real on the fake device and reference stores.
 from __future__ import annotations
 
 import unittest
+from backend.services.scan.record_scan_results import RecordSummary
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from backend.records import Device, DeviceType, IdentificationEvidence, OuiPrefix, ScanObservation, Vendor
 from backend.services.scan.discovered_host import DiscoveredHost
@@ -66,11 +67,12 @@ class RecordScanResultsTests(unittest.TestCase):
         self.scans = FakeScanStore()
         self.engine = FakeEngine()
 
-    def record(self, hosts, scan_id: int = 1, seen_at: datetime = FIRST):
+    def record(self, hosts, scan_id: int = 1, seen_at: datetime = FIRST,
+               on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
         saver = DeviceRecordSaver(self.devices, FakeReferenceStore(Vendor, [VANTIVA]),
                                   FakeReferenceStore(DeviceType))
-        return record_scan_results(scan_id, 1, hosts, LOOKUP, seen_at,
-                                   engine=self.engine, saver=saver, scans=self.scans)
+        return record_scan_results(scan_id, 1, hosts, LOOKUP, seen_at, engine=self.engine, saver=saver,
+                                   scans=self.scans, on_host_done=on_host_done)
 
     def test_new_and_existing_hosts(self) -> None:
         self.devices = FakeDeviceStore([Device(mac_address=LAPTOP.mac_address)])    # seen before
@@ -122,3 +124,23 @@ class RecordScanResultsTests(unittest.TestCase):
         self.assertEqual(self.devices.find_by_mac(ROUTER.mac_address).last_seen, LATER)
         self.assertEqual(sorted(self.scans.observations), [(1, 1), (1, 2), (2, 1), (2, 2)])
         self.assertEqual(len(self.scans.evidence), 1)
+
+    def test_progress_counts_only_the_hosts_that_will_be_saved(self) -> None:
+        calls: list[tuple[int, int]] = []
+        no_mac = DiscoveredHost("10.0.0.5")
+        router_again = DiscoveredHost("10.0.0.2", ROUTER.mac_address)        # same MAC, second IP
+        self.record([ROUTER, no_mac, LAPTOP, router_again], on_host_done=lambda d, t: calls.append((d, t)))
+        self.assertEqual(calls, [(0, 2), (1, 2), (2, 2)])
+
+    def test_progress_counts_rejected_and_failed_hosts(self) -> None:
+        self.scans = FakeScanStore(fail_for_device=1)                       # the router's save raises
+        bad_ip = DiscoveredHost("999.0.0.1", "00:1B:44:11:3A:B8")            # rejected by SH-4
+        calls: list[tuple[int, int]] = []
+        summary = self.record([bad_ip, ROUTER], on_host_done=lambda d, t: calls.append((d, t)))
+        self.assertEqual(len(summary.failures), 2)
+        self.assertEqual(calls, [(0, 2), (1, 2), (2, 2)])
+
+    def test_no_hosts_reports_zero_of_zero(self) -> None:
+        calls: list[tuple[int, int]] = []
+        self.record([], on_host_done=lambda d, t: calls.append((d, t)))
+        self.assertEqual(calls, [(0, 0)])
