@@ -43,8 +43,9 @@ def create_app(services: Services, dev_user: User) -> Flask:
     app.config["TRUSTED_HOSTS"] = ["127.0.0.1", "localhost"]   # refuse DNS-rebinding requests
 
     @app.before_request
-    def check_permissions() -> None:
-        """Decide who is calling and store it for the route (flask.g.user).
+    def identify_user() -> None:
+        """Decide who is calling and store it for the route (flask.g.user). It checks no
+        permissions: in M4 each route asks authorize() from access_control/permissions.py.
 
         There is no login yet: every request acts as the development user, looked up
         once at start-up. 2.1 replaces this in M4 with a session lookup, and routes

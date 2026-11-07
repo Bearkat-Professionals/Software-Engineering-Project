@@ -15,11 +15,16 @@ from backend.data_access.account_settings import UserStore
 from backend.data_access.database_engine import DatabaseConnectionError, DatabaseEngine
 from backend.data_access.network_data import DeviceStore, ScanStore
 from backend.records import User
+from backend.records.enums import AccountStatus
 from backend.services.scan.scan_manager import build_scan_manager
 from backend.services.scan.scan_session import ScanSessionController
 from backend.services.scan.scan_settings import ScanSettings
 
 HOST = "127.0.0.1"
+# The connection pool doesn't wait when it's empty: it fails at once. Flask runs each request
+# on its own thread and a running scan holds a connection too, so leave room for a scan plus
+# several requests at once (status polling, device list). Raise it if routes start failing.
+DB_POOL_SIZE = 10
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +44,9 @@ def find_dev_user(users: UserStore) -> User:
     user = users.find_by_username(username)
     if user is None:
         raise SystemExit(f"DEV_USERNAME is '{username}', but the database has no user with that name.")
+    if user.account_status != AccountStatus.ACTIVE:
+        raise SystemExit(f"DEV_USERNAME is '{username}', but that account is not active. "
+                         "Pick an active user for DEV_USERNAME in .env.")
     return user
 
 
@@ -52,7 +60,7 @@ def main() -> None:
         raise SystemExit(str(exc)) from None
 
     try:
-        engine = DatabaseEngine(config)
+        engine = DatabaseEngine(config, pool_size=DB_POOL_SIZE)
     except DatabaseConnectionError as exc:
         raise SystemExit(f"FAILED: {exc}\nCheck: MAMP servers are running, the port matches MAMP's MySQL port, "
                          "the database exists in Workbench, and .env credentials are right.") from None
@@ -67,7 +75,17 @@ def main() -> None:
 
     app = create_app(Services(manager, sessions, DeviceStore(engine), users), dev_user)
     logger.warning("NO LOGIN until M4: every request acts as '%s'", dev_user.username)
-    app.run(host=HOST, port=port, debug=False)
+    try:
+        app.run(host=HOST, port=port, debug=False)
+    finally:
+        # The scan thread is a daemon and dies with the program, so close its row as
+        # failed now instead of leaving it "running" until the next start.
+        try:
+            closed = sessions.recover_stuck_scans()
+            if closed:
+                logger.warning("Closed %d scan(s) still running at shutdown", closed)
+        except Exception:
+            logger.exception("Couldn't close running scans at shutdown; the next start will")
 
 
 if __name__ == "__main__":

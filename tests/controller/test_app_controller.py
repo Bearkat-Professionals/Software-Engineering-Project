@@ -12,7 +12,7 @@ from flask import g, jsonify
 from backend.controller.app_controller import UNEXPECTED_ERROR, Services, create_app, on_scan_finished
 from backend.main import find_dev_user, read_port
 from backend.records import User
-from backend.records.enums import AlertEventName, ScanOutcome
+from backend.records.enums import AccountStatus, AlertEventName, ScanOutcome
 from backend.services.scan.record_scan_results import RecordSummary
 from backend.services.scan.scan_manager import AlertCandidate, ScanResult
 
@@ -145,6 +145,46 @@ class StartUpTests(unittest.TestCase):
             with self.subTest(name=name), mock.patch.dict(os.environ, {"DEV_USERNAME": name}):
                 with self.assertRaisesRegex(SystemExit, expected):
                     find_dev_user(FakeUsers())
+
+    def test_disabled_dev_user_stops_start_up(self):
+        users = mock.Mock()
+        users.find_by_username.return_value = User(user_id=2, username="dev", password_hash="x",
+                                                   account_status=AccountStatus.DISABLED)
+        with mock.patch.dict(os.environ, {"DEV_USERNAME": "dev"}):
+            with self.assertRaisesRegex(SystemExit, "not active"):
+                find_dev_user(users)
+
+
+class ShutdownTests(unittest.TestCase):
+    """main() closes a scan left running when the server stops (Ctrl+C)."""
+
+    def _run_main_until_ctrl_c(self, sessions):
+        app = mock.Mock()
+        app.run.side_effect = KeyboardInterrupt
+        patches = {name: mock.DEFAULT for name in (
+            "read_port", "DatabaseConfig", "ScanSettings", "DatabaseEngine", "UserStore",
+            "find_dev_user", "ScanStore", "DeviceStore", "build_scan_manager")}
+        with mock.patch.multiple("backend.main", **patches), \
+                mock.patch("backend.main.ScanSessionController", return_value=sessions), \
+                mock.patch("backend.main.create_app", return_value=app), \
+                mock.patch("backend.main.logging.basicConfig"):
+            from backend import main
+            with self.assertRaises(KeyboardInterrupt):
+                main.main()
+
+    def test_running_scans_are_closed_at_start_and_at_shutdown(self):
+        sessions = mock.Mock()
+        sessions.recover_stuck_scans.return_value = 0
+        with self.assertLogs("backend.main", "WARNING"):    # the "NO LOGIN until M4" warning
+            self._run_main_until_ctrl_c(sessions)
+        self.assertEqual(sessions.recover_stuck_scans.call_count, 2)
+
+    def test_a_database_error_at_shutdown_is_logged_not_raised(self):
+        sessions = mock.Mock()
+        sessions.recover_stuck_scans.side_effect = [0, RuntimeError("MySQL gone")]
+        with self.assertLogs("backend.main", "ERROR") as logs:
+            self._run_main_until_ctrl_c(sessions)       # still ends with Ctrl+C, not RuntimeError
+        self.assertIn("Couldn't close running scans", logs.output[0])
 
 
 if __name__ == "__main__":

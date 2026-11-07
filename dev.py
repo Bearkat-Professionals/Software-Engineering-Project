@@ -30,6 +30,7 @@ class Command:
 COMMANDS: dict[str, Command] = {
     "test":   Command("unittest", "run every unit test", ("discover", "tests")),
     "conn":   Command("backend.check_connection", "check the database connection"),
+    "app":    Command("backend.main", "start the application (needs DEV_USERNAME in .env)"),
     "crud":   Command("backend.dev_tools.crud_server", "start the CRUD test server (test database)"),
     "ping":   Command("backend.black_boxes.timed_network_request.check_ping",
                       "ping addresses, or --sweep a range (BB-3)"),
