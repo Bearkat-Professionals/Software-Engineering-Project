@@ -57,11 +57,20 @@ class UserFinder(Protocol):
     def find(self, user_id: int) -> User | None: ...
 
 
+class OpenRefusal(str, Enum):
+    """Why open() didn't start a scan, for code to act on; OpenResult.reason says it in words."""
+    INVALID_SCOPE = "invalid_scope"         # the range failed validate_scope (SH-1)
+    UNKNOWN_USER = "unknown_user"           # the user starting it no longer exists
+    ALREADY_RUNNING = "already_running"     # another scan is running (CM-15)
+    SCAN_STARTING = "scan_starting"         # another program held the start lock (CM-15)
+    
+
 @dataclass(frozen=True)
 class OpenResult:
     opened: bool
     scan: Scan | None = None
     reason: str | None = None           # why it wasn't opened, in plain words
+    refusal: OpenRefusal | None = None
 
 
 class ScanPhase(str, Enum):
@@ -198,17 +207,17 @@ class ScanSessionController:
         with self.lock:
             checked = validate_scope(scope)
             if not checked:
-                return OpenResult(False, reason=checked.reason)
+                return OpenResult(False, reason=checked.reason, refusal=OpenRefusal.INVALID_SCOPE)
             if self.user_store.find(user_id) is None:
-                return OpenResult(False, reason="Your account was not found. Sign in again.")
+                return OpenResult(False, reason="Your account was not found. Sign in again.", refusal=OpenRefusal.UNKNOWN_USER)
             self._retry_pending_closes()
             scan, running = self.scan_store.start_if_idle(
                 Scan(user_id=user_id, target_scope=checked.value,
                      configuration_used=settings.to_configuration()))
             if running is not None:
-                return OpenResult(False, reason=self._still_running_message(running))
+                return OpenResult(False, reason=self._still_running_message(running), refusal=OpenRefusal.ALREADY_RUNNING)
             if scan is None:
-                return OpenResult(False, reason=SCAN_STARTING_MESSAGE)
+                return OpenResult(False, reason=SCAN_STARTING_MESSAGE, refusal=OpenRefusal.SCAN_STARTING)
             with self._progress_lock:
                 self._progress = ScanProgress(scan.scan_id)
             return OpenResult(True, scan=scan)

@@ -17,7 +17,7 @@ from backend.records.enums import ScanOutcome, ScanStatus
 from backend.records.scan import Scan
 from backend.records.user import User
 from backend.services.scan.scan_session import (MAX_ERROR_CHARS, MAX_ERROR_LINES, MAX_LINE_CHARS,
-                                                SCAN_STARTING_MESSAGE, STUCK_SCAN_MESSAGE,
+                                                SCAN_STARTING_MESSAGE, STUCK_SCAN_MESSAGE, OpenRefusal,
                                                 ScanSessionController, format_errors)
 from backend.services.scan.scan_settings import ScanSettings
 
@@ -110,6 +110,7 @@ class OpenScanTests(SessionTestCase):
         result = self.sessions.open(SCOPE, JAVIER.user_id, SETTINGS)
         self.assertTrue(result.opened)
         self.assertIsNone(result.reason)
+        self.assertIsNone(result.refusal)
         self.assertEqual((result.scan.user_id, result.scan.target_scope), (JAVIER.user_id, SCOPE))
         self.assertIs(result.scan.status, ScanStatus.RUNNING)
         self.assertEqual(result.scan.started_at, STARTED)
@@ -120,6 +121,7 @@ class OpenScanTests(SessionTestCase):
         second = self.sessions.open(SCOPE, JASON.user_id, SETTINGS)
         self.assertFalse(second.opened)
         self.assertEqual(second.reason, "A scan started by Javier at 14:03 is still running.")
+        self.assertIs(second.refusal, OpenRefusal.ALREADY_RUNNING)
         self.assertEqual(len(self.store.scans), 1)
 
     def test_two_controllers_share_one_answer(self) -> None:
@@ -135,6 +137,7 @@ class OpenScanTests(SessionTestCase):
         result = self.sessions.open("8.8.8.0/24", JAVIER.user_id, SETTINGS)
         self.assertFalse(result.opened)
         self.assertIn("8.8.8.0/24", result.reason)
+        self.assertIs(result.refusal, OpenRefusal.INVALID_SCOPE)
         self.assertEqual(len(self.store.scans), 1)
         self.assertIs(self.store.scans[stuck.scan_id].status, ScanStatus.RUNNING)
 
@@ -142,12 +145,14 @@ class OpenScanTests(SessionTestCase):
         result = self.sessions.open(SCOPE, 99, SETTINGS)
         self.assertFalse(result.opened)
         self.assertEqual(result.reason, "Your account was not found. Sign in again.")
+        self.assertIs(result.refusal, OpenRefusal.UNKNOWN_USER)
         self.assertEqual(self.store.scans, {})
 
     def test_deleted_starter_is_called_another_user(self) -> None:
         self.store.add_running(user_id=99)
         result = self.sessions.open(SCOPE, JAVIER.user_id, SETTINGS)
         self.assertEqual(result.reason, "A scan started by another user at 14:03 is still running.")
+        self.assertIs(result.refusal, OpenRefusal.ALREADY_RUNNING)
 
     def test_two_clicks_at_once_open_one_scan(self) -> None:
         self.store.start_delay = 0.05
@@ -174,6 +179,7 @@ class OpenScanTests(SessionTestCase):
         self.assertEqual(len(self.store.scans), 1)
         self.assertEqual(sorted(result.opened for result in results), [False, True])
         refused = next(result for result in results if not result.opened)
+        self.assertIs(refused.refusal, OpenRefusal.ALREADY_RUNNING)
         self.assertRegex(refused.reason, r"^A scan started by (Javier|Jason) at 14:03 is still running\.$")
 
     def test_busy_start_lock_refuses_and_saves_nothing(self) -> None:
@@ -181,6 +187,7 @@ class OpenScanTests(SessionTestCase):
         result = self.sessions.open(SCOPE, JAVIER.user_id, SETTINGS)
         self.assertFalse(result.opened)
         self.assertEqual(result.reason, SCAN_STARTING_MESSAGE)
+        self.assertIs(result.refusal, OpenRefusal.SCAN_STARTING)
         self.assertEqual(self.store.scans, {})
 
 
@@ -355,10 +362,3 @@ class FormatErrorsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-                                         
-                                         
-                                         
-                                
-
-
-

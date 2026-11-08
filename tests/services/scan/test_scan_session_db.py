@@ -15,9 +15,10 @@ from backend.data_access.network_data import ScanStore
 from backend.data_access.repository import Repository
 from backend.records import Scan, User
 from backend.records.enums import ScanOutcome, ScanStatus
-from backend.services.scan.scan_session import STUCK_SCAN_MESSAGE, ScanSessionController, format_errors
+from backend.services.scan.scan_session import (SCAN_STARTING_MESSAGE, STUCK_SCAN_MESSAGE, ScanSessionController, format_errors)
 from backend.services.scan.scan_settings import ScanSettings
 from tests.data_access.test_repository import CLEANUP, connect_to_test_database
+
 
 SCOPE = "192.168.1.0/24"
 SETTINGS = ScanSettings(probe_workers=64, probe_timeout_s=0.5, discovery_methods=("ping",))
