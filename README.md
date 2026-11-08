@@ -208,7 +208,64 @@ Then start MAMP and run this from the project root:
 (or `py -3.13 -m backend.main`)
 Check it at http://127.0.0.1:5000/api/health. It listens on 127.0.0.1 only, so other machines can't reach it.
 
-**There is NO real login until M4.** Every request acts as the DEV_USERNAME user, with no sign-in and no permission checks.
+**There is NO real login until M4.** Every request acts as the DEV_USERNAME user, with no sign-in. Permissions ARE checked against that user's role: a `viewer` can look but not start scans, so use an `editor` or `admin` account for DEV_USERNAME.
+
+The CRUD test server also uses port 5000. To run both, set `APP_PORT=5001` and use http://127.0.0.1:5001.
+
+## API (#51)
+The JSON below is the contract with the screens: change it only together with them. Every error, whatever its status, is `{"error": "a sentence a person can read"}`, so a screen can show it as it is.
+
+### POST /api/scans: start a scan
+Needs the `editor` or `admin` role. Send `Content-Type: application/json`:
+```json
+{"scope": "192.168.1.0/24"}
+```
+
+| Result | Status | Body |
+|---|---|---|
+| Started | 202 Accepted | `{"scan_id": 12, "status_url": "/api/scans/status"}` |
+| Bad, missing or too large scope | 400 Bad Request | `{"error": "10.0.0.0/8 is too big. Use a range of /22 or smaller, like /24."}` |
+| Account not found | 401 Unauthorized | `{"error": "Your account was not found. Sign in again."}` |
+| Role can't start scans | 403 Forbidden | `{"error": "Your role (viewer) can't start scans."}` |
+| Another scan is running | 409 Conflict | `{"error": "A scan started by sam at 14:03 is still running."}` |
+
+The scan runs in the background and records who started it. Follow it with the status endpoint.
+
+### GET /api/scans/status: what the scanner is doing
+Any role. While a scan runs:
+```json
+{"running": true, "scan_id": 12, "scope": "192.168.1.0/24",
+ "started_by": "sam", "started_at": "2026-10-26T14:03:00", "elapsed_seconds": 6,
+ "phase": "discovering_hosts", "done": 120, "total": 254,
+ "errors": ["ping unavailable: ping command not found"]}
+```
+`phase` is `discovering_hosts`, `saving_results` or `closing`. `phase`, `done` and `total` are `null` for the first moment, before the scan reports any progress.
+
+When nothing is running:
+```json
+{"running": false, "last_scan": {"scan_id": 12, "scope": "192.168.1.0/24",
+ "started_by": "sam", "started_at": "2026-10-26T14:03:00", "ended_at": "2026-10-26T14:03:11",
+ "outcome": "partial", "errors": ["ping unavailable: ping command not found"]}}
+```
+`outcome` is `success`, `partial` or `failed`. Before any scan has run: `{"running": false, "last_scan": null}`
+
+Times are the server's local time, without a time zone.
+
+### GET /api/devices?page=1&per_page=50: the device list
+Any role.
+```json
+{"devices": [
+   {"device_id": 7, "name": null, "type": "unknown", "vendor": "Apple, Inc.",
+    "ip": "192.168.1.23", "mac": "F0:D1:A9:12:34:56", "is_randomized_mac": false,
+    "network_status": "online", "confidence": 20, "flagged": true, "trusted": false,
+    "last_seen": "2026-10-26T14:03:09"}],
+ "page": 1, "per_page": 50, "total": 14}
+```
+- Vendor and type are names, not ids. Retired vendors and types still show their names.
+- `name` is `null` when unknown; the screen shows "Unknown".
+- Sorted by `last_seen`, newest first.
+- `page` defaults to 1 and `per_page` to 50 (at most 200). A page past the end gives an empty `devices` list with the real `total`.
+- A `page` or `per_page` that isn't a whole number in range gets a 400 naming the bad value.
 
 ## CRUD test page and server (development only)
 A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.

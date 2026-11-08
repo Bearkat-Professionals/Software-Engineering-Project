@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
+from backend.controller import api_routes
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import DeviceStore
 from backend.records import User
@@ -76,7 +77,8 @@ def create_app(services: Services, dev_user: User) -> Flask:
 
 
 def register_routes(app: Flask, services: Services) -> None:
-    """Empty for now: subtask 2 fills this in, so the routes live in their own module."""
+    """Add the API routes. Each group lives in its own module with a register(app, services)."""
+    api_routes.register(app, services)          # scans and devices (#51)
 
 
 def on_scan_finished(result: ScanResult) -> None:
