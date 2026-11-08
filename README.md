@@ -86,6 +86,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 |---|---|---|
 | `test` | `unittest discover tests` | run every unit test (`-v` shows names, `-k sweep` runs only matching tests) |
 | `conn` | `backend.check_connection` | check the database settings in your `.env` |
+| `app` | `backend.main` | start the application (needs `DEV_USERNAME` in `.env`, see Running the app) |
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
@@ -193,6 +194,21 @@ DB_NAME=network_device_scanner
 SCAN_PROBE_WORKERS=32       # pings at once, 1 to 128
 SCAN_PROBE_TIMEOUT_S=1.0    # seconds each ping waits, more than 0 and at most 5
 ```
+
+## Running the app
+Add these to your .env:
+```
+DEV_USERNAME=<a username that exists in the database>
+APP_PORT=5000               # optional, 5000 if left out
+```
+Then start MAMP and run this from the project root:
+```
+.\dev app
+```
+(or `py -3.13 -m backend.main`)
+Check it at http://127.0.0.1:5000/api/health. It listens on 127.0.0.1 only, so other machines can't reach it.
+
+**There is NO real login until M4.** Every request acts as the DEV_USERNAME user, with no sign-in and no permission checks.
 
 ## CRUD test page and server (development only)
 A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.
