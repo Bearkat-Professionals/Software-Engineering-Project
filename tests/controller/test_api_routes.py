@@ -96,6 +96,7 @@ class StartScanTests(unittest.TestCase):
             (OpenRefusal.ALREADY_RUNNING, "A scan started by sam at 14:03 is still running.", 409),
             (OpenRefusal.INVALID_SCOPE, "10.0.0.0/8 is too big. Use a range of /22 or smaller, like /24.", 400),
             (OpenRefusal.UNKNOWN_USER, "Your account was not found. Sign in again.", 401),
+            (OpenRefusal.SCAN_STARTING, "Another scan is starting. Try again in a moment.", 409),
         )
         for refusal, reason, status in cases:
             with self.subTest(refusal=refusal):

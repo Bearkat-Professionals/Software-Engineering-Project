@@ -25,6 +25,9 @@ class IntegrityConstraintError(Exception):
        The transaction has already been rolled back.
     """
 
+class LockNotAvailableError(Exception):
+    """Raised by named_lock() when another connection held the lock for the whole wait."""
+
 class DatabaseEngine:
     def __init__(self, config: DatabaseConfig, pool_size: int = 5):
         self._config = config
@@ -68,6 +71,37 @@ class DatabaseEngine:
         finally:
             cursor.close()
             connection.close()  # return connection to the pool
+
+    @contextmanager
+    def named_lock(self, name: str, timeout_s: float) -> Generator[Any, None, None]:
+        """Hold a MySQL named lock while running one transaction, all on one connection.
+        Every program using this database shares the lock (unlike a threading.Lock).
+        Waits up to timeout_s for it, then raises LockNotAvailableError. The block's
+        work is committed BEFORE the lock is released, so the next holder sees it.
+        MySQL frees the lock by itself if the connection drops.
+        """
+        connection = self._pool.get_connection()
+        cursor = connection.cursor(dictionary=True)
+        try:
+            cursor.execute("SELECT GET_LOCK(%s, %s) AS got", (name, timeout_s))
+            row = cursor.fetchone()
+            if row is None or row["got"] != 1:           
+                raise LockNotAvailableError(f"could not get the lock '{name}' within {timeout_s} s")
+            connection.commit()                          
+            try:
+                yield cursor
+                connection.commit()
+            except Exception as exc:
+                connection.rollback()
+                if isinstance(exc, mysql.connector.IntegrityError):
+                    raise IntegrityConstraintError(exc.msg) from exc
+                raise
+            finally:
+                cursor.execute("SELECT RELEASE_LOCK(%s) AS released", (name,))
+                cursor.fetchall()
+        finally:
+            cursor.close()
+            connection.close()  
 
     def fetch_all(self, sql: str, params: Sequence = ()) -> list[dict]:
         with self.unit_of_work() as cursor:

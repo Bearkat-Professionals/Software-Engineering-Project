@@ -35,6 +35,7 @@ REFUSAL_STATUS: dict[OpenRefusal, int] = {
     OpenRefusal.INVALID_SCOPE: 400,     # Bad Request: fix the range
     OpenRefusal.UNKNOWN_USER: 401,      # Unauthorized: the account is gone, sign in again
     OpenRefusal.ALREADY_RUNNING: 409,   # Conflict: wait for the running scan (CM-15)
+    OpenRefusal.SCAN_STARTING: 409,     # Conflict: another scan is starting, try again (CM-15)
 }
 
 

@@ -51,6 +51,12 @@ class FakeScanStore:
     def latest(self):
         return self.scans[-1] if self.scans else None
 
+    def start_if_idle(self, scan):
+        running = self.find_running()
+        if running is not None:
+            return None, running
+        return self.start(scan), None
+
 
 class FakeUser:
     def __init__(self, user_id, username):

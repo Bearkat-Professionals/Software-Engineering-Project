@@ -34,6 +34,7 @@ from backend.services.scan.scan_settings import ScanSettings
 from backend.shared_modules.validate_input import validate_scope
 
 STUCK_SCAN_MESSAGE = "the server stopped during this scan"
+SCAN_STARTING_MESSAGE = "Another scan is starting. Try again in a moment."
 
 # error_message is TEXT (65,535 bytes) and utf8mb4 uses up to 4 bytes a character,
 # so 10,000 characters always fits, with room to spare.
@@ -49,6 +50,7 @@ class ScanStoreLike(Protocol):
     def latest(self) -> Scan | None: ...
     def start(self, scan: Scan) -> Scan: ...
     def finish(self, scan_id: int, outcome: ScanOutcome, error_message: str | None = None) -> Scan: ...
+    def start_if_idle(self, scan: Scan) -> tuple[Scan | None, Scan | None]: ...
 
 
 class UserFinder(Protocol):
@@ -60,7 +62,8 @@ class OpenRefusal(str, Enum):
     INVALID_SCOPE = "invalid_scope"         # the range failed validate_scope (SH-1)
     UNKNOWN_USER = "unknown_user"           # the user starting it no longer exists
     ALREADY_RUNNING = "already_running"     # another scan is running (CM-15)
-
+    SCAN_STARTING = "scan_starting"         # another program held the start lock (CM-15)
+    
 
 @dataclass(frozen=True)
 class OpenResult:
@@ -208,11 +211,13 @@ class ScanSessionController:
             if self.user_store.find(user_id) is None:
                 return OpenResult(False, reason="Your account was not found. Sign in again.", refusal=OpenRefusal.UNKNOWN_USER)
             self._retry_pending_closes()
-            running = self.scan_store.find_running()
+            scan, running = self.scan_store.start_if_idle(
+                Scan(user_id=user_id, target_scope=checked.value,
+                     configuration_used=settings.to_configuration()))
             if running is not None:
                 return OpenResult(False, reason=self._still_running_message(running), refusal=OpenRefusal.ALREADY_RUNNING)
-            scan = self.scan_store.start(Scan(user_id=user_id, target_scope=checked.value,
-                                              configuration_used=settings.to_configuration()))
+            if scan is None:
+                return OpenResult(False, reason=SCAN_STARTING_MESSAGE, refusal=OpenRefusal.SCAN_STARTING)
             with self._progress_lock:
                 self._progress = ScanProgress(scan.scan_id)
             return OpenResult(True, scan=scan)

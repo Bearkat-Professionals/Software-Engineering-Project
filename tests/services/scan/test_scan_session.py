@@ -17,8 +17,8 @@ from backend.records.enums import ScanOutcome, ScanStatus
 from backend.records.scan import Scan
 from backend.records.user import User
 from backend.services.scan.scan_session import (MAX_ERROR_CHARS, MAX_ERROR_LINES, MAX_LINE_CHARS,
-                                                STUCK_SCAN_MESSAGE, OpenRefusal, ScanSessionController,
-                                                format_errors)
+                                                SCAN_STARTING_MESSAGE, STUCK_SCAN_MESSAGE, OpenRefusal,
+                                                ScanSessionController, format_errors)
 from backend.services.scan.scan_settings import ScanSettings
 
 JAVIER = User(user_id=1, username="Javier", password_hash="not-a-real-hash")
@@ -36,6 +36,8 @@ class FakeScanStore:
         self.now = now
         self.start_delay = start_delay          # makes a race between two threads likely
         self.failing_finishes = 0               # how many finish() calls fail, like a lost connection
+        self.open_lock = threading.Lock() 
+        self.start_lock_busy = False
 
     def find(self, scan_id: int) -> Scan | None:
         return deepcopy(self.scans.get(scan_id))
@@ -53,6 +55,16 @@ class FakeScanStore:
         self.scans[stored.scan_id] = stored
         return deepcopy(stored)
 
+    def start_if_idle(self, scan: Scan) -> tuple[Scan | None, Scan | None]:
+        """Like ScanStore.start_if_idle: the check and the insert happen under one lock."""
+        if self.start_lock_busy:
+            return None, None
+        with self.open_lock:
+            running = self.find_running()
+            if running is not None:
+                return None, running
+            return self.start(scan), None
+        
     def finish(self, scan_id: int, outcome: ScanOutcome, error_message: str | None = None) -> Scan:
         if self.failing_finishes:
             self.failing_finishes -= 1
@@ -151,6 +163,32 @@ class OpenScanTests(SessionTestCase):
         for click in clicks:
             click.join()
         self.assertEqual(len(self.store.scans), 1)
+
+    def test_two_programs_at_once_open_one_scan(self) -> None:
+        # Two controllers have two separate self.locks, like two programs on one database.
+        # Only the store's start lock (GET_LOCK in MySQL) keeps it to one scan (CM-15).
+        self.store.start_delay = 0.05
+        programs = [ScanSessionController(self.store, self.users) for _ in range(2)]
+        results = []
+        clicks = [threading.Thread(target=lambda p=p, u=u: results.append(p.open(SCOPE, u.user_id, SETTINGS)))
+            for p, u in zip(programs, (JAVIER, JASON))]
+        for click in clicks:
+            click.start()
+        for click in clicks:
+            click.join()
+        self.assertEqual(len(self.store.scans), 1)
+        self.assertEqual(sorted(result.opened for result in results), [False, True])
+        refused = next(result for result in results if not result.opened)
+        self.assertIs(refused.refusal, OpenRefusal.ALREADY_RUNNING)
+        self.assertRegex(refused.reason, r"^A scan started by (Javier|Jason) at 14:03 is still running\.$")
+
+    def test_busy_start_lock_refuses_and_saves_nothing(self) -> None:
+        self.store.start_lock_busy = True
+        result = self.sessions.open(SCOPE, JAVIER.user_id, SETTINGS)
+        self.assertFalse(result.opened)
+        self.assertEqual(result.reason, SCAN_STARTING_MESSAGE)
+        self.assertIs(result.refusal, OpenRefusal.SCAN_STARTING)
+        self.assertEqual(self.store.scans, {})
 
 
 class RecoverStuckScansTests(SessionTestCase):
@@ -324,10 +362,3 @@ class FormatErrorsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-                                         
-                                         
-                                         
-                                
-
-
-
