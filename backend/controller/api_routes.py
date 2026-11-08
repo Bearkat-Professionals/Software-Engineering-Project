@@ -10,6 +10,7 @@ and returns JSON. No database code here (tier rules): the services and stores do
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from flask import Flask, abort, g, jsonify, request
@@ -24,6 +25,7 @@ from backend.services.scan.scan_session import OpenRefusal, ScanState, ScanStatu
 if TYPE_CHECKING:       # for the type hint only: app_controller imports this module
     from backend.controller.app_controller import Services
 
+logger = logging.getLogger(__name__)
 STATUS_URL = "/api/scans/status"
 SCOPE_EXAMPLE = 'Send JSON like {"scope": "192.168.1.0/24"}.'
 MAX_PAGE = 1_000_000            # keeps OFFSET far inside what MySQL accepts
@@ -120,12 +122,16 @@ def device_json(listing: DeviceListing) -> dict[str, Any]:
 # ---- helpers ---------------------------------------------------------------------------
 
 def _require(permission: Permission) -> User:
-    """The calling user, if they may do this; otherwise stop with 401 or 403 as JSON.
+    """The calling user, if they may do this; otherwise log it and stop with 401 or 403 as JSON.
 
-    g.user is the #50 placeholder until M4 signs people in; this check stays as it is."""
+    g.user is the #50 placeholder until M4 signs people in; this check stays as it is.
+    Refusals are logged for the admin (AT-13): the username only, never the User (its repr has the hash)."""
     user: User | None = g.get("user")
     decision = authorize(user, permission)
     if not decision.allowed:
+        who = user.username if user is not None else "nobody signed in"
+        logger.warning("Refused %s %r for %s: needs %s (%s)",
+                       request.method, request.path, who, permission.name, decision.reason)
         abort(401 if user is None else 403, description=decision.reason)
     return user
 

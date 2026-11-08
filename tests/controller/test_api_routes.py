@@ -25,6 +25,7 @@ SCOPE = "192.168.1.0/24"
 SAM = User(user_id=4, username="sam", password_hash="not-a-real-hash", role=UserRole.EDITOR)
 VIEWER = User(user_id=5, username="val", password_hash="not-a-real-hash", role=UserRole.VIEWER)
 STARTED = datetime(2026, 10, 26, 14, 3)
+ROUTES_LOG = "backend.controller.api_routes"
 PING_ERROR = "ping unavailable: ping command not found"
 
 
@@ -131,6 +132,22 @@ class StartScanTests(unittest.TestCase):
         response = make_client(None, manager=manager).post("/api/scans", json={"scope": SCOPE})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(manager.calls, [])
+
+    def test_a_refusal_is_logged_with_who_and_what_but_not_the_hash(self) -> None:
+        with self.assertLogs(ROUTES_LOG, level="WARNING") as logs:
+            make_client(VIEWER).post("/api/scans", json={"scope": SCOPE})
+        self.assertEqual(len(logs.output), 1)
+        for expected in ("val", "POST", "/api/scans", "START_SCAN"):
+            self.assertIn(expected, logs.output[0])
+        self.assertNotIn(VIEWER.password_hash, logs.output[0])
+
+        with self.assertLogs(ROUTES_LOG, level="WARNING") as logs:
+            make_client(None).get("/api/devices")
+        self.assertIn("nobody signed in", logs.output[0])
+
+    def test_an_allowed_request_logs_nothing(self) -> None:
+        with self.assertNoLogs(ROUTES_LOG, level="WARNING"):
+            make_client().post("/api/scans", json={"scope": SCOPE})
 
 
 class ScanStatusTests(unittest.TestCase):
