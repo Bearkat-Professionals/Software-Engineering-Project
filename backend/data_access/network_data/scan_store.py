@@ -24,10 +24,13 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Generator
 
-from backend.data_access.database_engine import DatabaseEngine
+from backend.data_access.database_engine import DatabaseEngine, LockNotAvailableError
 from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import IdentificationEvidence, Scan, ScanObservation
 from backend.records.enums import ScanOutcome, ScanStatus
+
+SCAN_OPEN_LOCK = "network_scanner.scan_open"
+SCAN_OPEN_WAIT_S = 5
 
 @dataclass(frozen=True)
 class ScanWithObservations:
@@ -60,14 +63,36 @@ class ScanStore:
         """Save a new scan as running. started_at defaults to now."""
         if scan.pk is not None:
             raise ValueError("start() takes a new scan; use finish() to close one")
+        with _unit_of_work(self._engine, unit) as cursor:
+            return self._insert_running(scan, cursor)
+
+    def start_if_idle(self, scan: Scan) -> tuple[Scan | None, Scan | None]:
+        """Start the scan unless one is already running, safely across programs (CM-15).
+
+        Returns (new scan, None) when it started one, (None, running scan) when one is
+        already running, and (None, None) when another program held the start lock for
+        SCAN_OPEN_WAIT_S seconds. Nothing is saved unless a scan is started.
+        """
+        if scan.pk is not None:
+            raise ValueError("start_if_idle() takes a new scan; use finish() to close one")
+        try:
+            with self._engine.named_lock(SCAN_OPEN_LOCK, SCAN_OPEN_WAIT_S) as cursor:
+                running = self.find_running(cursor)
+                if running is not None:
+                    return None, running
+                return self._insert_running(scan, cursor), None
+        except LockNotAvailableError:
+            return None, None
+
+    def _insert_running(self, scan: Scan, cursor: Any) -> Scan:
+        """Save a new scan as running on the given cursor. started_at defaults to now."""
         scan.status = ScanStatus.RUNNING
         scan.outcome = None
         scan.ended_at = None
         if scan.started_at is None:
             scan.started_at = _now()
-        with _unit_of_work(self._engine, unit) as cursor:
-            self._scans.create(scan, cursor)
-            return self._scans.get(scan.pk, cursor)
+        self._scans.create(scan, cursor)
+        return self._scans.get(scan.pk, cursor)
 
     def finish(self, scan_id: int, outcome: ScanOutcome, error_message: str | None = None,
                unit: Any = None) -> Scan:

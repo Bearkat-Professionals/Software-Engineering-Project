@@ -6,7 +6,10 @@ and 3.3 UserStore on the TEST database (same setup as test_repository.py). Skipp
 from __future__ import annotations
 
 import unittest
+import threading
+import time
 
+from backend.data_access.network_data.scan_store import SCAN_OPEN_LOCK
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import ScanStore
 from backend.data_access.repository import Repository
@@ -40,6 +43,54 @@ class ScanSessionDatabaseTests(unittest.TestCase):
         assert result.scan is not None
         return result.scan
 
+    def tearDown(self) -> None:
+          self.sessions.recover_stuck_scans()
+
+    def running_rows(self) -> list[dict]:
+          return self.engine.fetch_all("SELECT scan_id FROM scan WHERE status = %s",
+                                       (ScanStatus.RUNNING.value,))
+
+    def test_two_programs_opening_at_once_start_exactly_one_scan(self) -> None:
+          programs = [ScanSessionController(ScanStore(engine), UserStore(engine))
+                      for engine in (connect_to_test_database(), connect_to_test_database())]
+          for attempt in range(20):
+              with self.subTest(attempt=attempt):
+                  barrier = threading.Barrier(2)
+                  results, problems = [], []
+
+                  def click(program: ScanSessionController) -> None:
+                      try:
+                          barrier.wait()
+                          results.append(program.open(SCOPE, self.user_id, SETTINGS))
+                      except Exception as exc:
+                          problems.append(repr(exc))
+
+                  threads = [threading.Thread(target=click, args=(program,)) for program in programs]
+                  for thread in threads:
+                      thread.start()
+                  for thread in threads:
+                      thread.join(timeout=30)
+
+                  self.assertEqual(problems, [])
+                  self.assertEqual(sorted(result.opened for result in results), [False, True])
+                  refused = next(result for result in results if not result.opened)
+                  self.assertTrue(refused.reason.startswith("A scan started by scanner at "), refused.reason)
+                  self.assertEqual(len(self.running_rows()), 1)
+                  self.sessions.recover_stuck_scans()  
+
+    def test_open_waits_for_the_start_lock_then_refuses(self) -> None:
+          with self.engine.unit_of_work() as holder:              # another program holding the lock
+              holder.execute("SELECT GET_LOCK(%s, 0) AS got", (SCAN_OPEN_LOCK,))
+              self.assertEqual(holder.fetchone()["got"], 1)
+              began = time.monotonic()
+              result = self.sessions.open(SCOPE, self.user_id, SETTINGS)
+              waited = time.monotonic() - began
+              holder.execute("SELECT RELEASE_LOCK(%s) AS released", (SCAN_OPEN_LOCK,))
+              holder.fetchall()
+          self.assertFalse(result.opened)
+          self.assertEqual(result.reason, SCAN_STARTING_MESSAGE)
+          self.assertGreaterEqual(waited, 4.5)
+          self.assertEqual(self.running_rows(), [])
     def test_closed_as_partial_then_a_new_scan_opens(self) -> None:
         scan = self.open_scan()
         self.sessions.close(scan.scan_id, ScanOutcome.PARTIAL, ["ping unavailable", "10.0.0.5: timeout"])
