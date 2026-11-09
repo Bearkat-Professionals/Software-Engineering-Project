@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from backend.records import DeviceSignature
+from backend.records.enums import EvidenceType
 from backend.services.scan.evidence import EvidenceItem, RawEvidence, weight_for
 
 
@@ -28,13 +29,17 @@ class SignatureMatch:
 
 
 def match_signatures(values: Iterable[RawEvidence], signatures: Iterable[DeviceSignature]) -> list[SignatureMatch]:
-    """Sorted by signature id, then value. Values are kept trimmed, so a value
-    collected twice (even with different spaces around it) matches once."""
-    seen = {(raw.evidence_type, (raw.raw_value or "").strip()) for raw in values}
+    """Sorted by signature id, then value. A value collected twice matches once, even
+    with different spaces or case around it ("Echo-Dot" / "echo-dot"), because matching
+    ignores case too; the first spelling seen is the one kept as evidence."""
+    seen: dict[tuple[EvidenceType, str], str] = {}
+    for raw in values:
+        value = (raw.raw_value or "").strip()
+        seen.setdefault((raw.evidence_type, value.casefold()), value)   # first spelling is kept
     active = [signature for signature in signatures if signature.is_active]     # retired never match (DI-06)
     matches = [SignatureMatch(EvidenceItem(evidence_type, value, signature.signature_id, weight_for(evidence_type)),
                               signature.device_type_id, signature.resulting_device_name, signature.resulting_model)
-               for evidence_type, value in seen
+               for (evidence_type, _), value in seen.items()
                for signature in active
                if signature.evidence_type == evidence_type and signature.matches(value)]
     return sorted(matches, key=lambda match: (match.evidence.signature_id, match.evidence.raw_value))
