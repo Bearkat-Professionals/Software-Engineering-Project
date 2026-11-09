@@ -7,7 +7,7 @@ import unittest
 from backend.records import IdentificationEvidence
 from backend.records.enums import EvidenceType
 from backend.services.scan.evidence import (EVIDENCE_WEIGHTS, IDENTIFIED_MIN_SCORE, MAX_SCORE, EvidenceItem,
-                                            weight_for)
+                                            weight_for, count_points)
 
 
 class EvidenceWeightTests(unittest.TestCase):
@@ -45,6 +45,37 @@ class EvidenceItemTests(unittest.TestCase):
         item = EvidenceItem.from_record(stored)
         self.assertEqual(item, EvidenceItem(EvidenceType.OUI, "70:13:01", None, weight_for(EvidenceType.OUI)))
         self.assertEqual(item.to_record(3).raw_value, "70:13:01")
+
+
+class CountPointsTests(unittest.TestCase):
+    MDNS, SSDP, OUI = EvidenceType.MDNS, EvidenceType.SSDP, EvidenceType.OUI
+
+    def item(self, evidence_type: EvidenceType, value: str, signature_id: int | None = None) -> EvidenceItem:
+        return EvidenceItem(evidence_type, value, signature_id, weight_for(evidence_type))
+
+    def test_nothing_is_worth_nothing(self) -> None:
+        self.assertEqual(count_points([]), 0)
+
+    def test_one_evidence_type_counts_once(self) -> None:
+        three_mdns = [self.item(self.MDNS, name, 1) for name in ("echo", "echo-dot", "kitchen-echo")]
+        self.assertEqual(count_points(three_mdns), weight_for(self.MDNS))
+
+    def test_different_types_are_added_together(self) -> None:
+        items = [self.item(self.MDNS, "echo", 1), self.item(self.SSDP, "echo", 2), self.item(self.OUI, "F0:D1:A9")]
+        self.assertEqual(count_points(items),
+                         weight_for(self.MDNS) + weight_for(self.SSDP) + weight_for(self.OUI))
+
+    def test_a_type_counts_at_its_highest_weight(self) -> None:
+        # Stored evidence keeps the weight it was saved with, which may be older than today's table
+        items = [EvidenceItem(self.MDNS, "old", 1, 10), EvidenceItem(self.MDNS, "new", 1, 35)]
+        self.assertEqual(count_points(items), 35)
+
+    def test_it_is_not_capped(self) -> None:
+        items = [EvidenceItem(evidence_type, "x", None, 60) for evidence_type in (self.MDNS, self.SSDP)]
+        self.assertEqual(count_points(items), 120)          # the score caps at MAX_SCORE, not this
+
+    def test_works_on_any_iterable(self) -> None:
+        self.assertEqual(count_points(self.item(self.MDNS, name) for name in ("a", "b")), weight_for(self.MDNS))
 
 
 if __name__ == "__main__":
