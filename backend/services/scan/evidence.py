@@ -42,6 +42,13 @@ def weight_for(evidence_type: EvidenceType) -> int:
 
 
 @dataclass(frozen=True)
+class RawEvidence:
+    """One value a collector saw, before matching (the M6 collectors return these)."""
+    evidence_type: EvidenceType
+    raw_value: str
+
+
+@dataclass(frozen=True)
 class EvidenceItem:
     """One identification_evidence row, minus device_id (added once the device is known)."""
     evidence_type: EvidenceType
