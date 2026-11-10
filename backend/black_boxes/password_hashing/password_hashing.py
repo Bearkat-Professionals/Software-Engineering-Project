@@ -14,7 +14,7 @@ with the settings, so there's no separate salt column (AT-14).
 
 from __future__ import annotations
 from argon2 import PasswordHasher
-from argon2.exceptions import Argon2Error, InvalidHashError
+from argon2.exceptions import Argon2Error
 
 ARGON2ID_PREFIX = "$argon2id$"
 _hasher = PasswordHasher()          # the library's default settings, Argon2id
@@ -39,5 +39,5 @@ def verify_password(stored_hash: str, password: str) -> bool:
         return False
     try:
         return _hasher.verify(stored_hash, password)
-    except (Argon2Error, InvalidHashError):
+    except (Argon2Error, ValueError):       # wrong password, damaged hash, or text that can't be UTF-8
         return False

@@ -56,6 +56,10 @@ class TestVerifyPassword(unittest.TestCase):
     def test_empty_password_is_false(self):
         self.assertFalse(verify_password(self.stored, ""))
 
+    def test_text_that_cannot_be_utf8_is_false(self):
+        # A sign-in request can send {"password": "\ud800"}; it must be a wrong password, not a 500
+        self.assertFalse(verify_password(self.stored, "\ud800"))
+
     def test_bad_hashes_are_false_not_errors(self):
         bad_hashes = {
             "empty": "",
