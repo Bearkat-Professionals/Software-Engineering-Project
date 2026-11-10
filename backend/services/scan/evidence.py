@@ -10,7 +10,8 @@ The ONE place for these numbers, as agreed in #63. Everything else imports them.
     NetBIOS / LLMNR        25
     reverse DNS            20
 
-- Score: the sum of the kept evidence weights, capped at MAX_SCORE (100).
+- Score: count_points of the kept evidence (each evidence type counted once, #63),
+  capped at MAX_SCORE (100).
 - Identified: a signature gave a type and a name AND score >= IDENTIFIED_MIN_SCORE (50).
   Partially identified: vendor or type known. Unidentified: neither.
 - Tie rule: a tie between two types means the type stays unknown (and the device is flagged).
@@ -20,7 +21,7 @@ The ONE place for these numbers, as agreed in #63. Everything else imports them.
     items = [EvidenceItem.from_record(e) for e in scans.evidence_for(device.pk)]
 """
 from __future__ import annotations
-
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 from backend.records import IdentificationEvidence
@@ -39,6 +40,22 @@ IDENTIFIED_MIN_SCORE = 50
 
 def weight_for(evidence_type: EvidenceType) -> int:
     return EVIDENCE_WEIGHTS[evidence_type]
+
+
+def count_points(items: Iterable[EvidenceItem]) -> int:
+    """What a set of evidence is worth, before the MAX_SCORE cap: each evidence type
+    counts ONCE, at its highest weight in the set (agreed on #63).
+
+    Three mDNS services from one device are still one mDNS source, so they count 35,
+    not 105. 2.2.4.2 measures "stronger" with this and 2.2.4.3 scores with it, so the
+    two can never disagree.
+
+        count_points([mdns_item, mdns_item_2, ssdp_item])    # -> 35 + 35 = 70
+    """
+    best: dict[EvidenceType, int] = {}
+    for item in items:
+        best[item.evidence_type] = max(item.weight, best.get(item.evidence_type, 0))
+    return sum(best.values())
 
 
 @dataclass(frozen=True)
