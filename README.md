@@ -87,6 +87,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `test` | `unittest discover tests` | run every unit test (`-v` shows names, `-k sweep` runs only matching tests) |
 | `conn` | `backend.check_connection` | check the database settings in your `.env` |
 | `app` | `backend.main` | start the application (needs `DEV_USERNAME` in `.env`, see Running the app) |
+| `admin` | `backend.services.access_control.create_admin` | create the first admin account on an empty database; asks for the password without showing it (`--database NAME` for another database than the test one) |
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
@@ -194,6 +195,18 @@ DB_NAME=network_device_scanner
 SCAN_PROBE_WORKERS=32       # pings at once, 1 to 128
 SCAN_PROBE_TIMEOUT_S=1.0    # seconds each ping waits, more than 0 and at most 5
 ```
+
+## Creating the first admin (#89)
+A fresh database has no users, so nobody can sign in. Create the first admin with:
+```
+.\dev admin                                     # the test database
+.\dev admin --database network_device_scanner   # the real one
+```
+It asks for a username (letters, digits, `.` `_` `-`) and then the password twice, without showing it: 12 to 128 characters, not the same as the username. The password is never typed on the command line, because PowerShell saves commands in its history. Only an Argon2id hash is stored.
+
+It only works on a database with **no users**. Once any account exists, it changes nothing and says so: further accounts are added by an admin in the app, so every account has someone accountable for creating it.
+
+The admin you create here is a good choice for `DEV_USERNAME` below.
 
 ## Running the app
 Add these to your .env:
