@@ -80,7 +80,7 @@ class BackupRecoveryTests(unittest.TestCase):
         stored = create_full_backup(self.engine, self.media)
         result = verify_backup(self.media, stored.name)
         self.assertTrue(result.ok, result.problems)
-        self.assertEqual(set(result.backup.tables), set(self.fingerprint()))   # all 13, incl. alert_setting_event
+        self.assertEqual(set(result.backup.tables), set(self.fingerprint()))   # all 14, incl. alert history and link table
         self.assertNotIn("mac_unique_key", result.backup.tables["device"][0])  # generated column skipped
 
     def test_partial_backup_holds_only_the_reference_tables(self):
