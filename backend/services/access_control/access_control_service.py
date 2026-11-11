@@ -23,6 +23,7 @@ import math
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
@@ -36,6 +37,7 @@ from backend.records.enums import AccountStatus, UserRole
 WRONG_LOGIN = "Username or password is incorrect."
 DISABLED_LOGIN = "This account is disabled. Ask an admin to turn it back on."
 
+MAX_TRACKED = 10_000                # most usernames whose failures are remembered (a few MB at most)
 MAX_FAILURES = 5
 FAILURE_WINDOW_S = 15 * 60          # 5 failures within this long ...
 LOCKOUT_S = 15 * 60                 # ... lock the username for this long
@@ -90,8 +92,9 @@ class AccessControlService:
     def __init__(self, users: UserFinderStorer, clock: Callable[[], float] = time.monotonic) -> None:
         self.users = users
         self._clock = clock
-        self._attempts: dict[str, _Attempts] = {}
+        self._attempts: OrderedDict[str, _Attempts] = OrderedDict()
         self._lock = threading.Lock()           # Flask answers requests on several threads
+        _dummy_hash()       # made now, at start-up, so the first unknown username isn't slower
 
     # ---- sign in -----------------------------------------------------------------
 
@@ -189,12 +192,13 @@ class AccessControlService:
     def _record_failure(self, key: str) -> None:
         now = self._clock()
         with self._lock:
-            attempts = self._attempts.setdefault(key, _Attempts())
+            attempts = self._attempts.pop(key, None) or _Attempts()
             attempts.failures = [at for at in attempts.failures if now - at < FAILURE_WINDOW_S]
             attempts.failures.append(now)
             if len(attempts.failures) >= MAX_FAILURES:
                 attempts.locked_until = now + LOCKOUT_S
                 attempts.failures.clear()
+            self._attempts[key] = attempts          # re-added at the end: the most recent
             self._forget_old(now)
 
     def _clear_failures(self, key: str) -> None:
@@ -202,10 +206,15 @@ class AccessControlService:
             self._attempts.pop(key, None)
 
     def _forget_old(self, now: float) -> None:
-        """Drop usernames with nothing recent, so made-up usernames can't fill memory."""
-        if len(self._attempts) < 1000:
+        """Keep at most MAX_TRACKED usernames, so made-up usernames can't fill memory.
+
+        Over the limit, usernames with nothing recent go first; if that isn't enough,
+        the ones that failed longest ago go, even if still recent or locked."""
+        if len(self._attempts) <= MAX_TRACKED:
             return
         for key, attempts in list(self._attempts.items()):
             recent = any(now - at < FAILURE_WINDOW_S for at in attempts.failures)
             if not recent and attempts.locked_until <= now:
                 del self._attempts[key]
+        while len(self._attempts) > MAX_TRACKED:
+            self._attempts.popitem(last=False)      # the least recently failed

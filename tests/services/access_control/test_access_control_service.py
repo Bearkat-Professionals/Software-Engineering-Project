@@ -151,6 +151,58 @@ class LockoutTests(ServiceTestCase):
         self.assertIn("Too many attempts", self.service.authenticate("nobody", PASSWORD).reason)
 
 
+class WarmUpTests(unittest.TestCase):
+    def test_the_dummy_hash_is_made_when_the_service_is_built_not_on_the_first_unknown_username(self) -> None:
+        module._dummy_hash.cache_clear()                    # as if the server had just started
+        service = AccessControlService(FakeUserStore(ServiceTestCase.SAM))
+        with mock.patch.object(module, "hash_password", side_effect=AssertionError("hashed during sign-in")), \
+                mock.patch.object(module, "verify_password", wraps=verify_password) as spy:
+            result = service.authenticate("nobody", PASSWORD)
+        self.assertEqual(result.reason, WRONG_LOGIN)
+        self.assertEqual(spy.call_args.args[0], module._dummy_hash())   # checked against the ready hash
+
+
+class TrackingLimitTests(ServiceTestCase):
+    """The failure records are capped, so made-up usernames can't fill memory. Passwords
+    aren't really checked here (verify_password is replaced) to keep 1,500 attempts fast."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(module, "verify_password", return_value=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def fail(self, *usernames: str) -> None:
+        for username in usernames:
+            self.service.authenticate(username, "wrong password!!")
+
+    def tracked(self) -> list[str]:
+        return list(self.service._attempts)
+
+    def test_many_recent_made_up_usernames_stay_within_the_limit(self) -> None:
+        with mock.patch.object(module, "MAX_TRACKED", 100):
+            self.fail(*(f"fake{n}" for n in range(1500)))
+        self.assertEqual(self.tracked(), [f"fake{n}" for n in range(1400, 1500)])   # the newest 100
+
+    def test_expired_usernames_go_before_active_ones(self) -> None:
+        with mock.patch.object(module, "MAX_TRACKED", 3):
+            self.fail("old")
+            self.clock.now += FAILURE_WINDOW_S              # "old" has nothing recent now
+            self.fail("a", "b", "c")
+        self.assertEqual(self.tracked(), ["a", "b", "c"])
+
+    def test_the_least_recently_failed_goes_first(self) -> None:
+        with mock.patch.object(module, "MAX_TRACKED", 3):
+            self.fail("a", "b", "c", "a", "d")              # "a" failed again, so "b" is the oldest
+        self.assertEqual(self.tracked(), ["c", "a", "d"])
+
+    def test_a_lock_still_holds_below_the_limit(self) -> None:
+        with mock.patch.object(module, "MAX_TRACKED", 3):
+            self.fail(*["sam"] * 5)
+            self.fail("a", "b")
+            self.assertIn("Too many attempts", self.service.authenticate("sam", PASSWORD).reason)
+
+
 class PasswordRuleTests(ServiceTestCase):
     def test_length_edges(self) -> None:
         for length, allowed in ((PASSWORD_MIN - 1, False), (PASSWORD_MIN, True),
