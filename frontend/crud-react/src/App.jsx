@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import { BOOLEANS, ENUMS, FOREIGN_KEYS, OPTIONAL_FK } from "./fields";
 import "./App.css";
@@ -65,7 +65,8 @@ export default function App() {
 
   const [tables, setTables] = useState({});
   const [tableName, setTableName] = useState("");
-  const [rows, setRows] = useState([]);
+  const [loaded, setLoaded] = useState({ table: "", rows: [] });
+  const tableNameRef = useRef("");
   const [editingId, setEditingId] = useState(null);
   const [formValues, setFormValues] = useState({});
   const [lookups, setLookups] = useState({});
@@ -79,7 +80,10 @@ export default function App() {
     api("/api/tables").then((data) => {
 
       setTables(data);
-      setTableName(data.vendor ? "vendor" : Object.keys(data)[0]);
+      const initialTable = data.vendor ? "vendor" : Object.keys(data)[0];
+
+      tableNameRef.current = initialTable;
+      setTableName(initialTable);
     })
 
     .catch((err) => setError(err.message));
@@ -110,7 +114,7 @@ export default function App() {
 
       if (ignore) return;
 
-      setRows(rowData);
+      setLoaded({ table: tableName, rows: rowData });
       const nextLookups = {};
 
       for (const [name, parentRows] of parents) nextLookups[name] = parentRows;
@@ -131,6 +135,15 @@ export default function App() {
     };
 
   }, [tableName, tables]);
+
+  function onTableChange(event) {
+
+    const name = event.target.value;
+
+    tableNameRef.current = name;
+    setTableName(name);
+
+  }
 
   function setField(column, value) {
 
@@ -163,7 +176,14 @@ export default function App() {
 
   async function reloadRows() {
 
-    setRows(await api("/api/" + tableName));
+    const name = tableName;
+    const nextRows = await api("/api/" + name);
+
+    if (tableNameRef.current === name) {
+
+      setLoaded({ table: name, rows: nextRows });
+
+    }
 
   }
 
@@ -264,6 +284,8 @@ export default function App() {
   }
 
   const columns = table.columns.filter((column) => column !== table.primary_key);
+  const rowsReady = loaded.table === tableName;
+  const rows = rowsReady ? loaded.rows : [];
 
   return (
 
@@ -282,7 +304,7 @@ export default function App() {
 
         Table:
 
-        <select value={tableName} onChange={(event) => setTableName(event.target.value)}>
+        <select value={tableName} onChange={onTableChange}>
 
           {orderedNames(tables).map((name) => (
 
@@ -404,7 +426,7 @@ export default function App() {
 
       <div className="rows">
 
-        {rows.length === 0 ? <p>No rows in {tableName}.</p> : (
+        {!rowsReady ? <p>Loading rows...</p> : rows.length === 0 ? <p>No rows in {tableName}.</p> : (
 
           <table>
 
