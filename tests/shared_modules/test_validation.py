@@ -135,26 +135,50 @@ class TestValidateScope(Checks):
                 self.assertRejected(validate_scope(text), "Can't scan")
 
     def test_rejects_special_ranges(self):
-        for text in ["127.0.0.0/24", "169.254.1.0/24", "0.0.0.0/32",
-                     "0.0.0.0/0", "224.0.0.0/24"]:
-            with self.subTest(text=text):
-                self.assertRejected(validate_scope(text))
+            for text in ["127.0.0.0/24", "169.254.1.0/24", "0.0.0.0/32",
+                        "0.0.0.0/0", "224.0.0.0/24"]:
+                with self.subTest(text=text):
+                    self.assertRejected(validate_scope(text))
 
     def test_rejects_wrong_start(self):
-        result = validate_scope("192.168.1.5/24")
-        self.assertRejected(result, "Range should start at 192.168.1.0/24")
+            result = validate_scope("192.168.1.5/24")
+            self.assertRejected(result, "Range should start at 192.168.1.0/24")
 
-    def test_rejects_missing_slash(self):
-        self.assertRejected(validate_scope("192.168.1.0"), "CIDR")
-
-    def test_rejects_bad_address_or_number(self):
-        for text in ["192.168.1.300/24", "192.168.1.0/33", "192.168.1.0/",
-                     "192.168.1.0/abc", "/24", "192.168.1.0/-1", "192.168.1.0/24/1"]:
+    def test_rejects_missing_slash(self) -> None:
+        for text in ["192.168.1.0", "192.168.1.0²"]:
             with self.subTest(text=text):
-                self.assertRejected(validate_scope(text), "not a valid scan range")
+                self.assertRejected(
+                    validate_scope(text),
+                    "is not a scan range"
+                )
+        
+    def test_rejects_bad_address_or_number(self):
+            for text in [
+                "192.168.1.300/24",
+                "192.168.1.0/33",
+                "192.168.1.0/",
+                "192.168.1.0/abc",
+                "/24",
+                "192.168.1.0/-1",
+                "192.168.1.0/24/1",
+                "192.168.1.0 /24",
+                "192.168.1.0\t/24",
+                "192.168.1.0/é",
+            ]:
+            
+                with self.subTest(text=text):
+                    self.assertRejected(validate_scope(text), "not a valid scan range")
+    # 
+
 
     def test_rejects_blank_and_wrong_type(self):
-        for value in ["", None, 24]:
+        for value in [
+            "",
+            None,
+            24,
+            "192.168.1.0/²",
+            "192.168.1.0/٢٤",
+        ]:
             with self.subTest(value=value):
                 self.assertRejected(validate_scope(value))
 
@@ -182,7 +206,7 @@ class TestValidateConfidence(Checks):
                 self.assertRejected(validate_confidence(value))
 
     def test_rejects_wrong_type(self):
-        for value in [True, False, None, "", "high", [50]]:
+        for value in [True, False, None, "", "²", "٥٠", "high", [50]]:
             with self.subTest(value=value):
                 self.assertRejected(validate_confidence(value))
 
@@ -211,7 +235,7 @@ class TestValidateTimeout(Checks):
                 self.assertRejected(validate_timeout(value), "Timeout must be")
 
     def test_rejects_wrong_type(self):
-        for value in [None, "", "soon", True, float("nan"), float("inf"), "inf", [1]]:
+       for value in [None, "", "soon", True, float("nan"), float("inf"), "inf", [1], 10400, -10400]:
             with self.subTest(value=value):
                 self.assertRejected(validate_timeout(value))
 
