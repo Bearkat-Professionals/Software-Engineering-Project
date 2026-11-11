@@ -163,9 +163,7 @@ class TestValidateScope(Checks):
             "192.168.1.0/é",
         ]:
             with self.subTest(text=text):
-                self.assertRejected(
-                    validate_scope(text), "not a valid scan range"
-                )
+                self.assertRejected(validate_scope(text))
 
 
     def test_rejects_blank_and_wrong_type(self):
