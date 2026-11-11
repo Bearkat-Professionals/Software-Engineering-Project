@@ -7,15 +7,32 @@ import DeviceTrustSelector from "../../components/devices/DeviceTrustSelector";
 
 export default function DevicesScreen() {
   const [view, setView] = useState("list");
-  const sampleDevice = {
-  device_id: 1,
-  name: "Test Laptop",
-  model: "Latitude",
-  type: "Laptop",
-  vendor: "Dell",
-  mac: "AA:BB:CC:DD:EE:FF",
-  loaded_at: "2026-11-11T00:00:00",
-};
+ 
+const [devices, setDevices] = useState([
+  {
+    device_id: 1,
+    name: "Test Laptop",
+    model: "Latitude",
+    type: "Laptop",
+    vendor: "Dell",
+    mac: "AA:BB:CC:DD:EE:FF",
+    loaded_at: "2026-11-11T00:00:00",
+    trusted: true,
+  },
+  {
+    device_id: 2,
+    name: "Office Printer",
+    model: "LaserJet",
+    type: "Printer",
+    vendor: "HP",
+    mac: "11:22:33:44:55:66",
+    loaded_at: "2026-11-11T00:00:00",
+    flagged: false,
+  },
+]);
+
+const [selectedDevice, setSelectedDevice] = useState(null);
+
 
  
 
@@ -23,28 +40,65 @@ export default function DevicesScreen() {
     setView("list");
   }
 
-  async function handleTestAdd(device) {
-    console.log("Test device:", device);
-    alert(
-      `Test device "${device.name || device.mac}" added successfully (simulation only).`
-    );
-    closeForm();
-  }
+  
+async function handleTestAdd(device) {
+  setDevices((currentDevices) => [
+    ...currentDevices,
+    {
+      ...device,
+      device_id: Date.now(),
+      loaded_at: new Date().toISOString(),
+    },
+  ]);
+
+  alert("Device added successfully (simulation only).");
+  closeForm();
+}
+
+
 
 async function handleTestEdit(deviceId, changes) {
-  console.log("Test edit:", deviceId, changes);
+  setDevices((currentDevices) =>
+    currentDevices.map((device) =>
+      device.device_id === deviceId
+        ? { ...device, ...changes }
+        : device
+    )
+  );
+
   alert("Device updated successfully (simulation only).");
   closeForm();
 }
 
+
 async function handleTestDelete(deviceId, loadedAt) {
-  console.log("Test delete:", deviceId, loadedAt);
+  setDevices((currentDevices) =>
+    currentDevices.filter(
+      (device) => device.device_id !== deviceId
+    )
+  );
+
   alert("Device deleted successfully (simulation only).");
   closeForm();
 }
 
+
+
 async function handleTestTrust(deviceId, changes) {
-  console.log("Test trust/flag:", deviceId, changes);
+  setDevices((currentDevices) =>
+    currentDevices.map((device) => {
+      if (device.device_id !== deviceId) {
+        return device;
+      }
+
+      return {
+        ...device,
+        trusted: changes.status === "trusted",
+        flagged: changes.status === "flagged",
+      };
+    })
+  );
+
   alert("Device trust/flag status updated (simulation only).");
   closeForm();
 }
@@ -53,24 +107,65 @@ async function handleTestTrust(deviceId, changes) {
     <main>
       <h1>Devices</h1>
 
-      {view === "list" && (
-        <>
-          <p>The device list is filled in by a later task.</p>
+      
+{view === "list" && (
+  <>
+    <button type="button" onClick={() => setView("add")}>
+      Add Device
+    </button>
 
-          <button type="button" onClick={() => setView("add")}>
-            Add Device
-          </button>
-          <button type="button" onClick={() => setView("edit")}>
-  Edit Test Device
+    <h2>Device List</h2>
+
+    {devices.map((device) => (
+      <div key={device.device_id}>
+        <p>
+          <strong>{device.name || device.mac}</strong>
+          {" — "}
+          {device.vendor}
+          {" — "}
+          {device.type}
+          {" — "}
+          {device.trusted
+           ? "Trusted"
+           : device.flagged
+             ? "Flagged"
+            : "Automatic"}
+
+        </p>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedDevice(device);
+            setView("edit");
+          }}
+        >
+          Edit
         </button>
-        <button type="button" onClick={() => setView("delete")}>
-  Delete Test Device
-</button>
-<button type="button" onClick={() => setView("trust")}>
-  Trust / Flag Test Device
-</button>
-        </>
-      )}
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedDevice(device);
+            setView("delete");
+          }}
+        >
+          Delete
+        </button>
+
+        <button
+          type="button"
+          onClick={() => {
+            setSelectedDevice(device);
+            setView("trust");
+          }}
+        >
+          Trust / Flag
+        </button>
+      </div>
+    ))}
+  </>
+)}
 
       {view === "add" && (
        
@@ -80,28 +175,28 @@ async function handleTestTrust(deviceId, changes) {
 />
 
       )}
-      {view === "edit" && (
+      {view === "edit" && selectedDevice && (
   
 <EditDeviceForm
-  device={sampleDevice}
+  device={selectedDevice}
   onSave={handleTestEdit}
   onCancel={closeForm}
  />
 )}
-{view === "delete" && (
+{view === "delete" && selectedDevice && (
  
 <DeleteDeviceConfirm
-  device={sampleDevice}
+  device={selectedDevice}
   onDelete={handleTestDelete}
   onCancel={closeForm}
 />
 
 )}
-{view === "trust" && (
+{view === "trust" && selectedDevice && (
   <>
    
 <DeviceTrustSelector
-  device={sampleDevice}
+  device={selectedDevice}
   onSave={handleTestTrust}
 />
     <button type="button" onClick={closeForm}>
