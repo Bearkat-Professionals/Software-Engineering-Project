@@ -69,17 +69,10 @@ export default function App() {
         tableNameRef.current = initialTable;
         pageRef.current = 0;
         setTableName(initialTable);
+        setFormValues(blankValues(initialTable, data[initialTable]));
       })
       .catch((err) => setError(err.message));
   }, []);
-
-  useEffect(() => {
-    if (!tableName || !tables[tableName]) return;
-    setEditingId(null);
-    setMessage("");
-    setError("");
-    setFormValues(blankValues(tableName, tables[tableName]));
-  }, [tableName, tables]);
 
   useEffect(() => {
     if (!tableName || !tables[tableName]) return;
@@ -102,6 +95,10 @@ export default function App() {
     pageRef.current = 0;
     setPage(0);
     setTableName(name);
+    setEditingId(null);
+    setMessage("");
+    setError("");
+    setFormValues(blankValues(name, tables[name]));
   }
 
   function changePage(nextPage) {
