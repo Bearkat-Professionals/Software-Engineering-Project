@@ -31,6 +31,7 @@ from backend.records.enums import AlertEventName, RecordStatus
 # Everything a test may create, children before parents (foreign keys).
 # Seed rows are kept: vendor 1 / device type 1 ("unknown") and the alert events.
 CLEANUP = (
+    "DELETE FROM alert_history",
     "DELETE FROM identification_evidence",
     "DELETE FROM scan_observation",
     "DELETE FROM device",
