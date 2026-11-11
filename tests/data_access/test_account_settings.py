@@ -258,6 +258,22 @@ class AlertHistoryStoreTests(AccountSettingsTestCase):
         self.assertFalse(self.history.was_sent(
             event_id, "owner@example.com", device_id=device.device_id, scan_id=999_999))
 
+    def test_duplicate_lookup_can_be_limited_to_a_time_window(self):
+        event_id = self._event_id(AlertEventName.BACKUP_FAILED)
+        sent_at = datetime(2026, 11, 10, 14, 30)
+        self.history.store(AlertHistory(
+            event_id=event_id,
+            recipient_email="admin@example.com",
+            sent_at=sent_at,
+        ))
+
+        self.assertTrue(self.history.was_sent(
+            event_id, "admin@example.com", since=sent_at))
+        self.assertFalse(self.history.was_sent(
+            event_id, "admin@example.com",
+            since=datetime(2026, 11, 10, 14, 31)))
+
+
     def test_system_wide_alert_can_have_no_device_or_scan(self):
         event_id = self._event_id(AlertEventName.BACKUP_FAILED)
         saved = self.history.store(AlertHistory(
