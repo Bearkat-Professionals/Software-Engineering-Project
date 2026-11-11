@@ -298,12 +298,16 @@ By default it uses the test database (`DB_NAME` + `_test`, or `TEST_DB_NAME` fro
 
 | Request | Does |
 |---|---|
-| `GET /api/<table>` | List rows (filter with `?column=value`) |
+| `GET /api/<table>` | List rows (filter with `?column=value`); without paging parameters it still returns every matching row |
+| `GET /api/<table>?limit=50&offset=0` | Return one stable primary-key-ordered page; `limit` is 1–500 and `offset` is 0 or more |
+| `GET /api/<table>?search=cisco&search_column=vendor_name&limit=20` | Search one column by literal contained text (`%` and `_` are not wildcards) |
 | `GET /api/<table>/<id>` | Get one row |
 | `POST /api/<table>` | Create a row from a JSON body |
 | `PUT /api/<table>/<id>` | Replace a row (send every column, not only the changed ones) |
 | `DELETE /api/<table>/<id>` | Delete a row |
 | `GET /api/tables` | Every table with its primary key and columns |
+
+List responses include the total number of matching rows in the `X-Total-Count` header, before `limit` and `offset` are applied.
 
 Errors come back as `{"error": "message"}`. Add rows in dependency order: `device_type` and `vendor` before `device`, and an `app_user` before a `scan`.
 
