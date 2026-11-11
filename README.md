@@ -363,6 +363,13 @@ Step 1: Start MAMP and make sure MySQL is green
 
 Step 2: Open a terminal in the project root folder
 
+Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql` against both:
+
+- `network_device_scanner` (the real development database)
+- `network_device_scanner_test` (or the database named by `TEST_DB_NAME`)
+
+In MAMP/phpMyAdmin, select the first database, choose **Import**, select the migration file, and run it. Repeat for the test database. A fresh database created from `database/schema/database_schema.sql` already contains the table and does not need this migration.
+
 Step 3: Run the server with the following command (test database ONLY):
     - `.\dev crud`   (long form: `py -3.13 -m backend.dev_tools.crud_server`)
     - keep it on port 5000: the React page sends its requests there. To use another port, also change the `/api` line in `frontend/crud-react/vite.config.js`
