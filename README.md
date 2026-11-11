@@ -87,6 +87,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `test` | `unittest discover tests` | run every unit test (`-v` shows names, `-k sweep` runs only matching tests) |
 | `conn` | `backend.check_connection` | check the database settings in your `.env` |
 | `app` | `backend.main` | start the application (needs `DEV_USERNAME` in `.env`, see Running the app) |
+| `admin` | `backend.services.access_control.create_admin` | create the first admin account on an empty database; asks for the password without showing it (`--database NAME` for another database than the test one) |
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
@@ -195,6 +196,18 @@ SCAN_PROBE_WORKERS=32       # pings at once, 1 to 128
 SCAN_PROBE_TIMEOUT_S=1.0    # seconds each ping waits, more than 0 and at most 5
 ```
 
+## Creating the first admin (#89)
+A fresh database has no users, so nobody can sign in. Create the first admin with:
+```
+.\dev admin                                     # the test database
+.\dev admin --database network_device_scanner   # the real one
+```
+It asks for a username (letters, digits, `.` `_` `-`) and then the password twice, without showing it: 12 to 128 characters, not the same as the username. The password is never typed on the command line, because PowerShell saves commands in its history. Only an Argon2id hash is stored.
+
+It only works on a database with **no users**. Once any account exists, it changes nothing and says so: further accounts are added by an admin in the app, so every account has someone accountable for creating it.
+
+The admin you create here is a good choice for `DEV_USERNAME` below.
+
 ## Running the app
 Add these to your .env:
 ```
@@ -211,6 +224,8 @@ Check it at http://127.0.0.1:5000/api/health. It listens on 127.0.0.1 only, so o
 **There is NO real login until M4.** Every request acts as the DEV_USERNAME user, with no sign-in. Permissions ARE checked against that user's role: a `viewer` can look but not start scans, so use an `editor` or `admin` account for DEV_USERNAME.
 
 The CRUD test server also uses port 5000. To run both, set `APP_PORT=5001` and use http://127.0.0.1:5001.
+
+The scan screen is the React app in `frontend/app`. While that page is running, keep `APP_PORT=5001`. Install, run, and build steps are in `frontend/app/README.md`.
 
 ## API (#51)
 The JSON below is the contract with the screens: change it only together with them. Every error, whatever its status, is `{"error": "a sentence a person can read"}`, so a screen can show it as it is.
@@ -298,12 +313,16 @@ By default it uses the test database (`DB_NAME` + `_test`, or `TEST_DB_NAME` fro
 
 | Request | Does |
 |---|---|
-| `GET /api/<table>` | List rows (filter with `?column=value`) |
+| `GET /api/<table>` | List rows (filter with `?column=value`); without paging parameters it still returns every matching row |
+| `GET /api/<table>?limit=50&offset=0` | Return one stable primary-key-ordered page; `limit` is 1–500 and `offset` is 0 or more |
+| `GET /api/<table>?search=cisco&search_column=vendor_name&limit=20` | Search one column by literal contained text (`%` and `_` are not wildcards) |
 | `GET /api/<table>/<id>` | Get one row |
 | `POST /api/<table>` | Create a row from a JSON body |
 | `PUT /api/<table>/<id>` | Replace a row (send every column, not only the changed ones) |
 | `DELETE /api/<table>/<id>` | Delete a row |
 | `GET /api/tables` | Every table with its primary key and columns |
+
+List responses include the total number of matching rows in the `X-Total-Count` header, before `limit` and `offset` are applied.
 
 Errors come back as `{"error": "message"}`. Add rows in dependency order: `device_type` and `vendor` before `device`, and an `app_user` before a `scan`.
 

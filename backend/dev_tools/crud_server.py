@@ -88,11 +88,46 @@ def create_app(make_repository: RepositoryFactory) -> Flask:
     @app.get("/api/<table>")
     def list_rows(table: str):
         repository = repository_for(table)
-        filters = request.args.to_dict()                 # ?status=active -> {"status": "active"}
-        unknown = set(filters) - set(TABLES[table].column_names())
+        args = request.args.to_dict()
+        limit_value = args.pop("limit", None)
+        offset_value = args.pop("offset", None)
+        search = args.pop("search", None)
+        search_column = args.pop("search_column", None)
+        columns = set(TABLES[table].column_names())
+
+        unknown = set(args) - columns
         if unknown:
             abort(400, description=f"{table} has no column(s): {', '.join(sorted(unknown))}")
-        return jsonify([row.to_dict() for row in repository.list(**filters)])
+
+        def whole_number(name: str, value: str | None, default: int | None,
+                         minimum: int, maximum: int | None = None) -> int | None:
+            if value is None:
+                return default
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                abort(400, description=f"{name} must be a whole number")
+            if parsed < minimum or (maximum is not None and parsed > maximum):
+                range_text = f" from {minimum} to {maximum}" if maximum is not None else f" of at least {minimum}"
+                abort(400, description=f"{name} must be a whole number{range_text}")
+            return parsed
+
+        limit = whole_number("limit", limit_value, None, 1, 500)
+        offset = whole_number("offset", offset_value, 0, 0)
+        if search_column is not None:
+            if search is None:
+                abort(400, description="search_column requires search")
+            if search_column not in columns:
+                abort(400, description=f"{table} has no column {search_column!r}")
+        elif search is not None:
+            abort(400, description="search requires search_column")
+
+        contains = (search_column, search) if search_column is not None else None
+        rows = repository.list(limit=limit, offset=offset, contains=contains, **args)
+        total = repository.count(contains=contains, **args)
+        response = jsonify([row.to_dict() for row in rows])
+        response.headers["X-Total-Count"] = str(total)
+        return response
 
     @app.get("/api/<table>/<int:pk>")
     def get_row(table: str, pk: int):

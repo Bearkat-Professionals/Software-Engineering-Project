@@ -31,6 +31,8 @@ COMMANDS: dict[str, Command] = {
     "test":   Command("unittest", "run every unit test", ("discover", "tests")),
     "conn":   Command("backend.check_connection", "check the database connection"),
     "app":    Command("backend.main", "start the application (needs DEV_USERNAME in .env)"),
+    "admin":  Command("backend.services.access_control.create_admin",
+                      "create the first admin account on an empty database (test DB by default)"),
     "crud":   Command("backend.dev_tools.crud_server", "start the CRUD test server (test database)"),
     "ping":   Command("backend.black_boxes.timed_network_request.check_ping",
                       "ping addresses, or --sweep a range (BB-3)"),

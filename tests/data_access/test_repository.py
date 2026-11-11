@@ -150,6 +150,31 @@ class RepositoryTests(unittest.TestCase):
         self.assertEqual(loaded.recipient_email, "tester@example.com")
         self.assertEqual(loaded.events, [])   # events live in alert_setting_event; #17 will read and write them
 
+    def test_list_pages_in_stable_order_and_count_matches(self):
+        for name in ("Page Alpha", "Page Bravo", "Page Charlie", "Page Delta"):
+            self.vendors.create(Vendor(vendor_name=name))
+
+        page = self.vendors.list(limit=2, offset=1, contains=("vendor_name", "Page "))
+        self.assertEqual([vendor.vendor_name for vendor in page], ["Page Bravo", "Page Charlie"])
+        self.assertEqual(self.vendors.count(contains=("vendor_name", "Page ")), 4)
+
+    def test_contains_treats_percent_and_underscore_as_text(self):
+        for name in ("Rate 50% Co", "Rate 500 Co", "Code a_b", "Code axb"):
+            self.vendors.create(Vendor(vendor_name=name))
+
+        percent = self.vendors.list(contains=("vendor_name", "50%"))
+        underscore = self.vendors.list(contains=("vendor_name", "a_b"))
+        self.assertEqual([vendor.vendor_name for vendor in percent], ["Rate 50% Co"])
+        self.assertEqual([vendor.vendor_name for vendor in underscore], ["Code a_b"])
+
+    def test_paging_rejects_bad_values_and_columns(self):
+        for kwargs in ({"limit": 0}, {"offset": -1},
+                       {"contains": ("no_such_column", "x")}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
+                self.vendors.list(**kwargs)
+
+        with self.assertRaises(ValueError):
+            self.vendors.count(contains=("no_such_column", "x"))
 
 if __name__ == "__main__":
     unittest.main()
