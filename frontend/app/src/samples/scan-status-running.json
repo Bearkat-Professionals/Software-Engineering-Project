@@ -1,0 +1,14 @@
+{
+
+    "running": true,
+    "scan_id": 12,
+    "scope": "192.168.1.0/24",
+    "started_by": "sam",
+    "started_at": "2026-10-26T14:03:00",
+    "elapsed_seconds": 4,
+    "phase": "discovering_hosts",
+    "done": 120,
+    "total": 254,
+    "errors": ["ping unavailable: ping command not found"]
+    
+}

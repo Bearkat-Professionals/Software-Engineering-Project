@@ -1,0 +1,17 @@
+{
+
+    "running": false,
+
+    "last_scan": {
+
+        "scan_id": 12,
+        "scope": "192.168.1.0/24",
+        "started_by": "sam",
+        "started_at": "2026-10-26T14:03:00",
+        "ended_at": "2026-10-26TH14:03:11",
+        "outcome": "partial",
+        "errors": ["ping unavailable: ping command not found"]
+
+    }
+    
+}

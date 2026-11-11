@@ -212,6 +212,8 @@ Check it at http://127.0.0.1:5000/api/health. It listens on 127.0.0.1 only, so o
 
 The CRUD test server also uses port 5000. To run both, set `APP_PORT=5001` and use http://127.0.0.1:5001.
 
+The scan screen is the React app in `frontend/app`. While that page is running, keep `APP_PORT=5001`. Install, run, and build steps are in `frontend/app/README.md`.
+
 ## API (#51)
 The JSON below is the contract with the screens: change it only together with them. Every error, whatever its status, is `{"error": "a sentence a person can read"}`, so a screen can show it as it is.
 
