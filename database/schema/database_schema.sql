@@ -165,6 +165,26 @@ CREATE TABLE alert_setting_event(
         ON DELETE RESTRICT
 ) ENGINE=InnoDB;
 
+CREATE TABLE alert_history(
+    alert_history_id INT AUTO_INCREMENT PRIMARY KEY,
+    event_id INT NOT NULL,                              #which event was sent
+    recipient_email VARCHAR(320) NOT NULL,              #who received it
+    sent_at DATETIME(6) NOT NULL,                       #exact delivery time
+    device_id INT,                                     #NULL for alerts not tied to a device
+    scan_id INT,                                       #NULL for alerts not tied to a scan
+
+    # Supports the exact lookup used to prevent repeat notifications (AT-12).
+    INDEX idx_alert_history_delivery
+        (event_id, device_id, scan_id, recipient_email, sent_at),
+
+    FOREIGN KEY (event_id) REFERENCES alert_event(event_id)
+        ON DELETE RESTRICT,
+    FOREIGN KEY (device_id) REFERENCES device(device_id)
+        ON DELETE SET NULL,                            #keep the delivery record if a device is removed
+    FOREIGN KEY (scan_id) REFERENCES scan(scan_id)
+        ON DELETE SET NULL                             #keep the delivery record if a scan is removed
+) ENGINE=InnoDB;
+
 CREATE TABLE audit_log(
     audit_log_id INT AUTO_INCREMENT PRIMARY KEY,
     user_id INT NOT NULL,

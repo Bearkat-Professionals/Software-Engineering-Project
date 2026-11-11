@@ -10,7 +10,7 @@ from unittest import mock
 
 from backend.data_access.database_engine import IntegrityConstraintError
 from backend.dev_tools.crud_server import REACT_PAGE, create_app
-from backend.records import Device
+from backend.records import ALL_ENTITIES, Device
 from tests.fakes.memory_repository import InMemoryRepository
 
 
@@ -51,7 +51,7 @@ class CrudServerTests(unittest.TestCase):
 
     def test_tables_route_lists_every_table_with_its_key(self):
         tables = self.client.get("/api/tables").get_json()
-        self.assertEqual(len(tables), 12)
+        self.assertEqual(len(tables), len(ALL_ENTITIES))
         self.assertEqual(tables["device"]["primary_key"], "device_id")
         self.assertIn("mac_address", tables["device"]["columns"])
 

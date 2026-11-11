@@ -30,6 +30,8 @@ EXPECTED_COLUMNS = {
                                 "evidence_type", "raw_value", "weight"],
     "alert_event": ["event_id", "event_name"],
     "alert_setting": ["alert_setting_id", "user_id", "recipient_email", "enabled"],
+    "alert_history": ["alert_history_id", "event_id", "recipient_email", "sent_at",
+                      "device_id", "scan_id"],
     "audit_log": ["audit_log_id", "user_id", "record_type", "record_id", "action",
                   "old_value", "new_value", "changed_at"],
 }

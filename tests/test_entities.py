@@ -3,7 +3,7 @@ import json
 import unittest
 from datetime import datetime
 
-from backend.records import (AlertEvent, AlertSetting, AuditLog, Device,
+from backend.records import (AlertEvent, AlertHistory, AlertSetting, AuditLog, Device,
                              DeviceSignature, OuiPrefix, Scan, User, Vendor)
 from backend.records.enums import (AlertEventName, AuditAction, EvidenceType,
                                    NetworkStatus, RecordStatus, ScanOutcome,
@@ -72,6 +72,20 @@ class EntityTests(unittest.TestCase):
                                    "new_value": '{"device_name": "b"}'})
         self.assertEqual(entry.action, AuditAction.UPDATE)
         self.assertEqual(entry.new_value, {"device_name": "b"})
+
+    def test_alert_history_round_trip(self):
+        sent_at = datetime(2026, 11, 10, 14, 30, 5, 123456)
+        history = AlertHistory.from_row({
+            "alert_history_id": 8,
+            "event_id": 2,
+            "recipient_email": "owner@example.com",
+            "sent_at": sent_at,
+            "device_id": 4,
+            "scan_id": 7,
+        })
+        self.assertEqual(history.pk, 8)
+        self.assertEqual(history.sent_at, sent_at)
+        self.assertEqual(history.to_row()["recipient_email"], "owner@example.com")
 
     def test_alert_events_live_in_the_link_table(self):
         setting = AlertSetting(user_id=1, recipient_email="a@b.com",
