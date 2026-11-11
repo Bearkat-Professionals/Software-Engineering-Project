@@ -60,3 +60,60 @@ button {
 
 button.secondary { background: #e6e8ec; color: #1b1e23; }
 button.danger { background: #9d1c2a; }
+
+.pager {
+
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 12px;
+  max-width: 960px;
+
+}
+
+.pager-buttons { display: flex; gap: 8px; }
+button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.fk-field { min-width: 0; }
+
+.fk-picker {
+
+  position: relative;
+
+}
+
+.fk-picker > input { width: 100%; }
+
+.fk-matches {
+
+  position: absolute;
+  z-index: 10;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid #d8dde4;
+  border-radius: 6px;
+  background: white;
+  box-shadow: 0 8px 20px rgb(0 0 0 / 14%);
+
+}
+
+.fk-match {
+
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 4px;
+  background: white;
+  color: #1b1e23;
+  text-align: left;
+
+}
+
+.fk-match:hover, .fk-match.selected { background: #e7f6ef; }
+.fk-note, .fk-error { display: block; padding: 7px 8px; }
+.fk-error { color: #9d1c1a; }

@@ -60,31 +60,38 @@ class Repository(Generic[T]):
             row = cursor.fetchone()
         return self._entity_type.from_row(row) if row else None
 
-    def list(self, unit: Any = None, **filters: Any) -> list[T]:
-        """Return every entity, or only those whose columns equal the filters.
-           
-           vendors.list(status=RecordStatus.ACTIVE) -> WHERE `status` = `active`
-           devices.list(model=None) -> WHERE `model` is NULL
-        """
-        conditions, params = [], []
-        for name, value in filters.items():
-            if name not in self._columns:
-                raise ValueError(f"{self._table} has no column '{name}'")
-            if value is None:
-                conditions.append(f"`{name}` IS NULL")
-            else:
-                conditions.append(f"`{name}` = %s")
-                params.append(value.value if isinstance(value, Enum) else value)
+    def list(self, unit: Any = None, *, limit: int | None = None, offset: int = 0,
+             contains: tuple[str, str] | None = None, **filters: Any) -> list[T]:
+        """Return entities matching equality and optional text filters.
 
-        sql = f"SELECT {self._select_list()} FROM `{self._table}`"
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
+        ``limit=None`` preserves the original unpaged behaviour. Results always
+        use primary-key order so paging is stable.
+        """
+        self._validate_page(limit, offset)
+        where, params = self._where(filters, contains)
+        sql = f"SELECT {self._select_list()} FROM `{self._table}`{where}"
         sql += f" ORDER BY `{self._pk}`"
+        if limit is not None:
+            sql += " LIMIT %s OFFSET %s"
+            params.extend((limit, offset))
+        elif offset:
+            sql += " LIMIT 18446744073709551615 OFFSET %s"
+            params.append(offset)
 
         with self._cursor(unit) as cursor:
             cursor.execute(sql, tuple(params))
             rows = cursor.fetchall()
         return [self._entity_type.from_row(row) for row in rows]
+
+    def count(self, unit: Any = None, *, contains: tuple[str, str] | None = None,
+              **filters: Any) -> int:
+        """Return the number of entities matching the same filters as ``list``."""
+        where, params = self._where(filters, contains)
+        sql = f"SELECT COUNT(*) AS total FROM `{self._table}`{where}"
+        with self._cursor(unit) as cursor:
+            cursor.execute(sql, tuple(params))
+            row = cursor.fetchone()
+        return int(row["total"])
 
     def update(self, entity: T, unit: Any = None) -> T:
         """Write every column of an existing entity back to its row"""
@@ -108,6 +115,37 @@ class Repository(Generic[T]):
                 raise RecordNotFoundError(f"{self._table} {self._pk}={pk} does not exist.")    
 
     #------ helpers ---------------------------------------------------------------------------
+
+    def _validate_page(self, limit: int | None, offset: int) -> None:
+        if limit is not None and (isinstance(limit, bool) or not isinstance(limit, int) or limit < 1):
+            raise ValueError("limit must be a positive whole number")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative whole number")
+
+    def _where(self, filters: dict[str, Any],
+               contains: tuple[str, str] | None) -> tuple[str, list[Any]]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        for name, value in filters.items():
+            if name not in self._columns:
+                raise ValueError(f"{self._table} has no column {name!r}")
+            if value is None:
+                conditions.append(f"`{name}` IS NULL")
+            else:
+                conditions.append(f"`{name}` = %s")
+                params.append(value.value if isinstance(value, Enum) else value)
+
+        if contains is not None:
+            name, value = contains
+            if name not in self._columns:
+                raise ValueError(f"{self._table} has no column {name!r}")
+            raw = value.value if isinstance(value, Enum) else value
+            escaped = str(raw).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            conditions.append(f"`{name}` LIKE %s ESCAPE '\\\\'")
+            params.append(f"%{escaped}%")
+
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        return where, params
 
     def _select_list(self) -> str:
         return ", ".join(f"`{name}`" for name in self._columns)

@@ -49,6 +49,53 @@ class CrudServerTests(unittest.TestCase):
         retired = self.client.get("/api/vendor?status=retired").get_json()
         self.assertEqual([row["vendor_name"] for row in retired], ["Old Co"])
 
+    def test_list_can_page_and_reports_the_total(self):
+        for name in ("Alpha", "Bravo", "Charlie", "Delta", "Echo"):
+            self.client.post("/api/vendor", json={"vendor_name": name})
+
+        response = self.client.get("/api/vendor?limit=2&offset=1")
+        self.assertEqual([row["vendor_name"] for row in response.get_json()],
+                         ["Bravo", "Charlie"])
+        self.assertEqual(response.headers["X-Total-Count"], "5")
+        self.assertEqual(len(self.client.get("/api/vendor").get_json()), 5)
+
+    def test_search_and_filters_work_together(self):
+        self.client.post("/api/vendor", json={"vendor_name": "Cisco One"})
+        self.client.post("/api/vendor", json={"vendor_name": "Cisco Old", "status": "retired"})
+        self.client.post("/api/vendor", json={"vendor_name": "Acme"})
+
+        response = self.client.get(
+            "/api/vendor?search=cisco&search_column=vendor_name&status=active&limit=20")
+        self.assertEqual([row["vendor_name"] for row in response.get_json()], ["Cisco One"])
+        self.assertEqual(response.headers["X-Total-Count"], "1")
+
+    def test_search_treats_percent_and_underscore_as_text(self):
+        for name in ("Rate 50% Co", "Rate 500 Co", "Code a_b", "Code axb"):
+            self.client.post("/api/vendor", json={"vendor_name": name})
+
+        percent = self.client.get(
+            "/api/vendor?search=50%25&search_column=vendor_name").get_json()
+        underscore = self.client.get(
+            "/api/vendor?search=a_b&search_column=vendor_name").get_json()
+        self.assertEqual([row["vendor_name"] for row in percent], ["Rate 50% Co"])
+        self.assertEqual([row["vendor_name"] for row in underscore], ["Code a_b"])
+
+    def test_bad_paging_and_search_parameters_are_400(self):
+        paths = (
+            "/api/vendor?limit=0",
+            "/api/vendor?limit=501",
+            "/api/vendor?limit=nope",
+            "/api/vendor?offset=-1",
+            "/api/vendor?search_column=nope&search=x",
+            "/api/vendor?search_column=vendor_name",
+            "/api/vendor?search=x",
+        )
+        for path in paths:
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(response.status_code, 400)
+                self.assertTrue(response.get_json()["error"])
+
     def test_tables_route_lists_every_table_with_its_key(self):
         tables = self.client.get("/api/tables").get_json()
         self.assertEqual(len(tables), len(ALL_ENTITIES))
