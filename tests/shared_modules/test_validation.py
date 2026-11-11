@@ -147,11 +147,26 @@ class TestValidateScope(Checks):
     def test_rejects_missing_slash(self):
         self.assertRejected(validate_scope("192.168.1.0"), "CIDR")
 
+    
     def test_rejects_bad_address_or_number(self):
-        for text in ["192.168.1.300/24", "192.168.1.0/33", "192.168.1.0/",
-                     "192.168.1.0/abc", "/24", "192.168.1.0/-1", "192.168.1.0/24/1"]:
+        for text in [
+            "192.168.1.300/24",
+            "192.168.1.0/33",
+            "192.168.1.0/",
+            "192.168.1.0/abc",
+            "/24",
+            "192.168.1.0/-1",
+            "192.168.1.0/24/1",
+            "192.168.1.0 /24",
+            "192.168.1.0\t/24",
+            "192.168.1.0²",
+            "192.168.1.0/é",
+        ]:
             with self.subTest(text=text):
-                self.assertRejected(validate_scope(text), "not a valid scan range")
+                self.assertRejected(
+                    validate_scope(text), "not a valid scan range"
+                )
+
 
     def test_rejects_blank_and_wrong_type(self):
         for value in ["", None, 24]:
@@ -182,7 +197,7 @@ class TestValidateConfidence(Checks):
                 self.assertRejected(validate_confidence(value))
 
     def test_rejects_wrong_type(self):
-        for value in [True, False, None, "", "high", [50]]:
+        for value in [True, False, None, "", "high", [50], "°•"]:
             with self.subTest(value=value):
                 self.assertRejected(validate_confidence(value))
 
@@ -211,7 +226,7 @@ class TestValidateTimeout(Checks):
                 self.assertRejected(validate_timeout(value), "Timeout must be")
 
     def test_rejects_wrong_type(self):
-        for value in [None, "", "soon", True, float("nan"), float("inf"), "inf", [1]]:
+       for value in [None, "", "soon", True, float("nan"), float("inf"), "inf", [1], 10400, -10400]:
             with self.subTest(value=value):
                 self.assertRejected(validate_timeout(value))
 
