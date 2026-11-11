@@ -89,7 +89,7 @@ export default function ScanScreen() {
 
                     <ul>
 
-                        {(status.errors ?? []).map((line) => <li key={line}>{line}</li>)}
+                        {(status.errors ?? []).map((line, index) => <li key={index}>{line}</li>)}
 
                     </ul>
 

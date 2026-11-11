@@ -68,6 +68,12 @@ export async function api(path, { method = "GET", body } = {}) {
 
   if (!response.ok) {
 
+    if (response.status >= 500 && !(payload && typeof payload.error === "string")) {
+
+      throw new ApiError("Can't reach the server", { status: response.status, unreachable: true });
+      
+    }
+
     const message = payload && typeof payload.error === "string"
       ? payload.error
       : response.statusText;

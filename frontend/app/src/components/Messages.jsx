@@ -1,27 +1,15 @@
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 const MessagesContext = createContext();
 
 export function MessageProvider({ children }) {
 
     const [message, setMessage] = useState(null);
-    const value = useMemo(() => ({
-
-        message,
-
-        showMessage(kind, text) {
-
-            setMessage({ kind, text });
-
-        },
-
-        clearMessage() {
-
-            setMessage(null);
-
-        },
-
-    }), [message]);
+    const showMessage = useCallback((kind, text) => setMessage({ kind, text }), []);
+    const clearMessage = useCallback(() => setMessage(null), []);
+    const value = useMemo(() => ({ message, showMessage, clearMessage }),
+    
+        [message, showMessage, clearMessage]);
 
     return (
 
