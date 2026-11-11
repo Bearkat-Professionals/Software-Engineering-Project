@@ -6,13 +6,15 @@ Same TEST database setup as test_repository.py; skipped if it is not available.
 """
 import unittest
 from dataclasses import replace
+from datetime import datetime
 
-from backend.data_access.account_settings import (AlertSettingStore, FirstUserExistsError,
+from backend.data_access.account_settings import (AlertHistoryStore, AlertSettingStore,
+                                                  FirstUserExistsError,
                                                   UnknownAlertEventError, UserStore)
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.database_engine import IntegrityConstraintError
-from backend.data_access.repository import RecordNotFoundError
-from backend.records import AlertSetting, User
+from backend.data_access.repository import RecordNotFoundError, Repository
+from backend.records import AlertHistory, AlertSetting, Device, Scan, User
 from backend.records.enums import AlertEventName, AuditAction, UserRole
 # Only the helpers are imported, not RepositoryTests, so those tests don't run twice
 from tests.data_access.test_repository import CLEANUP, connect_to_test_database
@@ -27,6 +29,7 @@ class AccountSettingsTestCase(unittest.TestCase):
         cls.engine = connect_to_test_database()
         cls.users = UserStore(cls.engine)
         cls.alerts = AlertSettingStore(cls.engine)
+        cls.history = AlertHistoryStore(cls.engine)
         cls.audit = AuditTrail(cls.engine)
 
     def setUp(self):
@@ -202,6 +205,68 @@ class AlertSettingStoreTests(AccountSettingsTestCase):
         self.assertEqual(entry.user_id, admin.user_id)
         self.assertEqual(set(entry.old_value["events"]), {"scan_failed", "flagged_device"})
         self.assertEqual(entry.new_value["events"], ["backup_failed"])
+
+
+# ---- 7.5 alert history and duplicate prevention (AT-12) -----------------------
+
+class AlertHistoryStoreTests(AccountSettingsTestCase):
+    def setUp(self):
+        super().setUp()
+        self.owner = self.users.create_first_user(User(username="owner", password_hash=HASH))
+        self.devices = Repository(self.engine, Device)
+        self.scans = Repository(self.engine, Scan)
+
+    def _event_id(self, event: AlertEventName) -> int:
+        with self.engine.unit_of_work() as cursor:
+            cursor.execute("SELECT event_id FROM alert_event WHERE event_name = %s", (event.value,))
+            return cursor.fetchone()["event_id"]
+
+    def test_store_and_find_preserve_the_alert_scope(self):
+        device = self.devices.create(Device(mac_address="AA:BB:CC:00:00:42"))
+        scan = self.scans.create(Scan(user_id=self.owner.user_id,
+                                      target_scope="192.168.1.0/24"))
+        sent_at = datetime(2026, 11, 10, 14, 30, 5, 123456)
+        saved = self.history.store(AlertHistory(
+            event_id=self._event_id(AlertEventName.FLAGGED_DEVICE),
+            recipient_email="owner@example.com",
+            sent_at=sent_at,
+            device_id=device.device_id,
+            scan_id=scan.scan_id,
+        ))
+
+        loaded = self.history.find(saved.alert_history_id)
+        self.assertEqual(loaded, saved)
+        self.assertEqual(loaded.sent_at, sent_at)
+
+    def test_duplicate_lookup_uses_event_recipient_device_and_scan(self):
+        device = self.devices.create(Device(mac_address="AA:BB:CC:00:00:43"))
+        event_id = self._event_id(AlertEventName.FLAGGED_DEVICE)
+        saved = self.history.store(AlertHistory(
+            event_id=event_id,
+            recipient_email="owner@example.com",
+            device_id=device.device_id,
+        ))
+
+        self.assertTrue(self.history.was_sent(
+            event_id, "owner@example.com", device_id=device.device_id))
+        self.assertEqual(self.history.find_delivery(
+            event_id, "owner@example.com", device_id=device.device_id), saved)
+        self.assertFalse(self.history.was_sent(
+            event_id, "other@example.com", device_id=device.device_id))
+        self.assertFalse(self.history.was_sent(
+            event_id, "owner@example.com", device_id=999_999))
+        self.assertFalse(self.history.was_sent(
+            event_id, "owner@example.com", device_id=device.device_id, scan_id=999_999))
+
+    def test_system_wide_alert_can_have_no_device_or_scan(self):
+        event_id = self._event_id(AlertEventName.BACKUP_FAILED)
+        saved = self.history.store(AlertHistory(
+            event_id=event_id,
+            recipient_email="admin@example.com",
+        ))
+        self.assertIsNotNone(saved.sent_at)
+        self.assertTrue(self.history.was_sent(event_id, "admin@example.com"))
+        self.assertIsNone(self.history.find(999_999))
 
 
 if __name__ == "__main__":
