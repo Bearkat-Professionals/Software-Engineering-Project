@@ -13,8 +13,7 @@ old/new values include the events, so "events changed from X to Y" is visible.
                            changed_by=1)
     settings.find(saved.alert_setting_id).events   # the same two events
 
-Alert history: the schema has no table for alerts that were sent yet. It is
-needed for spec 7.5 "don't repeat an alert" (AT-12) in M6; see the follow-up issue.
+Sent-alert history and the AT-12 duplicate check live in AlertHistoryStore.
 """
 from __future__ import annotations
 
