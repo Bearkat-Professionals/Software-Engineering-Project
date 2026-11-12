@@ -5,12 +5,15 @@ database (same one-time setup as test_repository.py) and is skipped without it.
 
     python -m unittest discover tests
 """
+import threading
+import time
 import unittest
+from datetime import datetime
 
 from backend.data_access.reference_data import (DuplicateReferenceError, InvalidPrefixError,
+                                                EditConflictError, InactiveReferenceError,
                                                 OuiPrefixStore, ProtectedReferenceError,
-                                                ReferenceStore, find_reference_rules,
-                                                normalize_prefix)
+                                                ReferenceStore, find_reference_rules, normalize_prefix)
 from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import AuditLog, Device, DeviceSignature, DeviceType, User, Vendor
 from backend.records.enums import EvidenceType, RecordStatus
@@ -81,6 +84,62 @@ class ReferenceDataTests(unittest.TestCase):
         self.assertEqual(devices.get(device.pk).vendor_id, acme.pk)      # untouched
         self.assertTrue(self.vendors.in_use(acme.pk))
 
+    # ---- paged, searchable reference lists ------------------------------------------
+
+    def test_vendor_list_is_searchable_paged_and_includes_retired_records(self):
+        for name in ("Page Delta", "Page Bravo", "Page Alpha", "Page Charlie"):
+            self.vendors.store(Vendor(vendor_name=name), self.admin)
+        bravo = self.vendors.list_page(text="bravo").records[0]
+        self.vendors.retire(bravo.pk, self.admin)
+
+        first = self.vendors.list_page(page=1, per_page=2, text="page")
+        second = self.vendors.list_page(page=2, per_page=2, text="PAGE", status="both")
+        self.assertEqual(first.total, 4)
+        self.assertEqual([record.vendor_name for record in first.records],
+                         ["Page Alpha", "Page Bravo"])
+        self.assertEqual([record.vendor_name for record in second.records],
+                         ["Page Charlie", "Page Delta"])
+        self.assertEqual(self.vendors.list_page(text="page", status="active").total, 3)
+        retired = self.vendors.list_page(text="page", status=RecordStatus.RETIRED)
+        self.assertEqual([record.vendor_name for record in retired.records], ["Page Bravo"])
+
+    def test_list_search_treats_wildcards_as_literal_text(self):
+        for name in ("Rate 50% Co", "Rate 500 Co", "Code a_b", "Code axb"):
+            self.vendors.store(Vendor(vendor_name=name), self.admin)
+
+        percent = self.vendors.list_page(text="50%")
+        underscore = self.vendors.list_page(text="a_b")
+        self.assertEqual([record.vendor_name for record in percent.records], ["Rate 50% Co"])
+        self.assertEqual([record.vendor_name for record in underscore.records], ["Code a_b"])
+
+    def test_type_and_signature_lists_use_their_required_sort_order(self):
+        speaker = self.types.store(DeviceType(category_name="speaker"), self.admin)
+        self.types.store(DeviceType(category_name="sensor"), self.admin)
+        for evidence_type, pattern in ((EvidenceType.SSDP, "zulu"),
+                                       (EvidenceType.MDNS, "beta"),
+                                       (EvidenceType.MDNS, "alpha")):
+            self.signatures.store(DeviceSignature(
+                device_type_id=speaker.pk, pattern_value=pattern, evidence_type=evidence_type),
+                self.admin)
+
+        types = self.types.list_page(text="s").records
+        signatures = self.signatures.list_page().records
+        self.assertEqual([record.category_name for record in types], ["sensor", "speaker"])
+        self.assertEqual([(record.evidence_type, record.pattern_value) for record in signatures], [
+            (EvidenceType.MDNS, "alpha"),
+            (EvidenceType.MDNS, "beta"),
+            (EvidenceType.SSDP, "zulu"),
+        ])
+
+    def test_reference_list_rejects_bad_paging_status_and_text(self):
+        bad_values = (
+            {"page": 0}, {"page": True}, {"per_page": 0}, {"per_page": 201},
+            {"status": "disabled"}, {"text": 123},
+        )
+        for values in bad_values:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                self.vendors.list_page(**values)
+
     # ---- 3.2.2 Store ---------------------------------------------------------------
 
     def test_duplicate_names_are_rejected_whatever_the_case(self):
@@ -110,6 +169,90 @@ class ReferenceDataTests(unittest.TestCase):
         self.assertEqual(entries[1].old_value["vendor_name"], "Acme")
         self.assertEqual(entries[2].new_value["status"], "retired")
         self.assertTrue(all(entry.user_id == self.admin for entry in entries))
+
+    def test_reactivate_is_audited_and_is_a_noop_when_already_active(self):
+        acme = self.vendors.store(Vendor(vendor_name="Acme"), self.admin)
+        self.vendors.retire(acme.pk, self.admin)
+
+        restored = self.vendors.reactivate(acme.pk, self.admin)
+        self.vendors.reactivate(acme.pk, self.admin)
+
+        self.assertEqual(restored.status, RecordStatus.ACTIVE)
+        entries = self.audit_entries("vendor")
+        self.assertEqual(len(entries), 3)
+        self.assertEqual(entries[-1].old_value["status"], "retired")
+        self.assertEqual(entries[-1].new_value["status"], "active")
+
+    def test_signature_cannot_be_reactivated_while_its_type_is_retired(self):
+        speaker = self.types.store(DeviceType(category_name="speaker"), self.admin)
+        signature = self.signatures.store(DeviceSignature(
+            device_type_id=speaker.pk, pattern_value="echo", evidence_type=EvidenceType.MDNS),
+            self.admin)
+        self.signatures.retire(signature.pk, self.admin)
+        self.types.retire(speaker.pk, self.admin)
+
+        with self.assertRaises(InactiveReferenceError):
+            self.signatures.reactivate(signature.pk, self.admin)
+        self.assertEqual(self.signatures.find(signature.pk).status, RecordStatus.RETIRED)
+
+    def test_stale_store_retire_and_reactivate_are_refused(self):
+        other = Repository(self.engine, User).create(
+            User(username="other", password_hash="not-a-real-hash")).user_id
+        acme = self.vendors.store(Vendor(vendor_name="Acme"), self.admin)
+        mine = self.vendors.find(acme.pk)
+        loaded_at = datetime.now()
+        time.sleep(0.01)
+        theirs = self.vendors.find(acme.pk)
+        theirs.vendor_name = "Acme Networks"
+        self.vendors.store(theirs, other)
+
+        mine.vendor_name = "Acme Corporation"
+        with self.assertRaises(EditConflictError) as conflict:
+            self.vendors.store(mine, self.admin, loaded_at=loaded_at)
+        self.assertEqual(conflict.exception.changed_by, other)
+        with self.assertRaises(EditConflictError):
+            self.vendors.retire(acme.pk, self.admin, loaded_at=loaded_at)
+        self.assertEqual(self.vendors.find(acme.pk).vendor_name, "Acme Networks")
+
+        loaded_at = datetime.now()
+        time.sleep(0.01)
+        self.vendors.retire(acme.pk, other)
+        with self.assertRaises(EditConflictError):
+            self.vendors.reactivate(acme.pk, self.admin, loaded_at=loaded_at)
+        self.assertEqual(self.vendors.find(acme.pk).status, RecordStatus.RETIRED)
+
+    def test_two_reference_saves_take_turns_under_the_row_lock(self):
+        other = Repository(self.engine, User).create(
+            User(username="other", password_hash="not-a-real-hash")).user_id
+        acme = self.vendors.store(Vendor(vendor_name="Acme"), self.admin)
+        mine = self.vendors.find(acme.pk)
+        loaded_at = datetime.now()
+        time.sleep(0.01)
+        first_saved = threading.Event()
+        order = []
+
+        def slow_save():
+            with self.engine.unit_of_work() as cursor:
+                theirs = self.vendors.find(acme.pk, cursor)
+                theirs.vendor_name = "First"
+                self.vendors.store(theirs, other, cursor)
+                first_saved.set()
+                time.sleep(0.3)
+                order.append("first committed")
+
+        worker = threading.Thread(target=slow_save)
+        worker.start()
+        first_saved.wait()
+        mine.vendor_name = "Second"
+        try:
+            self.vendors.store(mine, self.admin, loaded_at=loaded_at)
+            order.append("second saved")
+        except EditConflictError:
+            order.append("second refused")
+        worker.join()
+
+        self.assertEqual(order, ["first committed", "second refused"])
+        self.assertEqual(self.vendors.find(acme.pk).vendor_name, "First")
 
     def test_updating_a_missing_record_saves_nothing(self):
         with self.assertRaises(RecordNotFoundError):
@@ -143,6 +286,22 @@ class ReferenceDataTests(unittest.TestCase):
         self.prefixes.reassign("28:6f:b9", other.pk, self.admin)
         self.assertEqual(self.prefixes.find("28:6F:B9").vendor_id, other.pk)
         self.assertEqual([e.action.value for e in self.audit_entries("oui_prefix")], ["insert", "update"])
+
+    def test_stale_prefix_reassignment_is_refused(self):
+        other_user = Repository(self.engine, User).create(
+            User(username="other", password_hash="not-a-real-hash")).user_id
+        acme = self.vendors.store(Vendor(vendor_name="Acme"), self.admin)
+        other = self.vendors.store(Vendor(vendor_name="Other Co"), self.admin)
+        third = self.vendors.store(Vendor(vendor_name="Third Co"), self.admin)
+        self.prefixes.add("28:6F:B9", acme.pk, self.admin)
+        loaded_at = datetime.now()
+        time.sleep(0.01)
+        self.prefixes.reassign("28:6F:B9", other.pk, other_user)
+
+        with self.assertRaises(EditConflictError) as conflict:
+            self.prefixes.reassign("28:6F:B9", third.pk, self.admin, loaded_at=loaded_at)
+        self.assertEqual(conflict.exception.changed_by, other_user)
+        self.assertEqual(self.prefixes.find("28:6F:B9").vendor_id, other.pk)
 
     def test_prefix_for_a_missing_vendor_is_refused(self):
         with self.assertRaises(RecordNotFoundError):

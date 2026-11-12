@@ -13,14 +13,16 @@ Every change writes an audit entry in the same transaction (POL-02, SEC-06).
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 from typing import Any, Generator, Generic, TypeVar
 
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.database_engine import DatabaseEngine
 from backend.data_access.repository import RecordNotFoundError, Repository
-from backend.records import DeviceSignature, DeviceType, Vendor
-from backend.records.enums import AuditAction
+from backend.records import AuditLog, DeviceSignature, DeviceType, Vendor
+from backend.records.enums import AuditAction, RecordStatus
 from backend.records.reference_entity import ReferenceEntity
 
 T = TypeVar("T", bound=ReferenceEntity)
@@ -47,11 +49,49 @@ USED_BY: dict[type[ReferenceEntity], tuple[tuple[str, str], ...]] = {
 UNKNOWN_ID = 1
 PROTECTED: set[type[ReferenceEntity]] = {Vendor, DeviceType}
 
+DEFAULT_PER_PAGE = 50
+MAX_PER_PAGE = 200
+
+_TEXT_COLUMNS: dict[type[ReferenceEntity], str] = {
+    Vendor: "vendor_name",
+    DeviceType: "category_name",
+    DeviceSignature: "pattern_value",
+}
+
+_ORDER_COLUMNS: dict[type[ReferenceEntity], tuple[str, ...]] = {
+    Vendor: ("vendor_name",),
+    DeviceType: ("category_name",),
+    DeviceSignature: ("evidence_type", "pattern_value"),
+}
+
 class DuplicateReferenceError(Exception):
     """Another record already has this name or pattern (DI-07). Nothing was saved."""
 
 class ProtectedReferenceError(Exception):
     """The record is the built-in "unknown" vendor or device type and can't be changed."""
+
+class InactiveReferenceError(Exception):
+    """A reference record cannot be activated while a record it needs is retired."""
+
+class EditConflictError(Exception):
+    """A reference record changed after the caller loaded it."""
+
+    def __init__(self, record_type: str, record_id: int, latest: AuditLog):
+        self.record_type = record_type
+        self.record_id = record_id
+        self.changed_by = latest.user_id
+        self.changed_at = latest.changed_at
+        super().__init__(f"{record_type} {record_id} was changed by user {latest.user_id} "
+                         f"at {latest.changed_at} after it was loaded")
+
+@dataclass(frozen=True)
+class ReferencePage(Generic[T]):
+    """One stable page of reference records and the total that match."""
+
+    records: list[T]
+    page: int
+    per_page: int
+    total: int
 
 class ReferenceStore(Generic[T]):
     def __init__(self, engine: DatabaseEngine, entity_type: type[T]):
@@ -65,9 +105,48 @@ class ReferenceStore(Generic[T]):
     def find(self, pk: int, unit: Any = None) -> T | None:
         return self._records.get(pk, unit)
 
+    def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE,
+                  *, text: str | None = None,
+                  status: RecordStatus | str | None = None,
+                  unit: Any = None) -> ReferencePage[T]:
+        """Return one searchable page, including active and retired records.
+
+        Vendor and device-type names, or a signature's pattern, contain ``text``
+        case-insensitively. SQL wildcard characters in the text are matched
+        literally. ``status`` may be active, retired or ``"both"``/None.
+        """
+        _validate_page(page, per_page)
+        normalized_status = _normalize_status(status)
+        if text is not None and not isinstance(text, str):
+            raise ValueError("text must be a string or None")
+
+        conditions: list[str] = []
+        params: list[Any] = []
+        if text:
+            conditions.append(f"`{_TEXT_COLUMNS[self._type]}` LIKE %s ESCAPE '\\\\'")
+            params.append(f"%{_escape_like(text)}%")
+        if normalized_status is not None:
+            conditions.append("`status` = %s")
+            params.append(normalized_status.value)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+
+        columns = ", ".join(f"`{name}`" for name in self._type.column_names())
+        order = ", ".join(f"`{name}`" for name in (*_ORDER_COLUMNS[self._type], self._type.PK))
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS n FROM `{self._type.TABLE}`{where}", tuple(params))
+            total = int(cursor.fetchone()["n"])
+            cursor.execute(
+                f"SELECT {columns} FROM `{self._type.TABLE}`{where} "
+                f"ORDER BY {order} LIMIT %s OFFSET %s",
+                (*params, per_page, (page - 1) * per_page),
+            )
+            rows = cursor.fetchall()
+        return ReferencePage([self._type.from_row(row) for row in rows], page, per_page, total)
+
     # ---- 3.2.2 Store Reference Record ---------------------------------------------
 
-    def store(self, record: T, changed_by: int, unit: Any = None) -> T:
+    def store(self, record: T, changed_by: int, unit: Any = None,
+              *, loaded_at: datetime | None = None) -> T:
         """Create the record (no id yet) or update it, plus its audit entry.
 
         Raises DuplicateReferenceError if another record has the same name or
@@ -77,15 +156,19 @@ class ReferenceStore(Generic[T]):
         """
         with _unit_of_work(self._engine, unit) as cursor:
             self._refuse_if_protected(record.pk)
-            self._reject_duplicate(record, cursor)          # check before writing anything
             if record.pk is None:
+                self._reject_duplicate(record, cursor)      # check before writing anything
                 old = None
                 self._records.create(record, cursor)
                 action = AuditAction.INSERT
             else:
+                self._lock(record.pk, cursor)
                 old = self._records.get(record.pk, cursor)
                 if old is None:
                     raise RecordNotFoundError(f"{self._type.TABLE} {record.pk} does not exist")
+                if loaded_at is not None:
+                    self._check_unchanged_since(record.pk, loaded_at, cursor)
+                self._reject_duplicate(record, cursor)
                 self._records.update(record, cursor)
                 action = AuditAction.UPDATE
             self._audit.record(changed_by, action, old, record, cursor)
@@ -93,7 +176,8 @@ class ReferenceStore(Generic[T]):
 
  # ---- 3.2.3 Retire Reference Record ------------------------------------------
 
-    def retire(self, pk: int, changed_by: int, unit: Any = None) -> T:
+    def retire(self, pk: int, changed_by: int, unit: Any = None,
+               *, loaded_at: datetime | None = None) -> T:
         """Mark the record retired, plus its audit entry. Never deletes (DI-06).
 
         Rows that use it (devices, evidence) are not touched, so history stays
@@ -101,14 +185,46 @@ class ReferenceStore(Generic[T]):
         Retiring a record that is already retired changes nothing.
         """
         with _unit_of_work(self._engine, unit) as cursor:
+            self._lock(pk, cursor)
             record = self._records.get(pk, cursor)
             if record is None:
                 raise RecordNotFoundError(f"{self._type.TABLE} {pk} does not exist")
             self._refuse_if_protected(pk)
+            if loaded_at is not None:
+                self._check_unchanged_since(pk, loaded_at, cursor)
             if not record.is_active:
                 return record
             old = self._records.get(pk, cursor)          # a separate copy for the audit's old value
             record.retire()
+            self._records.update(record, cursor)
+            self._audit.record(changed_by, AuditAction.UPDATE, old, record, cursor)
+        return record
+
+    def reactivate(self, pk: int, changed_by: int, unit: Any = None,
+                   *, loaded_at: datetime | None = None) -> T:
+        """Bring a retired record back, with an audit entry.
+
+        Reactivating an active record changes nothing. A device signature stays
+        retired while its device type is retired, so scans cannot use a rule
+        whose result is unavailable.
+        """
+        with _unit_of_work(self._engine, unit) as cursor:
+            self._lock(pk, cursor)
+            record = self._records.get(pk, cursor)
+            if record is None:
+                raise RecordNotFoundError(f"{self._type.TABLE} {pk} does not exist")
+            if loaded_at is not None:
+                self._check_unchanged_since(pk, loaded_at, cursor)
+            if record.is_active:
+                return record
+            if self._type is DeviceSignature:
+                device_type = Repository(self._engine, DeviceType).get(record.device_type_id, cursor)
+                if device_type is None or not device_type.is_active:
+                    raise InactiveReferenceError(
+                        f"device signature {pk} cannot be reactivated while device type "
+                        f"{record.device_type_id} is retired")
+            old = self._records.get(pk, cursor)
+            record.reactivate()
             self._records.update(record, cursor)
             self._audit.record(changed_by, AuditAction.UPDATE, old, record, cursor)
         return record
@@ -146,9 +262,42 @@ class ReferenceStore(Generic[T]):
             raise DuplicateReferenceError(
                 f"a {self._type.TABLE} with {shown} already exists (id {others[0].pk})")
 
+    def _lock(self, pk: int, cursor: Any) -> None:
+        cursor.execute(
+            f"SELECT `{self._type.PK}` FROM `{self._type.TABLE}` "
+            f"WHERE `{self._type.PK}` = %s FOR UPDATE",
+            (pk,),
+        )
+        cursor.fetchall()
+
+    def _check_unchanged_since(self, pk: int, loaded_at: datetime, cursor: Any) -> None:
+        latest = self._audit.latest(self._type.TABLE, pk, cursor)
+        if latest is not None and latest.changed_at > loaded_at:
+            raise EditConflictError(self._type.TABLE, pk, latest)
+
 
 def _text(value: Any) -> str:
     return value.value if isinstance(value, Enum) else str(value)
+
+
+def _validate_page(page: int, per_page: int) -> None:
+    if (isinstance(page, bool) or not isinstance(page, int) or page < 1 or
+            isinstance(per_page, bool) or not isinstance(per_page, int) or
+            not 1 <= per_page <= MAX_PER_PAGE):
+        raise ValueError(f"page must be 1 or more and per_page 1 to {MAX_PER_PAGE}")
+
+
+def _normalize_status(status: RecordStatus | str | None) -> RecordStatus | None:
+    if status is None or status == "both":
+        return None
+    try:
+        return status if isinstance(status, RecordStatus) else RecordStatus(status)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("status must be 'active', 'retired' or 'both'") from exc
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @contextmanager

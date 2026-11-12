@@ -21,3 +21,6 @@ class ReferenceEntity(Entity):
 
     def retire(self) -> None:
         self.status = RecordStatus.RETIRED
+
+    def reactivate(self) -> None:
+        self.status = RecordStatus.ACTIVE
