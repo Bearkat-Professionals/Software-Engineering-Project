@@ -38,6 +38,11 @@ MAX_SCORE = 100
 IDENTIFIED_MIN_SCORE = 50
 
 
+#Javier change's
+UNKNOWN_TYPE_ID = 1
+UNKNOWN_VENDOR_ID = 1
+
+
 def weight_for(evidence_type: EvidenceType) -> int:
     return EVIDENCE_WEIGHTS[evidence_type]
 
