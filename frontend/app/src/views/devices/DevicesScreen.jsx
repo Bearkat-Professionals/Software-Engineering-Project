@@ -1,40 +1,54 @@
 
-import { useState } from "react";
+
+import { useEffect, useState } from "react";
 import AddDeviceForm from "../../components/devices/AddDeviceForm";
 import EditDeviceForm from "../../components/devices/EditDeviceForm";
 import DeleteDeviceConfirm from "../../components/devices/DeleteDeviceConfirm";
 import DeviceTrustSelector from "../../components/devices/DeviceTrustSelector";
+import { api } from "../../components/api";
+
 
 export default function DevicesScreen() {
   const [view, setView] = useState("list");
  
-const [devices, setDevices] = useState([
-  {
-    device_id: 1,
-    name: "Test Laptop",
-    model: "Latitude",
-    type: "Laptop",
-    vendor: "Dell",
-    mac: "AA:BB:CC:DD:EE:FF",
-    loaded_at: "2026-11-11T00:00:00",
-    trusted: true,
-  },
-  {
-    device_id: 2,
-    name: "Office Printer",
-    model: "LaserJet",
-    type: "Printer",
-    vendor: "HP",
-    mac: "11:22:33:44:55:66",
-    loaded_at: "2026-11-11T00:00:00",
-    flagged: false,
-  },
-]);
+
+const [devices, setDevices] = useState([]);
+
 
 const [selectedDevice, setSelectedDevice] = useState(null);
 
+const [loading, setLoading] = useState(true);
+const [loadError, setLoadError] = useState("");
 
- 
+useEffect(() => {
+  let active = true;
+
+  async function loadDevices() {
+    try {
+      const result = await api("/api/devices");
+
+      if (active) {
+        setDevices(result.devices);
+        setLoadError("");
+      }
+    } catch (error) {
+      if (active) {
+        setLoadError(error.message || "Could not load devices.");
+      }
+    } finally {
+      if (active) {
+        setLoading(false);
+      }
+    }
+  }
+
+  loadDevices();
+
+  return () => {
+    active = false;
+  };
+}, []);
+
 
   function closeForm() {
     setView("list");
@@ -107,6 +121,14 @@ async function handleTestTrust(deviceId, changes) {
     <main>
       <h1>Devices</h1>
 
+{loading && <p>Loading devices...</p>}
+
+{loadError && (
+  <p role="alert">
+    Error loading devices: {loadError}
+  </p>
+)}
+
       
 {view === "list" && (
   <>
@@ -115,6 +137,11 @@ async function handleTestTrust(deviceId, changes) {
     </button>
 
     <h2>Device List</h2>
+
+{!loading && !loadError && devices.length === 0 && (
+  <p>No devices found. Add a device or run a network scan.</p>
+)}
+
 
     {devices.map((device) => (
       <div key={device.device_id}>

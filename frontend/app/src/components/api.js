@@ -1,12 +1,42 @@
 import scanStarted from "../samples/scan-started.json";
 import scanStatusIdle from "../samples/scan-status-idle.json";
 
-const SAMPLES = {
 
+const SAMPLES = {
   "GET /api/scans/status": scanStatusIdle,
   "POST /api/scans": scanStarted,
 
+  "GET /api/devices": {
+    devices: [
+      {
+        device_id: 1,
+        name: "Test Laptop",
+        model: "Latitude",
+        type: "Laptop",
+        vendor: "Dell",
+        mac: "AA:BB:CC:DD:EE:FF",
+        trusted: true,
+        flagged: false,
+        loaded_at: "2026-11-11T00:00:00",
+      },
+      {
+        device_id: 2,
+        name: "Office Printer",
+        model: "LaserJet",
+        type: "Printer",
+        vendor: "HP",
+        mac: "11:22:33:44:55:66",
+        trusted: false,
+        flagged: false,
+        loaded_at: "2026-11-11T00:00:00",
+      },
+    ],
+    page: 1,
+    per_page: 25,
+    total: 2,
+  },
 };
+
 
 export class ApiError extends Error {
 
