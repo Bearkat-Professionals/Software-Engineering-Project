@@ -39,6 +39,16 @@ class EvaluateFlagTests(unittest.TestCase):
             with self.subTest(rule, level=level.value, trusted=trusted, new=new):
                 self.assertIs(evaluate_flag(level, trusted, new), expected)
 
+    def test_a_users_flag_sticks_at_every_level_even_when_trusted(self):     # #103
+        for level, trusted, new, _, rule in CASES:
+            with self.subTest(rule, level=level.value, trusted=trusted, new=new):
+                self.assertIs(evaluate_flag(level, trusted, new, set_by_user=True), True)
+
+    def test_set_by_user_false_keeps_every_rule(self):
+        for level, trusted, new, expected, rule in CASES:
+            with self.subTest(rule, level=level.value, trusted=trusted, new=new):
+                self.assertIs(evaluate_flag(level, trusted, new, set_by_user=False), expected)
+
     def test_the_level_can_be_given_as_text(self):
         self.assertTrue(evaluate_flag("partial", trusted=False, is_new_device=False))
         self.assertFalse(evaluate_flag("identified", trusted=False, is_new_device=False))

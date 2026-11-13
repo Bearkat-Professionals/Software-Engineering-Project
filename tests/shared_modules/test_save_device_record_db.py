@@ -9,6 +9,7 @@ from __future__ import annotations
 import unittest
 from datetime import datetime
 
+from backend.data_access.account_settings import UserStore
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.network_data import DeviceStore
 from backend.data_access.reference_data import ReferenceStore
@@ -95,6 +96,43 @@ class SaveDeviceRecordDatabaseTests(unittest.TestCase):
         self.assertEqual((outcome.device.vendor_id, outcome.device.device_type_id), (1, 1))
         stored = Repository(self.engine, Device).get(outcome.device.pk)
         self.assertTrue(stored.flagged_status)
+
+    # ---- #103: user edits ------------------------------------------------------------
+
+    def test_migration_002_column_exists(self) -> None:
+        column = self.engine.fetch_one("SHOW COLUMNS FROM device LIKE 'flag_set_by_user'")
+        self.assertIsNotNone(column, "run database/migrations/002_flag_set_by_user.sql on the test database")
+        self.assertEqual((column["Null"], str(column["Default"])), ("NO", "0"))
+
+    def test_a_user_flagged_device_survives_a_scan_save(self) -> None:
+        created = self.save("192.168.1.5", FIRST)
+        flagged = self.saver.save(DeviceChanges(mac_address=ROUTER_MAC, flag_set_by_user=True),
+                                  acting_user_id=self.user, level=IdentificationLevel.UNIDENTIFIED)
+        self.assertEqual(flagged.status, SaveStatus.UPDATED)
+
+        scanned = self.saver.save(DeviceChanges(mac_address=ROUTER_MAC, current_ip="192.168.1.9", seen_at=LATER),
+                                  acting_user_id=self.user, level=IdentificationLevel.IDENTIFIED)
+        stored = Repository(self.engine, Device).get(created.device.pk)
+        self.assertTrue(scanned.flagged)
+        self.assertEqual((stored.flag_set_by_user, stored.flagged_status, stored.current_ip),
+                         (True, True, "192.168.1.9"))
+
+    def test_stale_loaded_at_on_the_real_store_is_a_conflict_and_changes_nothing(self) -> None:
+        saver = DeviceRecordSaver(DeviceStore(self.engine), ReferenceStore(self.engine, Vendor),
+                                  ReferenceStore(self.engine, DeviceType), UserStore(self.engine))
+        created = self.save("192.168.1.5", FIRST)                   # audited now, so long "after" loaded_at
+        before = Repository(self.engine, Device).get(created.device.pk)
+        audit_before = self.audit_for(created.device.pk)
+
+        outcome = saver.save(DeviceChanges(mac_address=ROUTER_MAC, device_name="Edited"), acting_user_id=self.user,
+                             level=IdentificationLevel.UNIDENTIFIED, loaded_at=datetime(2000, 1, 1))
+
+        self.assertEqual(outcome.status, SaveStatus.CONFLICT)
+        self.assertEqual(outcome.changed_by, self.user)
+        self.assertEqual(outcome.changed_at, audit_before[-1].changed_at)
+        self.assertIn("changed by scanner at", outcome.reasons[0])
+        self.assertEqual(Repository(self.engine, Device).get(created.device.pk), before)
+        self.assertEqual(self.audit_for(created.device.pk), audit_before)
 
 
 if __name__ == "__main__":
