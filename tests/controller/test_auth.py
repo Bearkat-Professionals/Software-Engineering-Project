@@ -74,7 +74,7 @@ class EveryRouteIsProtectedTests(AuthTestCase):
         self.assertGreaterEqual(len(routes), 5)
         for method, path in routes:
             with self.subTest(route=f"{method} {path}"):
-                with self.assertLogs(AUTH_LOG, level="WARNING"):
+                with self.assertLogs(AUTH_LOG, level="INFO"):
                     self.assertEqual(self.call(method, path).status_code, 401)
         self.assertEqual(self.manager.calls, [])
 
@@ -89,10 +89,11 @@ class SignInTests(AuthTestCase):
         self.assertEqual(body["permissions"], ["EXPORT", "VIEW_DATA"])
 
     def test_wrong_password_is_401_and_sets_no_session(self) -> None:
-        response = self.client.post("/api/login", json={"username": "val", "password": "nope"})
+        with self.assertLogs(AUTH_LOG, level="WARNING"):
+            response = self.client.post("/api/login", json={"username": "val", "password": "nope"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.get_json(), {"error": WRONG_LOGIN})
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             self.assertEqual(self.client.get("/api/me").status_code, 401)
 
     def test_missing_username_or_password_is_400(self) -> None:
@@ -124,11 +125,20 @@ class SignInTests(AuthTestCase):
 
         replay = self.app.test_client()
         replay.set_cookie("session", old_cookie)
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             self.assertEqual(replay.get("/api/me").status_code, 401)    # session fixation
 
 
 class SignOutAndTimeoutTests(AuthTestCase):
+    def test_sign_out_without_a_body_is_415_and_stays_signed_in(self) -> None:
+        """Every change must be JSON, sign-out too: the screens send {} (see the README)."""
+        self.sign_in(VAL)
+        response = self.client.post("/api/logout")
+        self.assertEqual(response.status_code, 415)
+        self.assertTrue(response.get_json()["error"])
+        self.assertEqual(self.client.get("/api/me").status_code, 200)       # still signed in
+        self.assertEqual(self.client.post("/api/logout", json={}).status_code, 204)
+
     def test_after_sign_out_the_old_cookie_is_401(self) -> None:
         self.sign_in(VAL)
         old_cookie = self.client.get_cookie("session").value
@@ -136,25 +146,25 @@ class SignOutAndTimeoutTests(AuthTestCase):
 
         replay = self.app.test_client()
         replay.set_cookie("session", old_cookie)
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             self.assertEqual(replay.get("/api/devices").status_code, 401)
 
     def test_disabled_after_sign_in_is_401_on_the_next_request(self) -> None:
         self.sign_in(VAL)
         self.users.disable(VAL)
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             response = self.client.get("/api/devices")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.get_json(), {"error": "This account is disabled."})
 
         self.users.users[VAL.user_id] = VAL                  # turned back on: still signed out
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             self.assertEqual(self.client.get("/api/devices").status_code, 401)
 
     def test_31_minutes_idle_is_401(self) -> None:
         self.sign_in(VAL)
         self.clock.advance(31 * 60)
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             response = self.client.get("/api/devices")
         self.assertEqual(response.status_code, 401)
         self.assertIn("Sign in again", response.get_json()["error"])
@@ -171,7 +181,7 @@ class SignOutAndTimeoutTests(AuthTestCase):
             self.clock.advance(20 * 60)
             self.assertEqual(self.client.get("/api/devices").status_code, 200)
         self.clock.advance(20 * 60)
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             self.assertEqual(self.client.get("/api/devices").status_code, 401)
 
     def test_the_limits_are_30_minutes_and_8_hours(self) -> None:
@@ -181,7 +191,7 @@ class SignOutAndTimeoutTests(AuthTestCase):
 class PermissionTests(AuthTestCase):
     def test_viewer_403_on_starting_a_scan_and_200_on_the_device_list(self) -> None:
         self.sign_in(VAL)
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="WARNING"):                # out of role: a WARNING (AT-13)
             response = self.client.post("/api/scans", json={"scope": "192.168.1.0/24"})
         self.assertEqual(response.status_code, 403)
         self.assertEqual(response.get_json(), {"error": "Your role (viewer) can't start scans."})
@@ -217,9 +227,19 @@ class LeakTests(AuthTestCase):
         self.assertNotIn(PASSWORD, logs.output[0])
         self.assertNotIn(HASH, logs.output[0])
 
-    def test_a_failed_sign_in_logs_nothing_with_the_password(self) -> None:
-        with self.assertNoLogs(AUTH_LOG, level="DEBUG"):
-            self.client.post("/api/login", json={"username": "val", "password": "a guess"})
+    def test_a_failed_sign_in_is_logged_without_the_password(self) -> None:
+        guess = "a guess 12345"
+        with self.assertLogs(AUTH_LOG, level="WARNING") as logs:
+            self.client.post("/api/login", json={"username": "val", "password": guess})
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("val", logs.output[0])
+        self.assertIn(WRONG_LOGIN, logs.output[0])
+        self.assertNotIn(guess, logs.output[0])
+
+    def test_signed_out_is_logged_at_info_not_warning(self) -> None:
+        with self.assertNoLogs(AUTH_LOG, level="WARNING"):
+            with self.assertLogs(AUTH_LOG, level="INFO"):
+                self.assertEqual(self.client.get("/api/devices").status_code, 401)
 
 
 class JsonOnlyTests(AuthTestCase):

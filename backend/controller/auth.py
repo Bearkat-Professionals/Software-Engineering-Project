@@ -191,11 +191,15 @@ def _end_session(state: _AccessState, sid: Any) -> None:
     session.clear()             # the response tells the browser to drop the cookie
 
 def _refuse(status: int, reason: str, user: User | None, permission: Permission | None) -> None:
-    """Log it for the admin (AT-13) and stop. The username only, never the User (its repr
-    has the hash) and never the request body (it may hold a password)."""
+    """Log it for the admin and stop. The username only, never the User (its repr has the
+    hash) and never the request body (it may hold a password).
+
+    403 (the role isn't allowed, AT-13) is a WARNING. 401 (signed out or timed out) is only
+    INFO: the screens poll every few seconds, so an expired tab would fill the log."""
     who = user.username if user is not None else "nobody signed in"
     needs = permission.name if permission is not None else "sign-in"
-    logger.warning("Refused %s %r for %s: needs %s (%s)", request.method, request.path, who, needs, reason)
+    level = logging.WARNING if status == 403 else logging.INFO
+    logger.log(level, "Refused %s %r for %s: needs %s (%s)", request.method, request.path, who, needs, reason)
     abort(status, description=reason)
 
 #sign in, sign out, who am I
@@ -212,6 +216,8 @@ def _register_routes(app: Flask, services: Services, sessions: SessionRegistry) 
 
         result = services.access.authenticate(username, password)
         if not result.signed_in:
+            # So an admin can see password guessing. The username and reason, never the password.
+            logger.warning("Failed sign-in for %r: %s", username, result.reason)
             return jsonify(error=result.reason), 401
 
         sessions.end(session.get("sid"))

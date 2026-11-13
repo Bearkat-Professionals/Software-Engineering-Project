@@ -51,7 +51,7 @@ class HealthTests(unittest.TestCase):
         self.assertNotIn("went away", response.get_data(as_text=True))
 
     def test_signed_out_is_401(self):
-        with self.assertLogs(AUTH_LOG, level="WARNING"):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
             self.assertEqual(make_app().test_client().get("/api/health").status_code, 401)
 
 

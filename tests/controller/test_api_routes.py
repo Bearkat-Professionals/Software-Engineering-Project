@@ -147,7 +147,7 @@ class StartScanTests(unittest.TestCase):
             self.assertIn(expected, logs.output[0])
         self.assertNotIn(VIEWER.password_hash, logs.output[0])
 
-        with self.assertLogs(AUTH_LOG, level="WARNING") as logs:
+        with self.assertLogs(AUTH_LOG, level="INFO") as logs:      # signed out: INFO, not WARNING
             make_client(None).get("/api/devices")
         self.assertIn("nobody signed in", logs.output[0])
 

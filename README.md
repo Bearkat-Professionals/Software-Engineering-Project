@@ -236,7 +236,7 @@ Every endpoint except `POST /api/login` needs a signed-in user: signed out gives
 | Request | Body | Result |
 |---|---|---|
 | `POST /api/login` | `{"username": "sam", "password": "..."}` | 200 `{"user": {...}, "permissions": [...]}` and a session cookie; 401 for a wrong username or password |
-| `POST /api/logout` | none | 204; the old cookie stops working |
+| `POST /api/logout` | `{}` (every POST must be JSON) | 204; the old cookie stops working |
 | `GET /api/me` | none | 200, the same shape as login |
 
 The cookie is HttpOnly and SameSite=Strict (Secure once HTTPS arrives). A session ends after 30 minutes without a request, or 8 hours after signing in. Sessions live in the server's memory, so restarting the app signs everyone out.
