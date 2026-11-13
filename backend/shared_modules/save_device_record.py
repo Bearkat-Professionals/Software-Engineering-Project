@@ -10,13 +10,12 @@ of work. A rejection is decided before anything is written.
     saver = DeviceRecordSaver(DeviceStore(engine), ReferenceStore(engine, Vendor),
                               ReferenceStore(engine, DeviceType))
     changes = DeviceChanges(mac_address="28:6F:B9:00:00:01", current_ip="192.168.1.20",
-                            seen_at=now, oui_vendor_id=7)
-    outcome = saver.save(changes, acting_user_id=1, level=provisional_level(7), unit=unit)
+                            seen_at=now, oui_vendor_id=7, confidence_score=20)
+    outcome = saver.save(changes, acting_user_id=1, level=identification.level, unit=unit)
     outcome.status      # SaveStatus.CREATED, UPDATED or REJECTED
     outcome.reasons     # plain-English reasons when REJECTED (OUT-04)
 
-Text fields (hostname, device_name, model) are stored exactly as typed, so a
-screen that shows them must escape them (XSS). SH-4 only checks that they fit.
+Scans pass the level from 2.2.4 (identify); the edit screens pass the device's current level.
 """
 from __future__ import annotations
 
@@ -125,8 +124,8 @@ class DeviceRecordSaver:
         _apply(changes, device)
         device.flagged_status = evaluate_flag(level, device.trusted_status, is_new)
 
-        # loaded_at is not checked yet: the conflict check (CM-01) and edit holds (SH-2)
-        # come in M5. DeviceStore.store already accepts loaded_at, so M5 passes it on here.
+        # loaded_at is not checked yet: Device Record Maintenance (#103) passes it on to
+        # DeviceStore.store, which already refuses a stale save (CM-01).
         saved = self._devices.store(device, acting_user_id, unit)
         return SaveOutcome(SaveStatus.CREATED if is_new else SaveStatus.UPDATED, saved)
 
@@ -149,16 +148,6 @@ class DeviceRecordSaver:
             elif not record.is_active:
                 reasons.append(f"The {label} with id {new_id} is retired, so it can't be given to a device.")
         return reasons
-
-
-def provisional_level(vendor_id: int | None) -> IdentificationLevel:
-    """TEMPORARY, until 2.2.4.4 Assign Level (M3) works the level out from the evidence.
-
-    A device whose vendor is known from an OUI match is partially identified;
-    one without is unidentified. Either way it is flagged (spec 7.3, rule 1)."""
-    if vendor_id is not None and vendor_id != UNKNOWN_VENDOR_ID:
-        return IdentificationLevel.PARTIAL
-    return IdentificationLevel.UNIDENTIFIED
 
 
 def _rejected(reasons: list[str]) -> SaveOutcome:

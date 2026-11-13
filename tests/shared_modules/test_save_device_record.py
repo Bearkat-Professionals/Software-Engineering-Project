@@ -11,7 +11,7 @@ from datetime import datetime
 from backend.records import Device, DeviceType, Vendor
 from backend.records.enums import AuditAction, IdentificationLevel, NetworkStatus, RecordStatus
 from backend.shared_modules.save_device_record import (DeviceChanges, DeviceRecordSaver, SaveOutcome,
-                                                       SaveStatus, UNKNOWN_VENDOR_ID, provisional_level)
+                                                       SaveStatus, UNKNOWN_VENDOR_ID)
 from tests.fakes.fake_device_store import FakeDeviceStore
 from tests.fakes.fake_reference_store import FakeReferenceStore
 
@@ -300,16 +300,6 @@ class UnitOfWorkTests(SaverTestCase):
         self.save(sighting(ROUTER_MAC))
         self.assertEqual(self.devices.units_seen, [UNIT, UNIT])
         self.assertEqual(self.devices.audit[0].unit, UNIT)
-
-
-class ProvisionalLevelTests(unittest.TestCase):
-    def test_known_vendor_is_partial(self) -> None:
-        self.assertEqual(provisional_level(APPLE_VENDOR), IdentificationLevel.PARTIAL)
-
-    def test_no_or_unknown_vendor_is_unidentified(self) -> None:
-        for vendor_id in (None, UNKNOWN_VENDOR_ID):
-            with self.subTest(vendor_id=vendor_id):
-                self.assertEqual(provisional_level(vendor_id), IdentificationLevel.UNIDENTIFIED)
 
 
 if __name__ == "__main__":

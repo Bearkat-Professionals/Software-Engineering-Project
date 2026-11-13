@@ -19,6 +19,7 @@ from backend.records import Vendor
 from backend.records.enums import AlertEventName, ScanOutcome, ScanStatus
 from backend.services.scan.discovered_host import DiscoveredHost
 from backend.services.scan.record_scan_results import RecordSummary
+from backend.services.scan.identification_manager import IdentificationRules
 from backend.services.scan.scan_manager import AlertCandidate, ScanManager, ScanResult
 from backend.services.scan.scan_session import ScanPhase, ScanSessionController
 from backend.services.scan.scan_settings import ScanSettings
@@ -45,10 +46,10 @@ class FakeRecorder:
         self.crash = crash
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, scan_id: int, user_id: int, hosts: list[DiscoveredHost], lookup: dict, seen_at: datetime,
-                 *, on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
+    def __call__(self, scan_id: int, user_id: int, hosts: list[DiscoveredHost], rules: IdentificationRules,
+                 seen_at: datetime, *, on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
         self.calls.append({"scan_id": scan_id, "user_id": user_id, "hosts": list(hosts),
-                           "lookup": lookup, "seen_at": seen_at})
+                           "rules": rules, "seen_at": seen_at})
         if self.crash is not None:
             raise self.crash
         to_save = [host for host in hosts if host.mac_address]
@@ -111,7 +112,7 @@ class FullScanTests(ManagerTestCase):
         result = self.run_scan()
         [call] = self.recorder.calls
         self.assertEqual((call["scan_id"], call["user_id"]), (result.scan_id, JAVIER.user_id))
-        self.assertEqual(call["lookup"], {"70:13:01": (2, "Vantiva - Connected Home")})   # from the rules
+        self.assertEqual(call["rules"].oui_lookup, {"70:13:01": (2, "Vantiva - Connected Home")})   # from the rules
         self.assertEqual(call["seen_at"], NOW.replace(microsecond=0))
 
     def test_new_flagged_devices_become_alert_candidates(self) -> None:

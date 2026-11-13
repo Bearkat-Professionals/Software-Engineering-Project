@@ -93,6 +93,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2); `--workers` / `--timeout` try other sweep settings |
 | `scan` | `backend.services.scan.check_scan` | run a whole scan in the background as a user, watch its progress, then see the outcome and devices (#44) |
+| `ident` | `backend.services.scan.check_identification` | after a scan, list every device's vendor, type, score, level and flag, checked against its stored evidence (#69, test database; `--database NAME` for another) |
 | `speed` | `backend.services.scan.check_sweep_speed` | time a ping sweep at 1, 8, 32 and 64 workers and print a table for the PR (#81) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
 | `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
@@ -152,7 +153,7 @@ hosts, status = sweep_subnet(scope, settings=settings)
 A scan records its settings in `scan.configuration_used`. Saving results stays one host at a time on purpose: each save is a short database transaction, and threads would need a connection each for little gain.
 
 ## Running a scan (#44)
-A scan runs in the background: it opens a session, discovers hosts, saves them, then closes with an outcome (`success`, `partial` or `failed`) and any errors. Only one scan runs at a time.
+A scan runs in the background: it opens a session, discovers hosts, identifies and saves them, then closes with an outcome (`success`, `partial` or `failed`) and any errors. Only one scan runs at a time.
 
 ```
 .\dev scan 192.168.1.0/24 --user blaine                  # watch it, then see the devices
@@ -180,6 +181,28 @@ manager = build_scan_manager(engine, sessions, ScanSettings.from_env(), on_finis
 manager.start(scope, user_id)        # returns at once; the scan screen polls sessions.status()
 ```
 `on_finished` gets the `ScanResult` after the outcome is saved, with `alerts` listing `scan_failed` and each new flagged device. The manager itself sends nothing.
+
+## Checking identification (#69)
+Every device a scan saves is identified from its evidence (2.2.4): the OUI matched from its MAC, plus any signature evidence stored by earlier scans. That gives its vendor, type, a 0-100 confidence score, a level and the flag (spec 7.1-7.3). After a scan, list what each device was identified as:
+
+```
+.\dev scan 192.168.1.0/24 --user blaine      # scan first
+.\dev ident                                  # every device in the test database
+.\dev ident --database nds                   # another database
+```
+
+It changes nothing in the database. The level isn't stored (spec 7.2 works it out from the evidence), so `ident` works it out again from each device's stored evidence and today's reference rules, exactly as the next scan would.
+
+| Column | Meaning |
+|---|---|
+| Score | 0-100 from the evidence; each evidence type counts once (OUI 20, mDNS 35, SSDP 35, NetBIOS/LLMNR 25, reverse DNS 20) |
+| Level | `identified` (type and name from a signature, score 50 or more), `partial` (vendor or type known), or `unidentified` |
+| Flagged | `yes` unless the device is identified, or trusted and seen before under the same MAC (spec 7.3) |
+| Check | `ok` when the stored score, type and flag match the evidence; otherwise what differs. That means the reference data changed since the device was last scanned (for example, a signature was retired), and the next scan updates it |
+
+Until the evidence collectors arrive (M6), scans find OUI evidence only: expect a score of 20 (`partial`) for a known vendor or 0 (`unidentified`), and every untrusted device flagged.
+
+A scan fills in a device's name and model only when they're empty, so a name a user typed is kept. It does set the type from the evidence every time, including back to "unknown".
 
 ## Setting up your .env file
 Make sure to create a .env file in your workspace. Git ignores this file so you are able to put your database credentials here securely.
