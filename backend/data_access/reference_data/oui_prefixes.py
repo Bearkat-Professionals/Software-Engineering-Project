@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import re
 from contextlib import contextmanager
+from datetime import datetime
 from typing import Any, Generator
 
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.database_engine import DatabaseEngine
 from backend.data_access.reference_data.reference_store import (UNKNOWN_ID, DuplicateReferenceError,
+                                                                EditConflictError,
                                                                 ProtectedReferenceError)
 from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import OuiPrefix, Vendor
@@ -77,15 +79,24 @@ class OuiPrefixStore:
             self._audit.record(changed_by, AuditAction.INSERT, None, created, cursor)
         return created
 
-    def reassign(self, prefix: str, vendor_id: int, changed_by: int, unit: Any = None) -> OuiPrefix:
+    def reassign(self, prefix: str, vendor_id: int, changed_by: int, unit: Any = None,
+                 *, loaded_at: datetime | None = None) -> OuiPrefix:
         """Move an existing prefix to another vendor (a correction), plus its audit entry."""
         normalized = normalize_prefix(prefix)
         with _unit_of_work(self._engine, unit) as cursor:
-            self._check_vendor(vendor_id, cursor)
-            matches = self._prefixes.list(cursor, oui_prefix=normalized)
-            if not matches:
+            cursor.execute(
+                "SELECT `oui_id` FROM `oui_prefix` WHERE `oui_prefix` = %s FOR UPDATE",
+                (normalized,),
+            )
+            locked = cursor.fetchone()
+            if locked is None:
                 raise RecordNotFoundError(f"OUI prefix {normalized} does not exist")
-            current = matches[0]
+            current = self._prefixes.get(locked["oui_id"], cursor)
+            if loaded_at is not None:
+                latest = self._audit.latest(OuiPrefix.TABLE, current.pk, cursor)
+                if latest is not None and latest.changed_at > loaded_at:
+                    raise EditConflictError(OuiPrefix.TABLE, current.pk, latest)
+            self._check_vendor(vendor_id, cursor)
             if current.vendor_id == vendor_id:
                 return current
             old = self._prefixes.get(current.pk, cursor)      # a separate copy for the audit's old value

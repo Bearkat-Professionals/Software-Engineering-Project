@@ -11,10 +11,13 @@ from backend.data_access.reference_data.oui_prefixes import (InvalidPrefixError,
                                                              normalize_prefix)
 from backend.data_access.reference_data.reference_rules import ReferenceRules, find_reference_rules
 from backend.data_access.reference_data.reference_store import (DuplicateReferenceError,
+                                                                EditConflictError,
+                                                                InactiveReferenceError,
                                                                 ProtectedReferenceError,
-                                                                ReferenceStore)
+                                                                ReferencePage, ReferenceStore)
 
 __all__ = [
-    "DuplicateReferenceError", "InvalidPrefixError", "OuiPrefixStore", "ProtectedReferenceError",
-    "ReferenceRules", "ReferenceStore", "find_reference_rules", "normalize_prefix",
+    "DuplicateReferenceError", "EditConflictError", "InactiveReferenceError", "InvalidPrefixError",
+    "OuiPrefixStore", "ProtectedReferenceError", "ReferencePage", "ReferenceRules",
+    "ReferenceStore", "find_reference_rules", "normalize_prefix",
 ]
