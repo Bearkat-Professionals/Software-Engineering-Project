@@ -169,6 +169,12 @@ class RecordScanResultsTests(unittest.TestCase):
         self.assertEqual(router.device_name, "Front hall speaker")      # not replaced by "Echo Dot"
         self.assertEqual(router.model, "3rd gen")                       # the empty model is filled in
 
+    def test_a_type_a_user_chose_is_kept(self) -> None:
+        printer = 24                                                    # set by hand; nothing in the rules
+        self.devices = FakeDeviceStore([Device(mac_address=ROUTER.mac_address, device_type_id=printer)])
+        self.record([ROUTER])                                           # finds no type: OUI only
+        self.assertEqual(self.devices.find_by_mac(ROUTER.mac_address).device_type_id, printer)
+
     def test_a_trusted_known_device_stays_unflagged(self) -> None:
         self.devices = FakeDeviceStore([Device(mac_address=ROUTER.mac_address, trusted_status=True)])
         summary = self.record([ROUTER])

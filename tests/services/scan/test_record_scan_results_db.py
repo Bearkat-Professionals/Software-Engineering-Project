@@ -141,7 +141,7 @@ class RecordScanResultsDatabaseTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.count("identification_evidence"), evidence_before)
 
-    def test_a_retired_signature_no_longer_gives_its_type(self) -> None:
+    def test_a_retired_signature_stops_counting_but_the_type_is_kept(self) -> None:
         signature = self.echo_signature()
         self.scan(FIRST)
         self.heard_echo(self.router().pk, signature)
@@ -151,22 +151,24 @@ class RecordScanResultsDatabaseTests(unittest.TestCase):
         ReferenceStore(self.engine, DeviceSignature).retire(signature.pk, self.user)
         self.scan(LAST)
         router = self.router()
-        self.assertEqual((router.device_type_id, router.confidence_score, router.flagged_status),
-                         (UNKNOWN_TYPE_ID, 20, True))                      # back to OUI only
-        self.assertEqual(router.device_name, "Echo Dot")                   # scans never clear a name
+        self.assertEqual((router.confidence_score, router.flagged_status), (20, True))   # OUI only again
+        # scans never clear a type or name (#104): a user changes them
+        self.assertEqual((router.device_type_id, router.device_name), (signature.device_type_id, "Echo Dot"))
         self.assertEqual(self.count(f"identification_evidence WHERE signature_id = {signature.pk}"), 1)  # kept
 
-    def test_a_users_device_name_survives_a_rescan(self) -> None:
+    def test_a_users_name_and_type_survive_a_rescan(self) -> None:
         signature = self.echo_signature()
+        printer = Repository(self.engine, DeviceType).create(DeviceType(category_name="printer"))
         self.scan(FIRST)
         router = self.router()
-        router.device_name = "Front hall speaker"                          # as the edit screen will
+        router.device_name = "Front hall printer"                          # as the edit screen will
+        router.device_type_id = printer.pk
         DeviceStore(self.engine).store(router, self.user)
-        self.heard_echo(router.pk, signature)
+        self.heard_echo(router.pk, signature)                              # evidence says "speaker"
 
         self.scan(LATER)
         router = self.router()
-        self.assertEqual(router.device_name, "Front hall speaker")
+        self.assertEqual((router.device_name, router.device_type_id), ("Front hall printer", printer.pk))
         self.assertEqual(router.model, "3rd gen")                          # the empty model is filled in
 
 

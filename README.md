@@ -198,11 +198,13 @@ It changes nothing in the database. The level isn't stored (spec 7.2 works it ou
 | Score | 0-100 from the evidence; each evidence type counts once (OUI 20, mDNS 35, SSDP 35, NetBIOS/LLMNR 25, reverse DNS 20) |
 | Level | `identified` (type and name from a signature, score 50 or more), `partial` (vendor or type known), or `unidentified` |
 | Flagged | `yes` unless the device is identified, or trusted and seen before under the same MAC (spec 7.3) |
-| Check | `ok` when the stored score, type and flag match the evidence; otherwise what differs. That means the reference data changed since the device was last scanned (for example, a signature was retired), and the next scan updates it |
+| Check | `ok` when the next scan would change nothing: the stored score and flag match the evidence, and the type is one a scan keeps. Otherwise what it would change: the reference data changed since the device was last scanned (for example, a signature was retired) |
+
 
 Until the evidence collectors arrive (M6), scans find OUI evidence only: expect a score of 20 (`partial`) for a known vendor or 0 (`unidentified`), and every untrusted device flagged.
 
-A scan fills in a device's name and model only when they're empty, so a name a user typed is kept. It does set the type from the evidence every time, including back to "unknown".
+A scan fills in a device's type, name and model only when they're empty ("unknown" for the type), so values a user set are kept, and a scan never resets a type to unknown (#104). Retiring a signature lowers the score and level on the next scan, but the type it gave stays until a user changes it.
+
 
 ## Setting up your .env file
 Make sure to create a .env file in your workspace. Git ignores this file so you are able to put your database credentials here securely.

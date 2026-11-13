@@ -16,6 +16,9 @@ of work. A rejection is decided before anything is written.
     outcome.reasons     # plain-English reasons when REJECTED (OUT-04)
 
 Scans pass the level from 2.2.4 (identify); the edit screens pass the device's current level.
+
+Text fields (hostname, device_name, model) are stored exactly as typed, so a
+screen that shows them must escape them (XSS). SH-4 only checks that they fit.
 """
 from __future__ import annotations
 

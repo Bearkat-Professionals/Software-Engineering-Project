@@ -13,8 +13,9 @@ failing never stops the others (SEC-14).
     summary.new_flagged_ids     # for 2.2.5.3 Detect Alert Events ("new unidentified device", spec 7.5)
     record_scan_results(..., on_host_done=lambda done, total: print(f"{done} of {total}"))
 
-A scan fills in a device's name and model only while they are empty, so a name a user
-typed is never replaced.
+A scan only fills a device's type, name and model while they are empty ("unknown" for
+the type), so a value a user set is never replaced, and a scan never resets a type to
+unknown (#104).
 """
 from __future__ import annotations
 
@@ -26,7 +27,7 @@ from backend.records import Device, IdentificationEvidence, ScanObservation
 from backend.records.enums import NetworkStatus
 from backend.services.scan.detect_randomized_mac import is_randomized_mac
 from backend.services.scan.discovered_host import DiscoveredHost
-from backend.services.scan.evidence import UNKNOWN_VENDOR_ID, EvidenceItem, RawEvidence
+from backend.services.scan.evidence import UNKNOWN_TYPE_ID, UNKNOWN_VENDOR_ID, EvidenceItem, RawEvidence
 from backend.services.scan.identification_manager import IdentificationResult, IdentificationRules, identify
 from backend.shared_modules.save_device_record import DeviceChanges, DeviceRecordSaver, SaveOutcome, SaveStatus
 from backend.shared_modules.validate_input import validate_mac
@@ -150,15 +151,26 @@ def _find_device(host: DiscoveredHost, devices: DeviceFinder, unit: Any) -> Devi
     return devices.find_by_mac(checked.value, is_randomized_mac(checked.value), unit)
 
 
+def scan_type(found_type_id: int, stored: Device | None) -> int | None:
+    """The device type a scan saves, or None to keep the stored one. Like name and model,
+    a scan only fills an unknown type: it never replaces a type that is set (a user's,
+    or one an earlier scan found) and never resets one to unknown (#104)."""
+    if found_type_id == UNKNOWN_TYPE_ID:
+        return None
+    if stored is not None and stored.device_type_id not in (None, UNKNOWN_TYPE_ID):
+        return None
+    return found_type_id
+
+
 def _changes(host: DiscoveredHost, seen_at: datetime, result: IdentificationResult,
              known: Device | None) -> DeviceChanges:
-    """What SH-4 saves. Name and model only fill empty fields, so a user's name is kept."""
+    """What SH-4 saves. Type, name and model only fill empty fields, so a user's values are kept."""
     found = result.identification
     # hostname stays None: no Host Discovery step finds one yet
     return DeviceChanges(
         mac_address=host.mac_address, current_ip=host.ip_address, seen_at=seen_at,
         oui_vendor_id=found.vendor_id if found.vendor_id != UNKNOWN_VENDOR_ID else None,
-        device_type_id=found.device_type_id,
+        device_type_id=scan_type(found.device_type_id, known),
         confidence_score=found.breakdown.score,
         device_name=found.device_name if not (known and known.device_name) else None,
         model=found.model if not (known and known.model) else None)

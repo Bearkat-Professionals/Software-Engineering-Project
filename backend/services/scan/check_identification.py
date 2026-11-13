@@ -8,9 +8,9 @@
 Prints each device's IP, MAC, vendor, type, score, level and flag. The level isn't
 stored (spec 7.2: it is worked out from the evidence), so it is worked out again here
 with identify(), from the device's stored evidence and today's reference rules: what
-the next scan would see. The last column checks the stored score, type and flag
-against that: "ok" means they trace to the evidence; anything else means the reference
-data changed since the device was last scanned, and the next scan will update it.
+the next scan would see. The last column says "ok" when that scan would change nothing;
+otherwise what it would change, which means the reference data changed since the
+device was last scanned.
 
 Read-only: changes nothing in the database.
 """
@@ -30,7 +30,7 @@ from backend.data_access.reference_data import find_reference_rules
 from backend.services.scan.discovered_host import DiscoveredHost
 from backend.services.scan.evidence import EvidenceItem
 from backend.services.scan.identification_manager import IdentificationResult, IdentificationRules, identify
-from backend.services.scan.record_scan_results import NO_COLLECTED_EVIDENCE
+from backend.services.scan.record_scan_results import NO_COLLECTED_EVIDENCE, scan_type
 
 
 def every_device(devices: DeviceStore) -> list[DeviceListing]:
@@ -66,13 +66,15 @@ def reidentify(listing: DeviceListing, rules: IdentificationRules, scans: ScanSt
 
 
 def check(listing: DeviceListing, result: IdentificationResult) -> str:
-    """'ok' when the stored score, type and flag match the evidence; otherwise what differs."""
+    """'ok' when the next scan would change nothing: the stored score and flag match the
+    evidence, and the type is one a scan keeps (set, or nothing found). Otherwise what differs."""
     device, found = listing.device, result.identification
     differences: list[str] = []
     if device.confidence_score != found.breakdown.score:
         differences.append(f"score {found.breakdown.score} now")
-    if device.device_type_id != found.device_type_id:
-        differences.append(f"type {found.device_type_id} now")
+    new_type = scan_type(found.device_type_id, device)
+    if new_type is not None and new_type != device.device_type_id:
+        differences.append(f"type {new_type} now")
     if device.flagged_status != result.flagged:
         differences.append(f"flag {'yes' if result.flagged else 'no'} now")
     return "; ".join(differences) or "ok"
