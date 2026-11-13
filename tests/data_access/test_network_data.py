@@ -8,9 +8,12 @@ and is skipped without it.
 import threading
 import time
 import unittest
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from typing import Any
 
-from backend.data_access.network_data import DeviceStore, EditConflictError, ScanNotRunningError, ScanStore
+from backend.data_access.network_data import (DeviceSearch, DeviceStore, EditConflictError,
+                                              ScanNotRunningError, ScanStore)
+from backend.data_access.network_data.device_store import _search_where
 from backend.data_access.reference_data import ReferenceStore
 from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import AuditLog, Device, DeviceType, IdentificationEvidence, Scan, ScanObservation, User, Vendor
@@ -202,6 +205,184 @@ class DeviceStoreTests(NetworkDataTestCase):
             with self.subTest(bad):
                 with self.assertRaises(ValueError):
                     self.devices.list_page(**bad)
+
+
+class DeviceSearchTests(NetworkDataTestCase):
+    """3.1.2 search: FR-10 filters, text search, sorting and paging."""
+
+    def add(self, n: int, **fields: Any) -> Device:
+        return self.device(f"F0:D1:A9:00:00:{n:02d}", **fields)
+
+    def found(self, page: int = 1, per_page: int = 50, **fields: Any) -> list[str]:
+        """The last two characters of each MAC found, in the order returned."""
+        result = self.devices.search(DeviceSearch(**fields), page, per_page)
+        return [row.device.mac_address[-2:] for row in result.devices]
+
+    def check(self, cases: list[tuple[dict[str, Any], list[str]]]) -> None:
+        """Each search finds exactly these devices (in any order)."""
+        for fields, expected in cases:
+            with self.subTest(**fields):
+                self.assertEqual(sorted(self.found(**fields)), expected)
+
+    # ---- filters -----------------------------------------------------------------------
+
+    def test_each_filter_alone_and_three_together(self) -> None:
+        phone = ReferenceStore(self.engine, DeviceType).store(DeviceType(category_name="phone"), self.admin)
+        apple = ReferenceStore(self.engine, Vendor).store(Vendor(vendor_name="Apple, Inc."), self.admin)
+        online, offline = NetworkStatus.ONLINE, NetworkStatus.OFFLINE
+        self.add(1, device_type_id=phone.pk, vendor_id=apple.pk, network_status=online,
+                 flagged_status=True, confidence_score=80)
+        self.add(2, device_type_id=phone.pk, network_status=online, flagged_status=True, confidence_score=30)
+        self.add(3, vendor_id=apple.pk, network_status=offline, trusted_status=True, confidence_score=90)
+        self.add(4, is_randomized_mac=True, network_status=online, confidence_score=60)
+        self.check([
+            (dict(device_type_id=phone.pk), ["01", "02"]),
+            (dict(vendor_id=apple.pk), ["01", "03"]),
+            (dict(network_status=offline), ["03"]),
+            (dict(flagged_status=True), ["01", "02"]),
+            (dict(trusted_status=True), ["03"]),
+            (dict(trusted_status=False), ["01", "02", "04"]),
+            (dict(is_randomized_mac=True), ["04"]),
+            (dict(confidence_min=60), ["01", "03", "04"]),
+            (dict(network_status=online, flagged_status=True, confidence_min=50), ["01"]),
+        ])
+
+    def test_confidence_range_edges(self) -> None:
+        for n, score in enumerate((0, 1, 50, 99, 100), start=1):
+            self.add(n, confidence_score=score)
+        self.check([
+            (dict(confidence_min=0, confidence_max=100), ["01", "02", "03", "04", "05"]),
+            (dict(confidence_max=0), ["01"]),
+            (dict(confidence_min=100), ["05"]),
+            (dict(confidence_min=50, confidence_max=50), ["03"]),
+            (dict(confidence_min=1, confidence_max=99), ["02", "03", "04"]),
+        ])
+
+    def test_date_range_includes_all_of_the_last_day(self) -> None:
+        self.add(1, last_seen=datetime(2026, 11, 7, 23, 59, 59))     # the day before
+        self.add(2, last_seen=datetime(2026, 11, 8, 0, 0, 0))        # first second of seen_from
+        self.add(3, last_seen=datetime(2026, 11, 9, 23, 59, 59))     # last second of seen_to
+        self.add(4, last_seen=datetime(2026, 11, 10, 0, 0, 0))       # the day after
+        self.add(5)                                                  # never seen: outside any range
+        self.check([
+            (dict(seen_from=date(2026, 11, 8), seen_to=date(2026, 11, 9)), ["02", "03"]),
+            (dict(seen_from=date(2026, 11, 9), seen_to=date(2026, 11, 9)), ["03"]),
+            (dict(seen_from=date(2026, 11, 9)), ["03", "04"]),
+            (dict(seen_to=date(2026, 11, 7)), ["01"]),
+        ])
+
+    # ---- text search -------------------------------------------------------------------
+
+    def test_text_matches_each_column_and_ignores_case(self) -> None:
+        self.add(1, device_name="Kitchen TV")
+        self.add(2, hostname="living-room-printer.local")
+        self.add(3, current_ip="172.16.44.7")
+        self.device("AA:BB:CC:00:00:04")
+        self.check([
+            (dict(text="kITCHEN"), ["01"]),            # name
+            (dict(text="LIVING-ROOM"), ["02"]),        # hostname
+            (dict(text="16.44"), ["03"]),              # IP
+            (dict(text="aa:bb:cc"), ["04"]),           # MAC
+            (dict(text="  kitchen  "), ["01"]),        # spaces around it are ignored
+            (dict(text="x' OR '1'='1"), []),           # just text, not SQL
+        ])
+
+    def test_wildcards_in_the_text_match_only_themselves(self) -> None:
+        self.add(1, device_name="50% off sign")
+        self.add(2, device_name="500 club")              # would match an unescaped 50%
+        self.add(3, device_name="cam a_b")
+        self.add(4, device_name="cam axb")               # would match an unescaped a_b
+        self.add(5, device_name="back\\slash")
+        self.check([
+            (dict(text="50%"), ["01"]),
+            (dict(text="a_b"), ["03"]),
+            (dict(text="k\\s"), ["05"]),
+        ])
+
+    # ---- sorting and paging ------------------------------------------------------------
+
+    def test_ip_sorts_as_numbers_and_no_ip_comes_last(self) -> None:
+        for n, ip in enumerate(("10.0.0.10", "9.0.0.1", "10.0.0.100", None, "10.0.0.9"), start=1):
+            self.add(n, current_ip=ip)
+        self.assertEqual(self.found(sort="ip", descending=False), ["02", "05", "01", "03", "04"])
+        self.assertEqual(self.found(sort="ip", descending=True), ["03", "01", "05", "02", "04"])
+
+    def test_devices_without_a_name_sort_last_either_way(self) -> None:
+        for n, name in enumerate(("bravo", None, "Alpha", "charlie"), start=1):
+            self.add(n, device_name=name)
+        self.assertEqual(self.found(sort="name", descending=False), ["03", "01", "04", "02"])
+        self.assertEqual(self.found(sort="name", descending=True), ["04", "01", "03", "02"])
+
+    def test_every_sort_orders_by_its_column(self) -> None:
+        apple = ReferenceStore(self.engine, Vendor).store(Vendor(vendor_name="Apple, Inc."), self.admin)
+        zebra = ReferenceStore(self.engine, Vendor).store(Vendor(vendor_name="Zebra Technologies"), self.admin)
+        phone = ReferenceStore(self.engine, DeviceType).store(DeviceType(category_name="phone"), self.admin)
+        self.add(1, vendor_id=zebra.pk, device_type_id=phone.pk, confidence_score=50,
+                 last_seen=datetime(2026, 11, 9))
+        self.add(2, vendor_id=apple.pk, confidence_score=90, last_seen=datetime(2026, 11, 7))
+        self.add(3, confidence_score=10, last_seen=datetime(2026, 11, 8))     # unknown vendor and type
+        ascending = {
+            "confidence": ["03", "01", "02"],
+            "last_seen": ["02", "03", "01"],
+            "vendor": ["02", "03", "01"],          # Apple, unknown, Zebra
+            "type": ["01", "02", "03"],            # phone, then two "unknown": the id breaks the tie
+        }
+        for sort, expected in ascending.items():
+            with self.subTest(sort=sort):
+                self.assertEqual(self.found(sort=sort, descending=False), expected)
+                # descending is the exact reverse, ties included, because the id follows the direction
+                self.assertEqual(self.found(sort=sort, descending=True), expected[::-1])
+
+    def test_paging_a_sorted_search_returns_every_device_once(self) -> None:
+        for n in range(1, 8):
+            self.add(n, confidence_score=50)            # all tied, so only device_id decides the order
+        for descending in (False, True):
+            with self.subTest(descending=descending):
+                pages = [self.found(page, 3, sort="confidence", descending=descending) for page in (1, 2, 3)]
+                self.assertEqual([len(found) for found in pages], [3, 3, 1])
+                every = [mac for found in pages for mac in found]
+                self.assertEqual(sorted(every), [f"{n:02d}" for n in range(1, 8)])
+
+    def test_total_counts_every_match_not_just_the_page(self) -> None:
+        for n in range(1, 8):
+            self.add(n, flagged_status=n <= 5, device_name="cam" if n % 2 else "tv")
+        flagged_cams = self.devices.search(DeviceSearch(flagged_status=True, text="cam"), page=1, per_page=2)
+        self.assertEqual((flagged_cams.total, len(flagged_cams.devices)), (3, 2))     # 1, 3 and 5
+        last_page = self.devices.search(DeviceSearch(flagged_status=True), page=3, per_page=2)
+        self.assertEqual((last_page.total, len(last_page.devices)), (5, 1))
+
+
+class DeviceSearchRuleTests(unittest.TestCase):
+    """DeviceSearch checks itself, and no search value ever becomes SQL text. No database."""
+
+    def test_bad_searches_are_refused(self) -> None:
+        bad = [dict(confidence_min=-1), dict(confidence_max=101),
+               dict(confidence_min=60, confidence_max=50),
+               dict(seen_from=date(2026, 11, 9), seen_to=date(2026, 11, 8)),
+               dict(sort="mac_address"), dict(sort="last_seen; DROP TABLE device")]
+        for fields in bad:
+            with self.subTest(**fields):
+                with self.assertRaises(ValueError):
+                    DeviceSearch(**fields)
+
+    def test_blank_text_and_datetimes_are_tidied(self) -> None:
+        self.assertIsNone(DeviceSearch(text="   ").text)
+        self.assertEqual(DeviceSearch(text=" tv ").text, "tv")
+        self.assertEqual(DeviceSearch(seen_to=datetime(2026, 11, 9, 15, 30)).seen_to, date(2026, 11, 9))
+
+    def test_values_are_parameters_never_sql(self) -> None:
+        sneaky = "x' OR '1'='1"
+        search = DeviceSearch(device_type_id=2, vendor_id=3, network_status=NetworkStatus.ONLINE,
+                              flagged_status=True, trusted_status=False, is_randomized_mac=False,
+                              confidence_min=10, confidence_max=90, seen_from=date(2026, 11, 1),
+                              seen_to=date(2026, 11, 9), text=sneaky)
+        sql, params = _search_where(search)
+        self.assertNotIn(sneaky, sql)
+        self.assertNotIn("'1'", sql)
+        self.assertEqual(sql.count("%s"), len(params))         # one parameter for every placeholder
+        self.assertIn(f"%{sneaky}%", params)
+        self.assertIn("online", params)
+        self.assertIn(datetime(2026, 11, 10), params)          # seen_to + 1 day, at midnight
 
 
 class ScanStoreTests(NetworkDataTestCase):
