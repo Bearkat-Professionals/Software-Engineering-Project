@@ -238,6 +238,12 @@ class DeviceHistoryTests(_ServiceFixture, unittest.TestCase):
         self.assertEqual(self.engine.units, ["unit-1"])
         self.assertEqual(set(self.scans.units), {"unit-1"})
 
+    def test_unknown_device_history_returns_none_without_reading_scans(self) -> None:
+        self.assertIsNone(self.service().get_device_history(999))
+        self.assertEqual(self.engine.units, ["unit-1"])
+        self.assertEqual(self.devices.units, ["unit-1"])
+        self.assertEqual(self.scans.units, [])
+
     def test_history_rejects_bad_page_values(self) -> None:
         for page, per_page in ((0, 50), (1, 0), (1, 201)):
             with self.subTest(page=page, per_page=per_page):

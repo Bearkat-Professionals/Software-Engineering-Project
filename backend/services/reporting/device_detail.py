@@ -168,10 +168,12 @@ class DeviceDetailService:
         device_id: int,
         page: int = 1,
         per_page: int = DEFAULT_PER_PAGE,
-    ) -> DeviceHistoryPage:
-        """Return one page of observations, newest scan first."""
+    ) -> DeviceHistoryPage | None:
+        """Return one page of observations, or None when the device is unknown."""
         _check_page(page, per_page)
         with self._engine.unit_of_work() as unit:
+            if self._devices.find(device_id, unit) is None:
+                return None
             observations = self._scans.device_history(device_id, unit=unit)
             total = len(observations)
             first = (page - 1) * per_page
