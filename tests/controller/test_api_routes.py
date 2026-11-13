@@ -20,12 +20,13 @@ from backend.records.enums import NetworkStatus, ScanOutcome, UserRole
 from backend.records.scan import Scan
 from backend.services.scan.scan_session import (OpenRefusal, OpenResult, ScanPhase, ScanState,
                                                 ScanStatusReport)
+from tests.fakes.fake_accounts import PASSWORD, SECRET_KEY, FakeAccess, FakeUsers
 
 SCOPE = "192.168.1.0/24"
 SAM = User(user_id=4, username="sam", password_hash="not-a-real-hash", role=UserRole.EDITOR)
 VIEWER = User(user_id=5, username="val", password_hash="not-a-real-hash", role=UserRole.VIEWER)
 STARTED = datetime(2026, 10, 26, 14, 3)
-ROUTES_LOG = "backend.controller.api_routes"
+AUTH_LOG = "backend.controller.auth"           # refusals are logged by @requires (#90)
 PING_ERROR = "ping unavailable: ping command not found"
 
 
@@ -73,11 +74,17 @@ def listing(device_id: int, seen_minutes_ago: int, **fields: Any) -> DeviceListi
 def make_client(user: User | None = SAM, *, manager: FakeScanManager | None = None,
                 report: ScanStatusReport | None = None,
                 devices: FakeDevices | None = None) -> FlaskClient:
+    """A test client signed in as `user` (None: signed out)."""
+    users = FakeUsers(*([user] if user is not None else []))
     services = Services(scan_manager=manager or FakeScanManager(),
                         scan_sessions=FakeSessions(report or ScanStatusReport(state=ScanState.NONE)),
-                        devices=devices or FakeDevices(), users=None)
-    app: Flask = create_app(services, user)
-    return app.test_client()
+                        devices=devices or FakeDevices(), users=users, access=FakeAccess(users))
+    app: Flask = create_app(services, secret_key=SECRET_KEY)
+    client = app.test_client()
+    if user is not None:
+        signed_in = client.post("/api/login", json={"username": user.username, "password": PASSWORD})
+        assert signed_in.status_code == 200, signed_in.get_json()
+    return client
 
 
 class StartScanTests(unittest.TestCase):
@@ -107,9 +114,7 @@ class StartScanTests(unittest.TestCase):
 
     def test_missing_or_wrong_body_is_400_and_starts_nothing(self) -> None:
         bodies = {
-            "no body": {},
-            "not JSON": {"data": "scope=192.168.1.0/24", "content_type": "text/plain"},
-            "no scope": {"json": {}},
+            "no scope": {"json": {}},          # a body that isn't JSON is 415 (test_auth)
             "scope not text": {"json": {"scope": 24}},
             "a list": {"json": [SCOPE]},
         }
@@ -135,20 +140,21 @@ class StartScanTests(unittest.TestCase):
         self.assertEqual(manager.calls, [])
 
     def test_a_refusal_is_logged_with_who_and_what_but_not_the_hash(self) -> None:
-        with self.assertLogs(ROUTES_LOG, level="WARNING") as logs:
+        with self.assertLogs(AUTH_LOG, level="WARNING") as logs:
             make_client(VIEWER).post("/api/scans", json={"scope": SCOPE})
         self.assertEqual(len(logs.output), 1)
         for expected in ("val", "POST", "/api/scans", "START_SCAN"):
             self.assertIn(expected, logs.output[0])
         self.assertNotIn(VIEWER.password_hash, logs.output[0])
 
-        with self.assertLogs(ROUTES_LOG, level="WARNING") as logs:
+        with self.assertLogs(AUTH_LOG, level="WARNING") as logs:
             make_client(None).get("/api/devices")
         self.assertIn("nobody signed in", logs.output[0])
 
     def test_an_allowed_request_logs_nothing(self) -> None:
-        with self.assertNoLogs(ROUTES_LOG, level="WARNING"):
-            make_client().post("/api/scans", json={"scope": SCOPE})
+        client = make_client()
+        with self.assertNoLogs(AUTH_LOG, level="WARNING"):
+            client.post("/api/scans", json={"scope": SCOPE})
 
 
 class ScanStatusTests(unittest.TestCase):
