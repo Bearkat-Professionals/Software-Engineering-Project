@@ -57,3 +57,32 @@ th, td {
     text-align: left;
     
 }
+
+nav {
+
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.5rem;
+
+}
+
+nav a[aria-current="page"] {
+
+    font-weight: bold;
+
+}
+
+tr.suspicious {
+
+    background: #fde2e1;
+
+}
+
+.pager {
+
+    display: flex;
+    gap: 0.75rem;
+    align-items: center;
+    margin-top: 0.5rem;
+    
+}

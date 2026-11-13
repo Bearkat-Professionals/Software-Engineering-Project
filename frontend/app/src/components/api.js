@@ -1,5 +1,6 @@
 import scanStarted from "../samples/scan-started.json";
 import scanStatusIdle from "../samples/scan-status-idle.json";
+import devices from "../samples/devices.json";
 
 const SAMPLES = {
 
@@ -25,6 +26,24 @@ export class ApiError extends Error {
 export async function api(path, { method = "GET", body } = {}) {
 
   if (import.meta.env.VITE_USE_SAMPLES === "true") {
+
+    if (method === "GET" && path.startsWith("/api/devices")) {
+
+      const query = new URLSearchParams(path.split("?")[1] || "");
+      const perPage = Number(query.get("per_page")) || 50;
+      const page = Number(query.get("page")) || 1;
+      const start = (page - 1) * perPage;
+
+      return {
+
+        devices: devices.slice(start, start + perPage),
+        page,
+        per_page: perPage,
+        total: devices.length,
+
+      };
+
+    }
 
     const sample = SAMPLES[`${method} ${path}`];
 

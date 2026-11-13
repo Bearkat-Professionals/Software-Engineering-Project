@@ -3,7 +3,13 @@ import { api } from "../../components/api";
 import { useMessages } from "../../components/Messages";
 import { outcomeMessage } from "./statusText";
 
-export function useScanStatus() {
+export function useScanStatus({
+
+  interval = 2000,
+  announceOutcome = true,
+  keepWatching = false,
+
+} = {}) {
 
   const { showMessage, clearMessage } = useMessages();
   const [status, setStatus] = useState(null);
@@ -38,19 +44,22 @@ export function useScanStatus() {
 
           if (!next.running) {
 
-            if (next.last_scan) {
+            if (announceOutcome && next.last_scan) {
 
               const outcome = outcomeMessage(next.last_scan);
               showMessage(outcome.kind, outcome.text);
 
             }
 
-            setWatching(false);
-            return;
+            if (!keepWatching) {
 
+              setWatching(false);
+              return;
+
+            }
           }
 
-          poll(2000);
+          poll (interval);
 
         } catch (err) {
 
@@ -65,22 +74,20 @@ export function useScanStatus() {
 
             }
 
-            poll(5000);
+            poll (5000)
             return;
 
           }
 
           showMessage("error", err.message);
           setWatching(false);
-
         }
 
       }, delay);
 
     }
 
-    poll(0);
-
+    poll (0);
     return () => {
 
       ignore = true;
@@ -88,12 +95,12 @@ export function useScanStatus() {
 
     };
 
-  }, [watching, showMessage, clearMessage]);
+  }, [watching, showMessage, clearMessage, interval, announceOutcome, keepWatching]);
 
   return {
 
     status,
-
+    
     follow() {
 
       setWatching(true);
@@ -101,5 +108,5 @@ export function useScanStatus() {
     },
 
   };
-  
+
 }
