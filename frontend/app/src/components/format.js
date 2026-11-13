@@ -16,13 +16,13 @@ export function formatLastSeen(iso) {
 
     if (!iso) return "";
 
-    return new Intl.DataTimeFormat(undefined, {
+    return new Intl.DateTimeFormat(undefined, {
 
         month: "short",
         day: "numeric",
         hour: "numeric",
         minute: "2-digit",
 
-    }).format(new DataTransfer(iso));
+    }).format(new Date(iso));
     
 }

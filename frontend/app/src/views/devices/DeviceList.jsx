@@ -28,6 +28,7 @@ export default function DeviceList() {
     const page = readPage(params);
     const perPage = readPerPage(params);
     const [listing, setListing] = useState(null);
+    const [reloads, setReloads] = useState(0);
     const requestKey = `${page}-${perPage}`;
     const [loadedKey, setLoadedKey] = useState("");
     const loading = loadedKey !== requestKey;
@@ -71,7 +72,7 @@ export default function DeviceList() {
 
           };
 
-    }, [page, perPage, setParams, showMessage]);
+    }, [page, perPage, reloads, setParams, showMessage]);
 
     useEffect(() => {
 
@@ -79,14 +80,14 @@ export default function DeviceList() {
 
         if (wasRunning.current && status.running === false) {
 
-            setParams({ page: String(page), per_page: String(perPage) });
+            setReloads((n) => n + 1);
             showMessage("success", "Device list updated");
 
         } 
 
         wasRunning.current = status.running === true;
 
-    }, [status, page, perPage, setParams, showMessage]);
+    }, [status, showMessage]);
 
     function goTo(nextPage, nextPerPage = perPage) {
 
@@ -191,7 +192,7 @@ export default function DeviceList() {
 
                 </label>
 
-                <button type="button" onClick={() => goTo(page)}>Refresh</button>
+                <button type="button" onClick={() => setReloads((n) => n + 1)}>Refresh</button>
 
               </div>
 

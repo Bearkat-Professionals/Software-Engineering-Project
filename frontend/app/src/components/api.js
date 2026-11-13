@@ -27,7 +27,7 @@ export async function api(path, { method = "GET", body } = {}) {
 
   if (import.meta.env.VITE_USE_SAMPLES === "true") {
 
-    if (method === "GET" && path.startWith("/api/devices")) {
+    if (method === "GET" && path.startsWith("/api/devices")) {
 
       const query = new URLSearchParams(path.split("?")[1] || "");
       const perPage = Number(query.get("per_page")) || 50;
@@ -36,7 +36,7 @@ export async function api(path, { method = "GET", body } = {}) {
 
       return {
 
-        devices: devices.slive(start, start + perPage),
+        devices: devices.slice(start, start + perPage),
         page,
         per_page: perPage,
         total: devices.length,
