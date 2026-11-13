@@ -42,6 +42,8 @@ COMMANDS: dict[str, Command] = {
                       "run Host Discovery on a range and list the devices (2.2.2)"),
     "scan":   Command("backend.services.scan.check_scan",
                       "run a whole scan in the background and watch it (#44, test DB)"),
+    "ident":  Command("backend.services.scan.check_identification",
+                      "list every device's vendor, type, score, level and flag (2.2.4, test DB)"),
     "speed":  Command("backend.services.scan.check_sweep_speed",
                       "time a ping sweep at several worker counts (#81)"),
     "backup": Command("backend.data_access.backup_recovery.check_backup",
