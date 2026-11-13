@@ -49,6 +49,7 @@ CREATE TABLE device (
     model VARCHAR(255),
     trusted_status BOOLEAN NOT NULL DEFAULT FALSE,
     flagged_status BOOLEAN NOT NULL DEFAULT FALSE,
+    flag_set_by_user BOOLEAN NOT NULL DEFAULT FALSE,  #a user flagged it: stays flagged until a user trusts it
     confidence_score INT NOT NULL DEFAULT 0,          #whole percent, 0 to 100
     first_seen DATETIME,                              #tracks the exact moment a device was initially detected on the network
     last_seen DATETIME,

@@ -393,12 +393,12 @@ Step 1: Start MAMP and make sure MySQL is green
 
 Step 2: Open a terminal in the project root folder
 
-Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql` against both:
+Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql`, and for PR #103, `database/migrations/002_flag_set_by_user.sql` (without it, saving any device fails with "Unknown column 'flag_set_by_user'"). Run each against both:
 
 - `network_device_scanner` (the real development database)
 - `network_device_scanner_test` (or the database named by `TEST_DB_NAME`)
 
-In MAMP/phpMyAdmin, select the first database, choose **Import**, select the migration file, and run it. Repeat for the test database. A fresh database created from `database/schema/database_schema.sql` already contains the table and does not need this migration.
+In MAMP/phpMyAdmin, select the first database, choose **Import**, select the migration file, and run it. Repeat for the test database. A fresh database created from `database/schema/database_schema.sql` already contains these changes and does not need the migrations.
 
 Step 3: Run the server with the following command (test database ONLY):
     - `.\dev crud`   (long form: `py -3.13 -m backend.dev_tools.crud_server`)
