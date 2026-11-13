@@ -86,7 +86,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 |---|---|---|
 | `test` | `unittest discover tests` | run every unit test (`-v` shows names, `-k sweep` runs only matching tests) |
 | `conn` | `backend.check_connection` | check the database settings in your `.env` |
-| `app` | `backend.main` | start the application (needs `DEV_USERNAME` in `.env`, see Running the app) |
+| `app` | `backend.main` | start the application (needs `SECRET_KEY` in `.env`, see Running the app) |
 | `admin` | `backend.services.access_control.create_admin` | create the first admin account on an empty database; asks for the password without showing it (`--database NAME` for another database than the test one) |
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
@@ -231,22 +231,22 @@ It asks for a username (letters, digits, `.` `_` `-`) and then the password twic
 
 It only works on a database with **no users**. Once any account exists, it changes nothing and says so: further accounts are added by an admin in the app, so every account has someone accountable for creating it.
 
-The admin you create here is a good choice for `DEV_USERNAME` below.
+Sign in to the app with this account (see Signing in under API).
 
 ## Running the app
 Add these to your .env:
 ```
-DEV_USERNAME=<a username that exists in the database>
-APP_PORT=5000               # optional, 5000 if left out
+SECRET_KEY=<64 random characters>   # required, at least 32; make one with: py -3.13 -c "import secrets; print(secrets.token_hex(32))"
+APP_PORT=5000                       # optional, 5000 if left out
 ```
 Then start MAMP and run this from the project root:
 ```
 .\dev app
 ```
 (or `py -3.13 -m backend.main`)
-Check it at http://127.0.0.1:5000/api/health. It listens on 127.0.0.1 only, so other machines can't reach it.
+Check it at http://127.0.0.1:5000/api/health after signing in (signed out, it returns 401). It listens on 127.0.0.1 only, so other machines can't reach it.
 
-**There is NO real login until M4.** Every request acts as the DEV_USERNAME user, with no sign-in. Permissions ARE checked against that user's role: a `viewer` can look but not start scans, so use an `editor` or `admin` account for DEV_USERNAME.
+The app refuses to start if `SECRET_KEY` is missing or shorter than 32 characters. Keep it secret: anyone with it could make a session cookie that signs them in. Changing it signs everyone out.
 
 The CRUD test server also uses port 5000. To run both, set `APP_PORT=5001` and use http://127.0.0.1:5001.
 
@@ -254,6 +254,17 @@ The scan screen is the React app in `frontend/app`. While that page is running, 
 
 ## API (#51)
 The JSON below is the contract with the screens: change it only together with them. Every error, whatever its status, is `{"error": "a sentence a person can read"}`, so a screen can show it as it is.
+
+### Signing in (#90)
+Every endpoint except `POST /api/login` needs a signed-in user: signed out gives **401**, a role without the permission gives **403**. Requests that change data (POST, PUT, PATCH, DELETE) must be JSON, or they get **415**.
+
+| Request | Body | Result |
+|---|---|---|
+| `POST /api/login` | `{"username": "sam", "password": "..."}` | 200 `{"user": {...}, "permissions": [...]}` and a session cookie; 401 for a wrong username or password |
+| `POST /api/logout` | `{}` (every POST must be JSON) | 204; the old cookie stops working |
+| `GET /api/me` | none | 200, the same shape as login |
+
+The cookie is HttpOnly and SameSite=Strict (Secure once HTTPS arrives). A session ends after 30 minutes without a request, or 8 hours after signing in. Sessions live in the server's memory, so restarting the app signs everyone out.
 
 ### POST /api/scans: start a scan
 Needs the `editor` or `admin` role. Send `Content-Type: application/json`:
@@ -407,12 +418,12 @@ Step 1: Start MAMP and make sure MySQL is green
 
 Step 2: Open a terminal in the project root folder
 
-Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql` against both:
+Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql`, and for PR #103, `database/migrations/002_flag_set_by_user.sql` (without it, saving any device fails with "Unknown column 'flag_set_by_user'"). Run each against both:
 
 - `network_device_scanner` (the real development database)
 - `network_device_scanner_test` (or the database named by `TEST_DB_NAME`)
 
-In MAMP/phpMyAdmin, select the first database, choose **Import**, select the migration file, and run it. Repeat for the test database. A fresh database created from `database/schema/database_schema.sql` already contains the table and does not need this migration.
+In MAMP/phpMyAdmin, select the first database, choose **Import**, select the migration file, and run it. Repeat for the test database. A fresh database created from `database/schema/database_schema.sql` already contains these changes and does not need the migrations.
 
 Step 3: Run the server with the following command (test database ONLY):
     - `.\dev crud`   (long form: `py -3.13 -m backend.dev_tools.crud_server`)

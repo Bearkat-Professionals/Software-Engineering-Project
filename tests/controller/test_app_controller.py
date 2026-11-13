@@ -7,50 +7,52 @@ import os
 import unittest
 from unittest import mock
 
-from flask import g, jsonify
-
 from backend.controller.app_controller import UNEXPECTED_ERROR, Services, create_app, on_scan_finished
-from backend.main import find_dev_user, read_port
+from backend.main import read_port
 from backend.records import User
-from backend.records.enums import AccountStatus, AlertEventName, ScanOutcome
+from backend.records.enums import AlertEventName, ScanOutcome
 from backend.services.scan.record_scan_results import RecordSummary
 from backend.services.scan.scan_manager import AlertCandidate, ScanResult
+from tests.fakes.fake_accounts import PASSWORD, SECRET_KEY, FakeAccess, FakeUsers
 
 CONTROLLER_LOG = "backend.controller.app_controller"
+AUTH_LOG = "backend.controller.auth"
 DEV_USER = User(user_id=1, username="dev", password_hash="secret-hash")
 
 
-class FakeUsers:
-    def __init__(self, working: bool = True) -> None:
-        self.working = working
-
-    def find(self, user_id):
-        if not self.working:
-            raise RuntimeError("database went away")
-        return DEV_USER
-
-    def find_by_username(self, username):
-        return DEV_USER if username == DEV_USER.username else None
-
-
 def make_app(users: FakeUsers | None = None):
-    services = Services(scan_manager=None, scan_sessions=None, devices=None, users=users or FakeUsers())
-    return create_app(services, DEV_USER)
+    users = users or FakeUsers(DEV_USER)
+    services = Services(scan_manager=None, scan_sessions=None, devices=None, users=users, access=FakeAccess(users))
+    return create_app(services, secret_key=SECRET_KEY)
+
+
+def signed_in_client(app, host: str = "localhost"):
+    """Signed in as DEV_USER. The cookie belongs to `host`, so sign in on the host you'll call."""
+    client = app.test_client()
+    client.post("/api/login", json={"username": DEV_USER.username, "password": PASSWORD},
+                headers={"Host": host})
+    return client
 
 
 class HealthTests(unittest.TestCase):
     def test_ok_with_a_working_database(self):
-        response = make_app().test_client().get("/api/health")
+        response = signed_in_client(make_app()).get("/api/health")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"status": "ok", "database": "ok"})
 
     def test_503_with_a_failing_database(self):
-        client = make_app(FakeUsers(working=False)).test_client()
-        with self.assertLogs(CONTROLLER_LOG, level="ERROR"):
+        users = FakeUsers(DEV_USER)
+        client = signed_in_client(make_app(users))
+        users.working = False
+        with self.assertLogs(AUTH_LOG, level="ERROR"):
             response = client.get("/api/health")
         self.assertEqual(response.status_code, 503)
-        self.assertEqual(response.get_json()["database"], "unavailable")
+        self.assertTrue(response.get_json()["error"])
         self.assertNotIn("went away", response.get_data(as_text=True))
+
+    def test_signed_out_is_401(self):
+        with self.assertLogs(AUTH_LOG, level="INFO"):
+            self.assertEqual(make_app().test_client().get("/api/health").status_code, 401)
 
 
 class ErrorTests(unittest.TestCase):
@@ -60,7 +62,7 @@ class ErrorTests(unittest.TestCase):
         self.assertTrue(response.get_json()["error"])
 
     def test_wrong_method_is_json_405(self):
-        response = make_app().test_client().post("/api/health")
+        response = make_app().test_client().post("/api/health", json={})
         self.assertEqual(response.status_code, 405)
         self.assertTrue(response.get_json()["error"])
 
@@ -85,20 +87,8 @@ class ErrorTests(unittest.TestCase):
         self.assertTrue(response.get_json()["error"])
         for host in ("127.0.0.1:5000", "localhost:5000"):
             with self.subTest(host=host):
-                self.assertEqual(make_app().test_client().get("/api/health", headers={"Host": host}).status_code, 200)
-
-
-class DevelopmentUserTests(unittest.TestCase):
-    def test_every_request_reaches_its_route_with_the_development_user(self):
-        app = make_app()
-
-        @app.get("/who")
-        def who():
-            return jsonify(username=g.user.username)
-
-        client = app.test_client()
-        for _ in range(2):
-            self.assertEqual(client.get("/who").get_json(), {"username": "dev"})
+                client = signed_in_client(make_app(), host)
+                self.assertEqual(client.get("/api/health", headers={"Host": host}).status_code, 200)
 
 
 class OnScanFinishedTests(unittest.TestCase):
@@ -136,23 +126,11 @@ class StartUpTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "APP_PORT"):
                     read_port()
 
-    def test_dev_user_found(self):
-        with mock.patch.dict(os.environ, {"DEV_USERNAME": "dev"}):
-            self.assertIs(find_dev_user(FakeUsers()), DEV_USER)
-
-    def test_dev_user_missing_or_not_set_stops_start_up(self):
-        for name, expected in (("nobody", "no user with that name"), ("  ", "not set")):
-            with self.subTest(name=name), mock.patch.dict(os.environ, {"DEV_USERNAME": name}):
-                with self.assertRaisesRegex(SystemExit, expected):
-                    find_dev_user(FakeUsers())
-
-    def test_disabled_dev_user_stops_start_up(self):
-        users = mock.Mock()
-        users.find_by_username.return_value = User(user_id=2, username="dev", password_hash="x",
-                                                   account_status=AccountStatus.DISABLED)
-        with mock.patch.dict(os.environ, {"DEV_USERNAME": "dev"}):
-            with self.assertRaisesRegex(SystemExit, "not active"):
-                find_dev_user(users)
+    def test_missing_secret_key_stops_start_up(self):
+        from backend import main
+        with mock.patch.dict(os.environ, {"APP_PORT": "5000"}, clear=True):
+            with self.assertRaisesRegex(SystemExit, "SECRET_KEY"):
+                main.main()
 
 
 class ShutdownTests(unittest.TestCase):
@@ -162,8 +140,8 @@ class ShutdownTests(unittest.TestCase):
         app = mock.Mock()
         app.run.side_effect = KeyboardInterrupt
         patches = {name: mock.DEFAULT for name in (
-            "read_port", "DatabaseConfig", "ScanSettings", "DatabaseEngine", "UserStore",
-            "find_dev_user", "ScanStore", "DeviceStore", "build_scan_manager")}
+            "read_port", "read_secret_key", "DatabaseConfig", "ScanSettings", "DatabaseEngine", "UserStore",
+            "AccessControlService", "ScanStore", "DeviceStore", "build_scan_manager")}
         with mock.patch.multiple("backend.main", **patches), \
                 mock.patch("backend.main.ScanSessionController", return_value=sessions), \
                 mock.patch("backend.main.create_app", return_value=app), \
@@ -175,8 +153,7 @@ class ShutdownTests(unittest.TestCase):
     def test_running_scans_are_closed_at_start_and_at_shutdown(self):
         sessions = mock.Mock()
         sessions.recover_stuck_scans.return_value = 0
-        with self.assertLogs("backend.main", "WARNING"):    # the "NO LOGIN until M4" warning
-            self._run_main_until_ctrl_c(sessions)
+        self._run_main_until_ctrl_c(sessions)
         self.assertEqual(sessions.recover_stuck_scans.call_count, 2)
 
     def test_a_database_error_at_shutdown_is_logged_not_raised(self):

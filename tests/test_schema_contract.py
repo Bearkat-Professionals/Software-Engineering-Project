@@ -17,7 +17,7 @@ EXPECTED_COLUMNS = {
     "oui_prefix": ["oui_id", "oui_prefix", "vendor_id"],
     "device": ["device_id", "mac_address", "is_randomized_mac", "current_ip",
                "hostname", "device_type_id", "vendor_id", "device_name", "model",
-               "trusted_status", "flagged_status", "confidence_score",
+               "trusted_status", "flagged_status", "flag_set_by_user", "confidence_score",
                "first_seen", "last_seen", "network_status"],
     "scan": ["scan_id", "user_id", "target_scope", "configuration_used",
              "started_at", "ended_at", "status", "outcome", "error_message"],

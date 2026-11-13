@@ -5,27 +5,26 @@
     GET  /api/devices          one page of the device list   200, or 400 for bad paging
 
 The JSON shapes are the contract with the screens (see "API" in the README): change
-them only together with the screens. Every route checks access, makes ONE service call
-and returns JSON. No database code here (tier rules): the services and stores do that.
+them only together with the screens. Every route is guarded by @requires (auth.py), makes
+ONE service call and returns JSON. No database code here (tier rules): the services and stores do that.
 """
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, Any
 
 from flask import Flask, abort, g, jsonify, request
 from flask.typing import ResponseReturnValue
 
+from backend.controller.auth import requires
 from backend.data_access.network_data import DeviceListing
 from backend.data_access.network_data.device_store import DEFAULT_PER_PAGE, MAX_PER_PAGE
 from backend.records import User
-from backend.services.access_control.permissions import Permission, authorize
+from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_session import OpenRefusal, ScanState, ScanStatusReport
 
 if TYPE_CHECKING:       # for the type hint only: app_controller imports this module
     from backend.controller.app_controller import Services
 
-logger = logging.getLogger(__name__)
 STATUS_URL = "/api/scans/status"
 SCOPE_EXAMPLE = 'Send JSON like {"scope": "192.168.1.0/24"}.'
 MAX_PAGE = 1_000_000            # keeps OFFSET far inside what MySQL accepts
@@ -43,8 +42,9 @@ def register(app: Flask, services: Services) -> None:
     """Add the scan and device routes to the app (called by app_controller.register_routes)."""
 
     @app.post("/api/scans")
+    @requires(Permission.START_SCAN)
     def start_scan() -> ResponseReturnValue:
-        user = _require(Permission.START_SCAN)
+        user: User = g.user                                  # from the session, never the body (CM-11)
         body = request.get_json(silent=True)                 # None when it isn't JSON
         scope = body.get("scope") if isinstance(body, dict) else None
         if not isinstance(scope, str):
@@ -56,13 +56,13 @@ def register(app: Flask, services: Services) -> None:
         return jsonify(scan_id=opened.scan.scan_id, status_url=STATUS_URL), 202
 
     @app.get("/api/scans/status")
+    @requires(Permission.VIEW_DATA)
     def scan_status() -> ResponseReturnValue:
-        _require(Permission.VIEW_DATA)
         return jsonify(status_json(services.scan_sessions.status()))
 
     @app.get("/api/devices")
+    @requires(Permission.VIEW_DATA)
     def list_devices() -> ResponseReturnValue:
-        _require(Permission.VIEW_DATA)
         page = _whole_number("page", default=1, largest=MAX_PAGE)
         per_page = _whole_number("per_page", default=DEFAULT_PER_PAGE, largest=MAX_PER_PAGE)
         found = services.devices.list_page(page=page, per_page=per_page)
@@ -121,21 +121,6 @@ def device_json(listing: DeviceListing) -> dict[str, Any]:
 
 
 # ---- helpers ---------------------------------------------------------------------------
-
-def _require(permission: Permission) -> User:
-    """The calling user, if they may do this; otherwise log it and stop with 401 or 403 as JSON.
-
-    g.user is the #50 placeholder until M4 signs people in; this check stays as it is.
-    Refusals are logged for the admin (AT-13): the username only, never the User (its repr has the hash)."""
-    user: User | None = g.get("user")
-    decision = authorize(user, permission)
-    if not decision.allowed:
-        who = user.username if user is not None else "nobody signed in"
-        logger.warning("Refused %s %r for %s: needs %s (%s)",
-                       request.method, request.path, who, permission.name, decision.reason)
-        abort(401 if user is None else 403, description=decision.reason)
-    return user
-
 
 def _whole_number(name: str, *, default: int, largest: int) -> int:
     """A query value like ?page=2 as a number from 1 to largest; stops with 400 if it isn't."""

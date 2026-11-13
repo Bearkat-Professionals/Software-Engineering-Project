@@ -12,7 +12,7 @@ class Device(Entity):
     TABLE: ClassVar[str] = "device"
     PK: ClassVar[str] = "device_id"
     ENUM_FIELDS: ClassVar[dict] = {"network_status": NetworkStatus}
-    BOOL_FIELDS: ClassVar[tuple] = ("is_randomized_mac", "trusted_status", "flagged_status")
+    BOOL_FIELDS: ClassVar[tuple] = ("is_randomized_mac", "trusted_status", "flagged_status", "flag_set_by_user")
     # DEVICE.device_type_id and DEVICE.vendor_id are NOT NULL and defaults to the "unknown" type (DI-03),
     # so a device with no type yet is saved without that column.
     OMIT_IF_NONE: ClassVar[tuple] = ("device_type_id", "vendor_id")
@@ -28,6 +28,7 @@ class Device(Entity):
     model: str | None = None
     trusted_status: bool = False
     flagged_status: bool = False
+    flag_set_by_user: bool = False         # a user's flag: stays until a user trusts the device (#103)
     confidence_score: int = 0              # 0-100 (CHECK in the database)
     first_seen: datetime | None = None
     last_seen: datetime | None = None

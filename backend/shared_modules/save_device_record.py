@@ -12,8 +12,11 @@ of work. A rejection is decided before anything is written.
     changes = DeviceChanges(mac_address="28:6F:B9:00:00:01", current_ip="192.168.1.20",
                             seen_at=now, oui_vendor_id=7, confidence_score=20)
     outcome = saver.save(changes, acting_user_id=1, level=identification.level, unit=unit)
-    outcome.status      # SaveStatus.CREATED, UPDATED or REJECTED
-    outcome.reasons     # plain-English reasons when REJECTED (OUT-04)
+    outcome.status      # SaveStatus.CREATED, UPDATED, REJECTED or CONFLICT
+    outcome.reasons     # plain-English reasons when REJECTED or CONFLICT (OUT-04)
+
+An edit screen passes loaded_at (when it read the device): if someone changed the
+device after that, nothing is stored and the outcome is CONFLICT (CM-01).
 
 Scans pass the level from 2.2.4 (identify); the edit screens pass the device's current level.
 
@@ -27,7 +30,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
-from backend.records import Device
+from backend.data_access.network_data import EditConflictError
+from backend.records import Device, User
 from backend.records.enums import IdentificationLevel
 from backend.records.reference_entity import ReferenceEntity
 from backend.services.scan.detect_randomized_mac import is_randomized_mac
@@ -41,21 +45,24 @@ TEXT_LIMITS: dict[str, int] = {"hostname": 255, "device_name": 255, "model": 255
 
 # Fields copied onto the device whenever they are set. The sighting fields and
 # oui_vendor_id have their own rules in _apply.
-_PLAIN_FIELDS = ("confidence_score", "device_name", "device_type_id", "vendor_id", "model", "trusted_status")
+_PLAIN_FIELDS = ("confidence_score", "device_name", "device_type_id", "vendor_id", "model", "trusted_status",
+                 "flag_set_by_user")
+_CLEARABLE_FIELDS = ("device_name", "model")     # blank text means "clear it"
 
 
 class SaveStatus(str, Enum):
     CREATED = "created"
     UPDATED = "updated"
     REJECTED = "rejected"
-    CONFLICT = "conflict"       # reserved for M5: changed by someone else since it was loaded (CM-01)
+    CONFLICT = "conflict"       # changed by someone else since it was loaded (CM-01)
 
 
 @dataclass(frozen=True)
 class DeviceChanges:
     """What to save. The MAC says which device; every other field left as None
-    means "keep what is stored". Whether the MAC is randomized is worked out from
-    the MAC itself, so no caller can get it wrong (DI-01, DI-02)."""
+    means "keep what is stored". An empty or spaces-only device_name or model
+    means "clear it" (stored as None). Whether the MAC is randomized is worked
+    out from the MAC itself, so no caller can get it wrong (DI-01, DI-02)."""
     mac_address: str
     # A scan's sighting
     current_ip: str | None = None
@@ -68,14 +75,17 @@ class DeviceChanges:
     device_type_id: int | None = None
     vendor_id: int | None = None            # a user's correction: always applied (design 10.4)
     model: str | None = None
-    trusted_status: bool | None = None
+    trusted_status: bool | None = None      # True also clears flag_set_by_user
+    flag_set_by_user: bool | None = None    # True also clears trusted_status: they are opposites
 
 
 @dataclass(frozen=True)
 class SaveOutcome:
     status: SaveStatus
-    device: Device | None = None            # as stored; None when rejected
-    reasons: tuple[str, ...] = ()           # why it was rejected (OUT-04)
+    device: Device | None = None            # as stored; None when rejected or in conflict
+    reasons: tuple[str, ...] = ()           # why it was rejected or in conflict (OUT-04)
+    changed_by: int | None = None           # CONFLICT: the user id who changed it after it was loaded
+    changed_at: datetime | None = None      # CONFLICT: when they did
 
     @property
     def flagged(self) -> bool:
@@ -98,14 +108,22 @@ class ReferenceFinder(Protocol):
     def find(self, pk: int, unit: Any = None) -> ReferenceEntity | None: ...
 
 
+class UserFinder(Protocol):
+    """3.3.1 Find User, to name who caused a conflict. UserStore is one."""
+
+    def find(self, user_id: int, unit: Any = None) -> User | None: ...
+
+
 class DeviceRecordSaver:
-    """SH-4. Built once with its stores, then save() is called for each device."""
+    """SH-4. Built once with its stores, then save() is called for each device.
+    users is optional: without it a conflict names "another user"."""
 
     def __init__(self, devices: DeviceFinderStorer, vendors: ReferenceFinder,
-                 device_types: ReferenceFinder) -> None:
+                 device_types: ReferenceFinder, users: UserFinder | None = None) -> None:
         self._devices = devices
         self._vendors = vendors
         self._device_types = device_types
+        self._users = users
 
     def save(self, changes: DeviceChanges, acting_user_id: int, level: IdentificationLevel,
              unit: Any = None, loaded_at: datetime | None = None) -> SaveOutcome:
@@ -125,12 +143,22 @@ class DeviceRecordSaver:
             return _rejected(reasons)
 
         _apply(changes, device)
-        device.flagged_status = evaluate_flag(level, device.trusted_status, is_new)
+        device.flagged_status = evaluate_flag(level, device.trusted_status, is_new, device.flag_set_by_user)
 
-        # loaded_at is not checked yet: Device Record Maintenance (#103) passes it on to
-        # DeviceStore.store, which already refuses a stale save (CM-01).
-        saved = self._devices.store(device, acting_user_id, unit)
+        try:
+            saved = self._devices.store(device, acting_user_id, unit, loaded_at=loaded_at)
+        except EditConflictError as conflict:       # the store refused before writing anything
+            return SaveOutcome(SaveStatus.CONFLICT, reasons=(self._conflict_reason(conflict, loaded_at, unit),),
+                               changed_by=conflict.changed_by, changed_at=conflict.changed_at)
         return SaveOutcome(SaveStatus.CREATED if is_new else SaveStatus.UPDATED, saved)
+
+    def _conflict_reason(self, conflict: EditConflictError, loaded_at: datetime, unit: Any) -> str:
+        """Names who and when, and nothing else about that user."""
+        user = self._users.find(conflict.changed_by, unit) if self._users and conflict.changed_by else None
+        who = user.username if user is not None else "another user"
+        at = conflict.changed_at
+        when = f"{at:%H:%M}" if at.date() == loaded_at.date() else f"{at:%Y-%m-%d %H:%M}"
+        return f"This device was changed by {who} at {when} after you opened it."
 
     def _check_references(self, changes: DeviceChanges, device: Device, unit: Any) -> list[str]:
         """Each vendor or type id that would change the device must exist and be active (DI-06).
@@ -181,6 +209,9 @@ def _check(changes: DeviceChanges) -> tuple[list[str], DeviceChanges]:
             label = name.replace("_", " ")
             reasons.append(f"The {label} is {len(value)} characters long; the limit is {limit}.")
 
+    if changes.trusted_status and changes.flag_set_by_user:
+        reasons.append("A device can't be marked trusted and flagged in the same save.")
+
     if reasons:
         return reasons, changes
     return [], replace(changes,
@@ -205,5 +236,11 @@ def _apply(changes: DeviceChanges, device: Device) -> None:
     for name in _PLAIN_FIELDS:                      # vendor_id comes after the OUI match, so a user wins
         value = getattr(changes, name)
         if value is not None:
+            if name in _CLEARABLE_FIELDS and not value.strip():
+                value = None                        # blank: clear it
             setattr(device, name, value)
 
+    if changes.trusted_status:                      # trusted and user-flagged are opposites
+        device.flag_set_by_user = False
+    if changes.flag_set_by_user:
+        device.trusted_status = False

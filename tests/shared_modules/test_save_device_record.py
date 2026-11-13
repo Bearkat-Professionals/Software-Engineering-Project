@@ -8,7 +8,8 @@ import unittest
 from copy import deepcopy
 from datetime import datetime
 
-from backend.records import Device, DeviceType, Vendor
+from backend.data_access.network_data import EditConflictError
+from backend.records import AuditLog, Device, DeviceType, User, Vendor
 from backend.records.enums import AuditAction, IdentificationLevel, NetworkStatus, RecordStatus
 from backend.shared_modules.save_device_record import (DeviceChanges, DeviceRecordSaver, SaveOutcome,
                                                        SaveStatus, UNKNOWN_VENDOR_ID)
@@ -300,6 +301,135 @@ class UnitOfWorkTests(SaverTestCase):
         self.save(sighting(ROUTER_MAC))
         self.assertEqual(self.devices.units_seen, [UNIT, UNIT])
         self.assertEqual(self.devices.audit[0].unit, UNIT)
+
+
+class ClearingTests(SaverTestCase):
+    """#103: blank text clears device_name and model; None still keeps them."""
+
+    def setUp(self) -> None:
+        self.use(Device(mac_address=ROUTER_MAC, device_name="Living room router", model="AX3000"))
+
+    def test_empty_or_whitespace_clears_the_field(self) -> None:
+        for blank in ("", "   ", "\t"):
+            for name in ("device_name", "model"):
+                with self.subTest(field=name, blank=repr(blank)):
+                    self.setUp()
+                    outcome = self.save(DeviceChanges(mac_address=ROUTER_MAC, **{name: blank}))
+                    self.assertEqual(outcome.status, SaveStatus.UPDATED)
+                    self.assertIsNone(getattr(self.devices.rows[1], name))
+
+    def test_none_keeps_the_field(self) -> None:
+        self.save(DeviceChanges(mac_address=ROUTER_MAC, device_name=None, model=None))
+        self.assertEqual((self.devices.rows[1].device_name, self.devices.rows[1].model),
+                         ("Living room router", "AX3000"))
+
+
+class UserFlagTests(SaverTestCase):
+    """#103: a user's flag sticks; trusted and user-flagged are opposites."""
+
+    def test_trusting_clears_a_users_flag(self) -> None:
+        self.use(Device(mac_address=ROUTER_MAC, flag_set_by_user=True, flagged_status=True))
+        outcome = self.save(DeviceChanges(mac_address=ROUTER_MAC, trusted_status=True))
+        self.assertEqual((outcome.device.trusted_status, outcome.device.flag_set_by_user), (True, False))
+        self.assertFalse(outcome.flagged)
+
+    def test_flagging_clears_trust(self) -> None:
+        self.use(Device(mac_address=ROUTER_MAC, trusted_status=True))
+        outcome = self.save(DeviceChanges(mac_address=ROUTER_MAC, flag_set_by_user=True))
+        self.assertEqual((outcome.device.trusted_status, outcome.device.flag_set_by_user), (False, True))
+        self.assertTrue(outcome.flagged)
+
+    def test_setting_either_to_false_leaves_the_other(self) -> None:
+        self.use(Device(mac_address=ROUTER_MAC, trusted_status=True))
+        self.assertTrue(self.save(DeviceChanges(mac_address=ROUTER_MAC, flag_set_by_user=False)).device.trusted_status)
+        self.use(Device(mac_address=ROUTER_MAC, flag_set_by_user=True))
+        self.assertTrue(self.save(DeviceChanges(mac_address=ROUTER_MAC, trusted_status=False)).device.flag_set_by_user)
+
+    def test_trusted_and_flagged_in_one_save_is_rejected(self) -> None:
+        self.assert_rejected(DeviceChanges(mac_address=ROUTER_MAC, trusted_status=True, flag_set_by_user=True),
+                             "can't be marked trusted and flagged")
+
+    def test_a_user_flagged_device_stays_flagged_after_an_identified_scan(self) -> None:
+        self.use(Device(mac_address=ROUTER_MAC, flag_set_by_user=True, flagged_status=True))
+        outcome = self.save(sighting(ROUTER_MAC, seen_at=LATER), IdentificationLevel.IDENTIFIED)
+        self.assertTrue(outcome.flagged)
+        self.assertTrue(self.devices.rows[1].flag_set_by_user)       # a scan sends no flag_set_by_user
+
+
+SAM = User(user_id=3, username="sam", password_hash="secret-hash")
+CHANGED_AT = datetime(2026, 10, 29, 14, 5, 30)
+
+
+class ChangedSinceStore(FakeDeviceStore):
+    """The fake store, plus the real store's check: sam changed the device at CHANGED_AT."""
+
+    def store(self, device, changed_by, unit=None, *, loaded_at=None):
+        self.loaded_at_seen = loaded_at
+        if loaded_at is not None and device.pk is not None and CHANGED_AT > loaded_at:
+            raise EditConflictError(device.pk, AuditLog(user_id=SAM.user_id, record_type="device", record_id=device.pk,
+                                                        action=AuditAction.UPDATE, changed_at=CHANGED_AT))
+        return super().store(device, changed_by, unit, loaded_at=loaded_at)
+
+
+class FakeUsers:
+    def find(self, user_id, unit=None):
+        return SAM if user_id == SAM.user_id else None
+
+
+class NoUsers:
+    """The user was deleted since: find gives None."""
+    def find(self, user_id, unit=None):
+        return None
+
+
+class ConflictTests(SaverTestCase):
+    """#103, CM-01: a stale loaded_at is a CONFLICT that names who and when, and stores nothing."""
+
+    def setUp(self) -> None:
+        self.use(users=FakeUsers())
+
+    def use(self, *existing: Device, users=None) -> None:
+        self.devices = ChangedSinceStore([Device(mac_address=ROUTER_MAC, device_name="Router"), *existing])
+        self.vendors = FakeReferenceStore(Vendor, VENDORS)
+        self.device_types = FakeReferenceStore(DeviceType, DEVICE_TYPES)
+        self.saver = DeviceRecordSaver(self.devices, self.vendors, self.device_types, users)
+
+    def edit(self, loaded_at: datetime | None) -> SaveOutcome:
+        return self.saver.save(DeviceChanges(mac_address=ROUTER_MAC, device_name="New name"), acting_user_id=USER,
+                               level=IdentificationLevel.UNIDENTIFIED, unit=UNIT, loaded_at=loaded_at)
+
+    def test_stale_loaded_at_is_a_conflict_and_stores_nothing(self) -> None:
+        before = deepcopy(self.devices.rows)
+        outcome = self.edit(loaded_at=datetime(2026, 10, 29, 14, 0, 0))
+        self.assertEqual(outcome.status, SaveStatus.CONFLICT)
+        self.assertEqual((outcome.changed_by, outcome.changed_at), (SAM.user_id, CHANGED_AT))
+        self.assertEqual(outcome.reasons, ("This device was changed by sam at 14:05 after you opened it.",))
+        self.assertIsNone(outcome.device)
+        self.assertEqual(self.devices.rows, before)
+        self.assertEqual(self.devices.audit, [])
+        self.assertNotIn("secret-hash", outcome.reasons[0])
+
+    def test_unknown_user_or_no_user_finder_says_another_user(self) -> None:
+        for users in (None, NoUsers()):
+            with self.subTest(users=users):
+                self.use(users=users)
+                outcome = self.edit(loaded_at=datetime(2026, 10, 29, 14, 0, 0))
+                self.assertIn("changed by another user at 14:05", outcome.reasons[0])
+
+    def test_a_change_on_another_day_shows_the_date(self) -> None:
+        outcome = self.edit(loaded_at=datetime(2026, 10, 28, 9, 0, 0))
+        self.assertIn("at 2026-10-29 14:05 after", outcome.reasons[0])
+
+    def test_fresh_loaded_at_saves(self) -> None:
+        outcome = self.edit(loaded_at=datetime(2026, 10, 29, 15, 0, 0))
+        self.assertEqual(outcome.status, SaveStatus.UPDATED)
+        self.assertEqual(outcome.device.device_name, "New name")
+
+    def test_no_loaded_at_saves_as_today(self) -> None:
+        outcome = self.edit(loaded_at=None)
+        self.assertEqual(outcome.status, SaveStatus.UPDATED)
+        self.assertIsNone(self.devices.loaded_at_seen)
+        self.assertEqual((outcome.changed_by, outcome.changed_at), (None, None))
 
 
 if __name__ == "__main__":
