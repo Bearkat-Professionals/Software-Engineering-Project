@@ -143,12 +143,47 @@ def validate_timeout(seconds):
         return ValidationResult.reject(reason_bad)
     return ValidationResult.ok(number)
 
+#Reference names and signature patterns
+PATTERN_MIN = 3
+PATTERN_MAX = 255
+
+def storable(text):
+    """False if the text has a lone surrogate (half of an emoji, which JSON can send).
+    MySQL can't store one, so it would fail at save time instead of here."""
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+def validate_reference_name(text, max_length):
+    cleaned = clean_text(text)
+    if cleaned is None:
+        return ValidationResult.reject("The name is empty.")
+    if not storable(cleaned):
+        return ValidationResult.reject("The name has a character that can't be stored.")
+    if len(cleaned) > max_length:
+        return ValidationResult.reject(f"The name is {len(cleaned)} characters long; the limit is {max_length}.")
+    return ValidationResult.ok(cleaned)
+
+def validate_signature_pattern(text):
+    cleaned = clean_text(text)
+    if cleaned is None:
+        return ValidationResult.reject("The pattern is empty.")
+    if not storable(cleaned):
+        return ValidationResult.reject("The pattern has a character that can't be stored.")
+    if not PATTERN_MIN <= len(cleaned) <= PATTERN_MAX:
+        return ValidationResult.reject(f"The pattern is {len(cleaned)} characters long; "
+                                       f"it must be {PATTERN_MIN} to {PATTERN_MAX}.")
+    return ValidationResult.ok(cleaned)
+
 VALIDATORS = {
     "ip" : validate_ip,
     "mac" : validate_mac,
     "scope" : validate_scope,
     "confidence" : validate_confidence,
     "timeout" : validate_timeout,
+    "pattern" : validate_signature_pattern,
 }
 
 def validate(value, kind):

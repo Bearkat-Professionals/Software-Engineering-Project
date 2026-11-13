@@ -65,7 +65,12 @@ _ORDER_COLUMNS: dict[type[ReferenceEntity], tuple[str, ...]] = {
 }
 
 class DuplicateReferenceError(Exception):
-    """Another record already has this name or pattern (DI-07). Nothing was saved."""
+    """Another record already has this name or pattern (DI-07). Nothing was saved.
+    existing_id is that other record's id, when known."""
+
+    def __init__(self, message: str, existing_id: int | None = None):
+        super().__init__(message)
+        self.existing_id = existing_id
 
 class ProtectedReferenceError(Exception):
     """The record is the built-in "unknown" vendor or device type and can't be changed."""
@@ -260,7 +265,8 @@ class ReferenceStore(Generic[T]):
         if others:
             shown = ", ".join(f"{key} '{_text(getattr(record, key))}'" for key in keys)
             raise DuplicateReferenceError(
-                f"a {self._type.TABLE} with {shown} already exists (id {others[0].pk})")
+                f"a {self._type.TABLE} with {shown} already exists (id {others[0].pk})",
+                existing_id=others[0].pk)
 
     def _lock(self, pk: int, cursor: Any) -> None:
         cursor.execute(
