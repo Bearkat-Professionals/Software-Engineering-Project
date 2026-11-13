@@ -1,100 +1,60 @@
+"""2.2.4.4 Assign Identification Level (#68, spec 7.2).
+
+    identification = assign_level(resolution, breakdown, oui_vendor_id)
+
+- Identified: a known type, a name from a winning signature, and a score >= IDENTIFIED_MIN_SCORE.
+- Partially identified: the type or the vendor is known.
+- Unidentified: neither.
+Name and model come from the strongest winning match that gives a name (highest weight,
+then lowest signature id), and are only kept when the device is identified. Pure.
+"""
+from __future__ import annotations
+
+from collections.abc import Iterable
+from dataclasses import dataclass
+
 from backend.records.enums import IdentificationLevel
+from backend.services.scan.calculate_score import ScoreBreakdown
 from backend.services.scan.evidence import IDENTIFIED_MIN_SCORE, UNKNOWN_TYPE_ID, UNKNOWN_VENDOR_ID
+from backend.services.scan.match_signatures import SignatureMatch
+from backend.services.scan.resolve_conflicts import Resolution
 
+
+@dataclass(frozen=True)
 class Identification:
-    def __init__(self, level, device_type_id, vendor_id, device_name, model, score):
-        self.level = level
-        self.device_type_id = device_type_id
-        self.vendor_id = vendor_id
-        self.device_name = device_name
-        self.model = model
-        self.score = score
+    level: IdentificationLevel
+    device_type_id: int                 # UNKNOWN_TYPE_ID when no type won
+    vendor_id: int                      # UNKNOWN_VENDOR_ID when the OUI gave none
+    device_name: str | None             # only when identified
+    model: str | None                   # only when identified
+    breakdown: ScoreBreakdown
 
 
-def assign_level(resolution, score, vendor_id):
-    device_type_id = resolution.device_type_id
-    type_known = True
-    if device_type_id == None or device_type_id == UNKNOWN_TYPE_ID:
-        type_known = False
-        device_type_id = UNKNOWN_TYPE_ID
+def assign_level(resolution: Resolution, breakdown: ScoreBreakdown,
+                 vendor_id: int | None) -> Identification:
+    type_known = resolution.device_type_id not in (None, UNKNOWN_TYPE_ID)
+    vendor_known = vendor_id not in (None, UNKNOWN_VENDOR_ID)
+    name, model = pick_name_and_model(resolution.winning_matches)
 
-    vendor_known = True
-    if vendor_id == None or vendor_id == UNKNOWN_VENDOR_ID:
-        vendor_known = False
-        vendor_id = UNKNOWN_VENDOR_ID
-
-
-    name, model = pick_NameAndModel(resolution.winning_matches)
-
-
-    if type_known == True and name != None and score.score >= IDENTIFIED_MIN_SCORE:
+    if type_known and name is not None and breakdown.score >= IDENTIFIED_MIN_SCORE:
         level = IdentificationLevel.IDENTIFIED
-    elif type_known == True or vendor_known == True:
+    elif type_known or vendor_known:
         level = IdentificationLevel.PARTIAL
     else:
         level = IdentificationLevel.UNIDENTIFIED
+    if level is not IdentificationLevel.IDENTIFIED:
+        name = model = None
+
+    return Identification(level,
+                          resolution.device_type_id if type_known else UNKNOWN_TYPE_ID,
+                          vendor_id if vendor_known else UNKNOWN_VENDOR_ID,
+                          name, model, breakdown)
 
 
-
-    if level != IdentificationLevel.IDENTIFIED:
-        name = None
-        model = None
-
-    result = Identification(level, device_type_id, vendor_id, name, model, score)
-    return result
-
-
-
-
-def is_stronger(Match_a_WhichIsStronger, Match_b_WhichIsStronger):
-    weight_a = Match_a_WhichIsStronger.evidence.weight
-    weight_b = Match_b_WhichIsStronger.evidence.weight
-
-
-    if weight_a > weight_b:
-        return True
-    if weight_a < weight_b:
-        return False
-
-    if Match_a_WhichIsStronger.evidence.signature_id < Match_b_WhichIsStronger.evidence.signature_id:
-        return True
-    return False
-
-
-
-def StrongestToWeakest(matches):
-    left_over = list(matches)
-    ordered = []
-
-    while len(left_over) > 0:
-        strongest = left_over[0]
-        for match in left_over:
-            if is_stronger(match, strongest):
-                strongest = match
-        ordered.append(strongest)
-        left_over.remove(strongest)
-
-    return ordered
-
-def pick_NameAndModel(winning_matches):
-    ordered = StrongestToWeakest(winning_matches)
-
-    name = None
-    named_spot = None
-    for i in range(len(ordered)):
-        if ordered[i].resulting_device_name:
-            name = ordered[i].resulting_device_name
-            named_spot = i
-            break
-
-    if name == None:
+def pick_name_and_model(matches: Iterable[SignatureMatch]) -> tuple[str | None, str | None]:
+    """Name and model from the strongest match that gives a name; (None, None) if none does."""
+    named = [match for match in matches if (match.resulting_device_name or "").strip()]
+    if not named:
         return None, None
-
-
-    model = None
-    for i in range(named_spot, len(ordered)):
-        if ordered[i].resulting_model:
-            model = ordered[i].resulting_model
-            break
-
-    return name, model
+    best = min(named, key=lambda match: (-match.evidence.weight, match.evidence.signature_id))
+    return best.resulting_device_name.strip(), (best.resulting_model or "").strip() or None

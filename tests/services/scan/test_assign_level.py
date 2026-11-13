@@ -1,5 +1,8 @@
+import ast
 import unittest
+from pathlib import Path
 
+from backend.services.scan import assign_level as module
 from backend.data_access.reference_data.reference_store import UNKNOWN_ID
 from backend.records.enums import EvidenceType, IdentificationLevel
 from backend.services.scan.assign_level import assign_level
@@ -77,15 +80,42 @@ class TestAssignLevel(unittest.TestCase):
         self.assertEqual(result1.device_name, "Fire TV Stick")
         self.assertEqual(result2.device_name, "Fire TV Stick")
 
-    def test_model_from_the_next_match(self):
+    def test_model_is_not_taken_from_the_next_match(self):
         named = make_match(EvidenceType.MDNS, 1, "Fire TV Stick")
         has_model = make_match(EvidenceType.NETBIOS_LLMNR, 2, None, "4K Max")
         result = assign_level(make_resolution(Streaming_Device, [named, has_model]), make_score(90), Amazon)
-        self.assertEqual(result.model, "4K Max")
+        self.assertEqual(result.model, None)
 
     def test_unknown_ids_match_reference_data(self):
         self.assertEqual(UNKNOWN_TYPE_ID, UNKNOWN_ID)
         self.assertEqual(UNKNOWN_VENDOR_ID, UNKNOWN_ID)
+
+
+
+
+class TestPurity(unittest.TestCase):
+
+    def test_imports_nothing_from_the_database_network_or_other_services(self):
+        allowed = ["__future__", "collections.abc", "dataclasses", "backend.records.enums",
+                   "backend.services.scan.calculate_score", "backend.services.scan.evidence",
+                   "backend.services.scan.match_signatures", "backend.services.scan.resolve_conflicts"]
+
+        code = Path(module.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(code)
+
+        imported = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported.append(alias.name)
+            if isinstance(node, ast.ImportFrom):
+                imported.append(node.module)
+
+        for name in imported:
+            self.assertIn(name, allowed)
+
+
+
 
 
 if __name__ == "__main__":

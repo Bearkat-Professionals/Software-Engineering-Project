@@ -38,7 +38,7 @@ MAX_SCORE = 100
 IDENTIFIED_MIN_SCORE = 50
 
 
-#Javier change's
+# the seeded "unknown" device type and vendor (DI-03); must match reference_store.UNKNOWN_ID
 UNKNOWN_TYPE_ID = 1
 UNKNOWN_VENDOR_ID = 1
 
