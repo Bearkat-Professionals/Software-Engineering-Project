@@ -23,7 +23,7 @@ escape them (XSS).
 """
 
 from __future__ import annotations
-
+from backend.data_access.database_engine import IntegrityConstraintError
 from collections.abc import Callable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
@@ -42,7 +42,13 @@ from backend.shared_modules.validate_input import validate_reference_name, valid
 
 
 RESULT_TEXT_MAX = 255
-EVIDENCE_TYPES = ", ".join(kind.value for kind in EvidenceType)
+DUPLICATE_KEY = 1062            # MySQL's error number for a duplicate UNIQUE value
+
+# OUI evidence is matched against oui_prefix (match_oui), never against signatures,
+# so a signature can't use it: it would be a rule that never matches anything.
+SIGNATURE_EVIDENCE = tuple(kind for kind in EvidenceType if kind is not EvidenceType.OUI)
+EVIDENCE_TYPES = ", ".join(kind.value for kind in SIGNATURE_EVIDENCE)
+_EVIDENCE_WORDS = ", ".join(kind.value for kind in SIGNATURE_EVIDENCE[:-1]) + " or " + SIGNATURE_EVIDENCE[-1].value
 
 #the three kinds
 @dataclass(frozen=True)
@@ -139,6 +145,7 @@ class ReferenceRecords(Protocol):
     """ReferenceStore(engine, kind) is one; tests pass a fake."""
 
     def find(self, pk: int, unit: Any = None) -> ReferenceEntity | None: ...
+    def find_for_update(self, pk: int, unit: Any) -> ReferenceEntity | None: ...
     def store(self, record: Any, changed_by: int, unit: Any = None,
               *, loaded_at: datetime | None = None) -> Any: ...
     def retire(self, pk: int, changed_by: int, unit: Any = None,
@@ -192,7 +199,7 @@ class ReferenceMaintenance:
             return _rejected(reasons)
 
         def change(unit: Any) -> MaintenanceResult:
-            stored = self._stores[kind].find(record_id, unit)
+            stored = self._stores[kind].find_for_update(record_id, unit)
             if stored is None:
                 return _not_found(kind, record_id)
             changed = replace(stored, **cleaned)
@@ -242,8 +249,8 @@ class ReferenceMaintenance:
                 return refused
             existing = self._prefixes.find(normalized, unit)
             if existing is not None:
-                return _prefix_taken(normalized, existing)
-            return self._done(self._prefixes.add(normalized, vendor_id, acting_user_id, unit), acting_user_id)
+                owner = self._stores[ReferenceKind.VENDOR].find(existing.vendor_id, unit)
+                return _prefix_taken(normalized, existing, owner)
 
         return self._run_prefix(normalized, change)
 
@@ -278,7 +285,7 @@ class ReferenceMaintenance:
 
     def _refuse_device_type(self, device_type_id: int, unit: Any) -> MaintenanceResult | None:
         """A signature's device type must exist and be active (DI-06)."""
-        device_type = self._stores[ReferenceKind.DEVICE_TYPE].find(device_type_id, unit)
+        device_type = self._stores[ReferenceKind.DEVICE_TYPE].find_for_update(device_type_id, unit)
         if device_type is None:
             return _rejected([f"There is no device type with id {device_type_id}."])
         if not device_type.is_active:
@@ -288,7 +295,7 @@ class ReferenceMaintenance:
 
     def _refuse_vendor(self, vendor_id: int, unit: Any) -> MaintenanceResult | None:
         """A prefix's vendor must exist and be active. The store refuses the "unknown" one."""
-        vendor = self._stores[ReferenceKind.VENDOR].find(vendor_id, unit)
+        vendor = self._stores[ReferenceKind.VENDOR].find_for_update(vendor_id, unit)
         if vendor is None:
             return _not_found(ReferenceKind.VENDOR, vendor_id)
         if not vendor.is_active:
@@ -321,14 +328,21 @@ class ReferenceMaintenance:
             return _conflict(kind.label, exc)
         except InactiveReferenceError:
             return _rejected(["This signature's device type is retired. Reactivate the device type first."])
+        except IntegrityConstraintError as exc:
+            if not _is_duplicate_key(exc):
+                raise                                    
+            return _duplicate(kind, exc)
 
     def _run_prefix(self, prefix: str, change: Callable[[Any], MaintenanceResult]) -> MaintenanceResult:
         try:
             with self._unit_of_work() as unit:
                 return change(unit)
-        except DuplicateReferenceError:                     # added by someone else at the same moment
-            return MaintenanceResult(MaintenanceStatus.DUPLICATE, reasons=(
-                f"OUI prefix {prefix} already belongs to a vendor. Move it instead.",))
+        except DuplicateReferenceError:
+            return _prefix_race(prefix)
+        except IntegrityConstraintError as exc:             # added by someone else at the same moment
+            if not _is_duplicate_key(exc):
+                raise
+            return _prefix_race(prefix)
         except ProtectedReferenceError:
             return MaintenanceResult(MaintenanceStatus.PROTECTED, reasons=(
                 "The built-in 'Unknown' vendor can't own OUI prefixes.",))
@@ -393,10 +407,10 @@ def _check_one(kind: ReferenceKind, name: str, value: Any) -> tuple[str | None, 
         return (None, result.value) if result else (result.reason, None)
 
     if name == "evidence_type":
-        try:
-            return None, EvidenceType(value.strip().lower() if isinstance(value, str) else value)
-        except ValueError:
-            return f"'{value}' is not an evidence type. Use one of: {EVIDENCE_TYPES}.", None
+            try:
+                return None, EvidenceType(value.strip().lower() if isinstance(value, str) else value)
+            except ValueError:
+                return f"'{value}' is not an evidence type. Use one of: {EVIDENCE_TYPES}.", None
 
     if name == "device_type_id":
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -433,7 +447,7 @@ def _not_found(kind: ReferenceKind, record_id: Any) -> MaintenanceResult:
     return MaintenanceResult(MaintenanceStatus.NOT_FOUND, reasons=(
         f"There is no {kind.label} with id {record_id}. It may have been removed; reload the list.",))
 
-def _duplicate(kind: ReferenceKind, exc: DuplicateReferenceError) -> MaintenanceResult:
+def _duplicate(kind: ReferenceKind, exc: Exception) -> MaintenanceResult:
     if kind is ReferenceKind.SIGNATURE:
         reason = "A signature with this evidence type and pattern already exists."
     else:
@@ -441,9 +455,22 @@ def _duplicate(kind: ReferenceKind, exc: DuplicateReferenceError) -> Maintenance
     return MaintenanceResult(MaintenanceStatus.DUPLICATE, reasons=(reason,),
                              existing_id=getattr(exc, "existing_id", None))
 
-def _prefix_taken(prefix: str, existing: OuiPrefix) -> MaintenanceResult:
+def _prefix_taken(prefix: str, existing: OuiPrefix, owner: Vendor | None) -> MaintenanceResult:
+    who = owner.vendor_name if owner is not None else "another vendor"
     return MaintenanceResult(MaintenanceStatus.DUPLICATE, existing_id=existing.pk, reasons=(
-        f"OUI prefix {prefix} already belongs to vendor {existing.vendor_id}. Move it instead.",))
+        f"OUI prefix {prefix} already belongs to {who}. Move it instead.",))
+
+
+def _prefix_race(prefix: str) -> MaintenanceResult:
+    return MaintenanceResult(MaintenanceStatus.DUPLICATE, reasons=(
+        f"OUI prefix {prefix} was just added by someone else. Reload, then move it if needed.",))
+
+
+def _is_duplicate_key(exc: IntegrityConstraintError) -> bool:
+    """True when the UNIQUE index refused a duplicate. The engine raises the same error for a
+    missing foreign key or an empty required column, and those are faults, not duplicates."""
+    cause = exc.__cause__
+    return getattr(cause, "errno", None) == DUPLICATE_KEY or "Duplicate entry" in str(exc)
 
 def _conflict(label: str, exc: EditConflictError) -> MaintenanceResult:
     when = exc.changed_at.strftime("%H:%M") if exc.changed_at else "just now"

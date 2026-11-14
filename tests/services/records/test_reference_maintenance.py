@@ -7,6 +7,7 @@ from __future__ import annotations
 import unittest
 from datetime import timedelta
 
+from backend.data_access.database_engine import IntegrityConstraintError
 from backend.records import DeviceSignature, DeviceType, OuiPrefix, Vendor
 from backend.records.enums import EvidenceType, RecordStatus
 from backend.services.records.reference_maintenance import (MaintenanceResult, MaintenanceStatus,
@@ -133,6 +134,19 @@ class EachOperationForEachKindTests(MaintenanceTestCase):
         self.assertStatus(result, DONE)
         self.assertNothingStored()
 
+    def test_an_edit_reads_the_record_under_a_lock(self) -> None:       # review: no lost updates
+        for kind in ReferenceKind:
+            with self.subTest(kind=kind.value):
+                self.setUp()
+                self.service.edit(kind, STORED_ID[kind], EDIT[kind], ADMIN, loaded_at=None)
+                self.assertEqual(self.stores[kind].locked[0], STORED_ID[kind])
+
+    def test_the_type_and_vendor_being_checked_are_locked_too(self) -> None:
+        self.service.add(SIGNATURE, NEW[SIGNATURE], ADMIN)
+        self.assertEqual(self.types.locked, [2])
+        self.service.add_prefix(5, "3C:07:54", ADMIN)
+        self.assertEqual(self.vendors.locked, [5])
+
     def test_an_edit_keeps_the_values_it_wasnt_sent(self) -> None:
         result = self.service.edit(SIGNATURE, 30, {"resulting_model": "Ultra 2024"}, ADMIN, loaded_at=None)
         self.assertStatus(result, DONE)
@@ -185,10 +199,18 @@ class NameAndPatternEdgeTests(MaintenanceTestCase):
 
 
 class SignatureRuleTests(MaintenanceTestCase):
-    def test_an_unknown_evidence_type_lists_the_five(self) -> None:
+    def test_an_unknown_evidence_type_lists_the_four_a_signature_can_use(self) -> None:
         result = self.service.add(SIGNATURE, {**NEW[SIGNATURE], "evidence_type": "bluetooth"}, ADMIN)
         self.assertStatus(result, REJECTED, "'bluetooth' is not an evidence type",
-                          "oui, mdns, ssdp, netbios_llmnr, reverse_dns")
+                          "Use one of: mdns, ssdp, netbios_llmnr, reverse_dns.")
+        self.assertNothingStored()
+
+    def test_oui_is_refused_for_a_signature(self) -> None:            # review: it would never match
+        for call in (lambda: self.service.add(SIGNATURE, {**NEW[SIGNATURE], "evidence_type": "OUI"}, ADMIN),
+                     lambda: self.service.edit(SIGNATURE, 30, {"evidence_type": "oui"}, ADMIN, None)):
+            self.assertStatus(call(), REJECTED,
+                              "Signatures match mdns, ssdp, netbios_llmnr or reverse_dns evidence. "
+                              "OUI prefixes are added to a vendor instead.")
         self.assertNothingStored()
 
     def test_evidence_type_ignores_case_and_spaces(self) -> None:
@@ -278,6 +300,23 @@ class FailureStatusTests(MaintenanceTestCase):
                 self.assertStatus(result, MaintenanceStatus.DUPLICATE, "already exists")
                 self.assertEqual(result.existing_id, existing)
         self.assertNothingStored()
+
+    def test_two_admins_adding_the_same_name_at_once(self) -> None:    # review: no 500
+        for kind in ReferenceKind:
+            with self.subTest(kind=kind.value):
+                self.setUp()
+                self.stores[kind].unique_index_refuses_next = True
+                result = self.service.add(kind, NEW[kind], ADMIN)
+                self.assertStatus(result, MaintenanceStatus.DUPLICATE, "already exists")
+                self.assertIsNone(result.existing_id)
+                self.assertEqual(self.work.rolled_back, 1)
+
+    def test_other_integrity_errors_are_not_called_duplicates(self) -> None:
+        def broken(*args, **kwargs):
+            raise IntegrityConstraintError("Cannot add or update a child row: a foreign key constraint fails")
+        self.vendors.store = broken
+        with self.assertRaises(IntegrityConstraintError):
+            self.service.add(VENDOR, NEW[VENDOR], ADMIN)
 
     def test_renaming_onto_another_name_is_a_duplicate(self) -> None:
         result = self.service.edit(VENDOR, 4, {"vendor_name": "apple"}, ADMIN, loaded_at=None)
@@ -373,10 +412,16 @@ class PrefixTests(MaintenanceTestCase):
 
     def test_a_prefix_that_already_belongs_to_a_vendor(self) -> None:
         result = self.service.add_prefix(5, "28:6f:b9", ADMIN)
-        self.assertStatus(result, MaintenanceStatus.DUPLICATE, "28:6F:B9 already belongs to vendor 4",
+        self.assertStatus(result, MaintenanceStatus.DUPLICATE, "28:6F:B9 already belongs to Acme.",
                           "Move it instead")
+        self.assertFalse(any("vendor 4" in reason for reason in result.reasons))     # a name, not an id
         self.assertEqual(result.existing_id, 50)
         self.assertNothingStored()
+
+    def test_two_admins_adding_the_same_prefix_at_once(self) -> None:
+        self.prefixes.unique_index_refuses_next = True
+        result = self.service.add_prefix(5, "3C:07:54", ADMIN)
+        self.assertStatus(result, MaintenanceStatus.DUPLICATE, "3C:07:54 was just added by someone else")
 
     def test_the_vendor_must_be_active(self) -> None:
         for call in (lambda: self.service.add_prefix(6, "3C:07:54", ADMIN),

@@ -110,6 +110,13 @@ class ReferenceStore(Generic[T]):
     def find(self, pk: int, unit: Any = None) -> T | None:
         return self._records.get(pk, unit)
 
+    def find_for_update(self, pk: int, unit: Any) -> T | None:
+        """Read the record and lock its row until the caller's unit of work ends, so nobody
+        else can change it in between (a read-then-write that can't undo another change)."""
+        with _unit_of_work(self._engine, unit) as cursor:
+            self._lock(pk, cursor)
+            return self._records.get(pk, cursor)
+
     def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE,
                   *, text: str | None = None,
                   status: RecordStatus | str | None = None,

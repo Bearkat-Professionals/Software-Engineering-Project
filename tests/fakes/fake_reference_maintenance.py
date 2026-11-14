@@ -19,6 +19,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
+from backend.data_access.database_engine import IntegrityConstraintError
 from backend.data_access.reference_data import (DuplicateReferenceError, EditConflictError,
                                                 InactiveReferenceError, ProtectedReferenceError,
                                                 normalize_prefix)
@@ -112,15 +113,24 @@ class FakeMaintenanceStore(FakeReferenceStore, _Audited):
         self.record_type = record_type
         self.device_types = device_types        # signatures: for the reactivate check
         self.usage_counts: dict[int, dict[str, int]] = {}
+        self.locked: list[int] = []             # ids read with find_for_update
+        self.unique_index_refuses_next = False  # act like a second admin's insert won the race
         self._next_id = max(self.rows, default=0) + 1
 
     def find(self, pk: int, unit: Any = None) -> Any:
         self._seen(unit)
         return super().find(pk, unit)
 
+    def find_for_update(self, pk: int, unit: Any) -> Any:
+        self.locked.append(pk)
+        return self.find(pk, unit)
+
     def store(self, record: Any, changed_by: int, unit: Any = None, *, loaded_at: datetime | None = None) -> Any:
         self._seen(unit)
         self._refuse_if_protected(record.pk)
+        if self.unique_index_refuses_next:
+            self.unique_index_refuses_next = False
+            raise IntegrityConstraintError(f"Duplicate entry 'x' for key '{DUPLICATE_KEYS[self.record_type][0]}'")
         if record.pk is None:
             self._reject_duplicate(record)
             setattr(record, record.PK, self._next_id)
@@ -183,6 +193,7 @@ class FakePrefixStore(_Audited):
     def __init__(self, prefixes: Iterable[OuiPrefix] = (), clock: FakeClock | None = None) -> None:
         super().__init__(clock or FakeClock())
         self.rows: dict[str, OuiPrefix] = {prefix.oui_prefix: deepcopy(prefix) for prefix in prefixes}
+        self.unique_index_refuses_next = False
         self._next_id = max((prefix.pk for prefix in self.rows.values()), default=0) + 1
 
     def find(self, prefix: str, unit: Any = None) -> OuiPrefix | None:
@@ -197,6 +208,9 @@ class FakePrefixStore(_Audited):
             raise ProtectedReferenceError("the 'unknown' vendor can't own OUI prefixes")
         if normalized in self.rows:
             raise DuplicateReferenceError(f"OUI prefix {normalized} already belongs to a vendor")
+        if self.unique_index_refuses_next:
+            self.unique_index_refuses_next = False
+            raise IntegrityConstraintError(f"Duplicate entry '{normalized}' for key 'oui_prefix'")
         created = OuiPrefix(oui_id=self._next_id, oui_prefix=normalized, vendor_id=vendor_id)
         self._next_id += 1
         self.rows[normalized] = deepcopy(created)
