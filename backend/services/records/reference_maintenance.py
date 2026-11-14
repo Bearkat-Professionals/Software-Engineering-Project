@@ -251,6 +251,7 @@ class ReferenceMaintenance:
             if existing is not None:
                 owner = self._stores[ReferenceKind.VENDOR].find(existing.vendor_id, unit)
                 return _prefix_taken(normalized, existing, owner)
+            return self._done(self._prefixes.add(normalized, vendor_id, acting_user_id, unit), acting_user_id)
 
         return self._run_prefix(normalized, change)
 
@@ -407,10 +408,14 @@ def _check_one(kind: ReferenceKind, name: str, value: Any) -> tuple[str | None, 
         return (None, result.value) if result else (result.reason, None)
 
     if name == "evidence_type":
-            try:
-                return None, EvidenceType(value.strip().lower() if isinstance(value, str) else value)
-            except ValueError:
-                return f"'{value}' is not an evidence type. Use one of: {EVIDENCE_TYPES}.", None
+        try:
+            evidence = EvidenceType(value.strip().lower() if isinstance(value, str) else value)
+        except ValueError:
+            return f"'{value}' is not an evidence type. Use one of: {EVIDENCE_TYPES}.", None
+        if evidence not in SIGNATURE_EVIDENCE:
+            return (f"Signatures match {_EVIDENCE_WORDS} evidence. "
+                    "OUI prefixes are added to a vendor instead."), None
+        return None, evidence
 
     if name == "device_type_id":
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
