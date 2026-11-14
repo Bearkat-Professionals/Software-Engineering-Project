@@ -65,7 +65,12 @@ _ORDER_COLUMNS: dict[type[ReferenceEntity], tuple[str, ...]] = {
 }
 
 class DuplicateReferenceError(Exception):
-    """Another record already has this name or pattern (DI-07). Nothing was saved."""
+    """Another record already has this name or pattern (DI-07). Nothing was saved.
+    existing_id is that other record's id, when known."""
+
+    def __init__(self, message: str, existing_id: int | None = None):
+        super().__init__(message)
+        self.existing_id = existing_id
 
 class ProtectedReferenceError(Exception):
     """The record is the built-in "unknown" vendor or device type and can't be changed."""
@@ -104,6 +109,13 @@ class ReferenceStore(Generic[T]):
 
     def find(self, pk: int, unit: Any = None) -> T | None:
         return self._records.get(pk, unit)
+
+    def find_for_update(self, pk: int, unit: Any) -> T | None:
+        """Read the record and lock its row until the caller's unit of work ends, so nobody
+        else can change it in between (a read-then-write that can't undo another change)."""
+        with _unit_of_work(self._engine, unit) as cursor:
+            self._lock(pk, cursor)
+            return self._records.get(pk, cursor)
 
     def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE,
                   *, text: str | None = None,
@@ -260,7 +272,8 @@ class ReferenceStore(Generic[T]):
         if others:
             shown = ", ".join(f"{key} '{_text(getattr(record, key))}'" for key in keys)
             raise DuplicateReferenceError(
-                f"a {self._type.TABLE} with {shown} already exists (id {others[0].pk})")
+                f"a {self._type.TABLE} with {shown} already exists (id {others[0].pk})",
+                existing_id=others[0].pk)
 
     def _lock(self, pk: int, cursor: Any) -> None:
         cursor.execute(
