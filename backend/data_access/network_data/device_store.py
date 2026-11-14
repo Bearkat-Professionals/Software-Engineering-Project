@@ -1,4 +1,4 @@
-"""3.1.1 Store Device, 3.1.2 Find Devices and 3.1.3 Delete Device.
+"""3.1.1 Store Device, 3.1.2 Find Devices (search with FR-10 criteria, text and sorting) and 3.1.3 Delete Device.
 
 The MAC address is a device's identity (DI-01): storing a device whose MAC is
 already known updates that row instead of adding a second one, so an IP change
@@ -19,15 +19,15 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Generator
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from enum import Enum
+from typing import Any, Generator
 
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.database_engine import DatabaseEngine
 from backend.data_access.repository import RecordNotFoundError, Repository
-from backend.records import Device, AuditLog
-from backend.records.enums import AuditAction
+from backend.records import AuditLog, Device
+from backend.records.enums import AuditAction, NetworkStatus
 
 # Tables whose rows belong to a device and are removed with it (ON DELETE CASCADE)
 _CHILD_TABLES = {
@@ -37,9 +37,62 @@ _CHILD_TABLES = {
 
 DEFAULT_PER_PAGE = 50
 MAX_PER_PAGE = 200
-# Columns the device list can be narrowed by (3.1.2 "by criteria")
+# Columns the device list can be narrowed by exact match (3.1.2 "by criteria");
+# DeviceSearch has a field with each of these names
 LIST_CRITERIA = ("network_status", "flagged_status", "trusted_status", "is_randomized_mac",
                  "vendor_id", "device_type_id")
+# The only things the list can be sorted by. A request names a key; only the
+# fixed expression next to it ever goes into the SQL.
+SORT_COLUMNS: dict[str, str] = {
+    "last_seen": "d.`last_seen`",
+    "name": "d.`device_name`",
+    "ip": "INET_ATON(d.`current_ip`)",         # numeric, so .9 comes before .10; IPv6 counts as no IP
+    "confidence": "d.`confidence_score`",
+    "vendor": "v.`vendor_name`",
+    "type": "t.`category_name`",
+}
+# Columns the text search looks in
+TEXT_COLUMNS = ("device_name", "hostname", "current_ip", "mac_address")
+
+
+@dataclass(frozen=True)
+class DeviceSearch:
+    """What the device list is narrowed and sorted by (FR-10). Every filter is
+    optional; None means "any". Checked when created, so a bad search never
+    reaches the database."""
+    device_type_id: int | None = None
+    vendor_id: int | None = None
+    network_status: NetworkStatus | None = None
+    flagged_status: bool | None = None
+    trusted_status: bool | None = None
+    is_randomized_mac: bool | None = None
+    confidence_min: int | None = None
+    confidence_max: int | None = None
+    seen_from: date | None = None              # whole days: from 00:00 on seen_from
+    seen_to: date | None = None                # to the end of seen_to
+    text: str | None = None                    # part of the name, hostname, IP or MAC
+    sort: str = "last_seen"
+    descending: bool = True
+
+    def __post_init__(self) -> None:
+        for name in ("seen_from", "seen_to"):
+            value = getattr(self, name)
+            if isinstance(value, datetime):                       # a datetime is a date too; keep the day
+                object.__setattr__(self, name, value.date())
+        if self.text is not None:
+            object.__setattr__(self, "text", self.text.strip() or None)    # blank means no text search
+
+        for name in ("confidence_min", "confidence_max"):
+            value = getattr(self, name)
+            if value is not None and not 0 <= value <= 100:
+                raise ValueError(f"{name} must be 0 to 100")
+        if self.confidence_min is not None and self.confidence_max is not None \
+                and self.confidence_min > self.confidence_max:
+            raise ValueError("confidence_min is more than confidence_max")
+        if self.seen_from is not None and self.seen_to is not None and self.seen_from > self.seen_to:
+            raise ValueError("seen_from is after seen_to")
+        if self.sort not in SORT_COLUMNS:
+            raise ValueError(f"the device list can't be sorted by '{self.sort}'")
 
 @dataclass(frozen=True)
 class DeviceListing:
@@ -85,27 +138,27 @@ class DeviceStore:
         matches = self._devices.list(unit, mac_address=mac_address, is_randomized_mac=is_randomized_mac)
         return matches[-1] if matches else None
 
-    def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE, unit: Any = None,
-                  **criteria: Any) -> DevicePage:
-        """One page of the device list, newest sighting first, each device with
-        its vendor and type NAMES (one query, not one lookup per device).
-
-        criteria narrow the list by equality, e.g. flagged_status=True or
-        network_status=NetworkStatus.ONLINE; only the columns in LIST_CRITERIA
-        are allowed. Retired vendors and types still show their names (DI-06).
-        """
+    def search(self, search: DeviceSearch = DeviceSearch(), page: int = 1,
+               per_page: int = DEFAULT_PER_PAGE, unit: Any = None) -> DevicePage:
+        """One page of the devices matching the search, each with its vendor and
+        type NAMES, and how many match in total. Devices with no value for the
+        sort column come last either way; device_id breaks ties, so paging never
+        repeats or skips a device. Retired vendors and types still show (DI-06)."""
         if page < 1 or not 1 <= per_page <= MAX_PER_PAGE:
             raise ValueError(f"page must be 1 or more and per_page 1 to {MAX_PER_PAGE}")
-        where, params = _where(criteria)
+        where, params = _search_where(search)
+        sort = SORT_COLUMNS[search.sort]
+        direction = "DESC" if search.descending else "ASC"
         columns = ", ".join(f"d.`{name}`" for name in Device.column_names())
         sql = (f"SELECT {columns}, v.`vendor_name`, t.`category_name` "
                "FROM `device` d "
                "JOIN `vendor` v ON v.`vendor_id` = d.`vendor_id` "
                "JOIN `device_type` t ON t.`device_type_id` = d.`device_type_id` "
                f"{where} "
-               "ORDER BY d.`last_seen` DESC, d.`device_id` DESC "
+               f"ORDER BY {sort} IS NULL, {sort} {direction}, d.`device_id` {direction} "
                "LIMIT %s OFFSET %s")
         with _unit_of_work(self._engine, unit) as cursor:
+            # The WHERE only uses device columns, so the count needs no joins
             cursor.execute(f"SELECT COUNT(*) AS n FROM `device` d {where}", params)
             total = cursor.fetchone()["n"]
             cursor.execute(sql, (*params, per_page, (page - 1) * per_page))
@@ -113,6 +166,16 @@ class DeviceStore:
         listings = [DeviceListing(Device.from_row(row), row["vendor_name"], row["category_name"])
                     for row in rows]
         return DevicePage(listings, page, per_page, total)
+
+    def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE, unit: Any = None,
+                  **criteria: Any) -> DevicePage:
+        """One page of the device list, newest sighting first. criteria narrow it
+        by equality, e.g. flagged_status=True; only the columns in LIST_CRITERIA
+        are allowed. Same as search() with only those filters."""
+        unknown = sorted(set(criteria) - set(LIST_CRITERIA))
+        if unknown:
+            raise ValueError(f"the device list can't be filtered by '{unknown[0]}'")
+        return self.search(DeviceSearch(**criteria), page, per_page, unit)
 
     # ---- 3.1.1 Store Device ------------------------------------------------------
 
@@ -193,15 +256,38 @@ class DeviceStore:
             counts[key] = cursor.fetchone()["n"]
         return counts
 
-def _where(criteria: dict[str, Any]) -> tuple[str, list[Any]]:
-    """WHERE clause and parameters for the device list's criteria."""
-    conditions, params = [], []
-    for name, value in criteria.items():
-        if name not in LIST_CRITERIA:
-            raise ValueError(f"the device list can't be filtered by '{name}'")
-        conditions.append(f"d.`{name}` = %s")
-        params.append(value.value if isinstance(value, Enum) else value)
+def _search_where(search: DeviceSearch) -> tuple[str, list[Any]]:
+    """WHERE clause and parameters for a search. Every value is a parameter;
+    the SQL text is built only from fixed column names."""
+    conditions: list[str] = []
+    params: list[Any] = []
+    for name in LIST_CRITERIA:                                        # exact matches
+        value = getattr(search, name)
+        if value is not None:
+            conditions.append(f"d.`{name}` = %s")
+            params.append(value.value if isinstance(value, Enum) else value)
+    if search.confidence_min is not None:
+        conditions.append("d.`confidence_score` >= %s")
+        params.append(search.confidence_min)
+    if search.confidence_max is not None:
+        conditions.append("d.`confidence_score` <= %s")
+        params.append(search.confidence_max)
+    if search.seen_from is not None:
+        conditions.append("d.`last_seen` >= %s")
+        params.append(datetime.combine(search.seen_from, time.min))
+    if search.seen_to is not None:                                    # before the next day starts
+        conditions.append("d.`last_seen` < %s")
+        params.append(datetime.combine(search.seen_to + timedelta(days=1), time.min))
+    if search.text is not None:
+        matches = " OR ".join(f"d.`{column}` LIKE %s ESCAPE '\\\\'" for column in TEXT_COLUMNS)
+        conditions.append(f"({matches})")
+        params.extend([f"%{_escape_like(search.text)}%"] * len(TEXT_COLUMNS))
     return ("WHERE " + " AND ".join(conditions)) if conditions else "", params
+
+
+def _escape_like(value: str) -> str:
+    """Make \\, % and _ match themselves in a LIKE pattern."""
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 @contextmanager
 def _unit_of_work(engine: DatabaseEngine, unit: Any) -> Generator[Any, None, None]:
