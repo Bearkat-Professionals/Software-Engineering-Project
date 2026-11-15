@@ -21,6 +21,7 @@ from backend.services.scan.evidence import IDENTIFIED_MIN_SCORE, UNKNOWN_TYPE_ID
 from backend.services.scan.match_signatures import SignatureMatch
 from backend.services.scan.resolve_conflicts import Resolution
 
+
 @dataclass(frozen=True)
 class Identification:
     level: IdentificationLevel
@@ -29,6 +30,7 @@ class Identification:
     device_name: str | None             # only when identified
     model: str | None                   # only when identified
     breakdown: ScoreBreakdown
+
 
 def assign_level(resolution: Resolution, breakdown: ScoreBreakdown,
                  vendor_id: int | None) -> Identification:
@@ -59,6 +61,7 @@ def stored_level(device_type_id: int | None, vendor_id: int | None, device_name:
     if type_known or vendor_known:
         return IdentificationLevel.PARTIAL
     return IdentificationLevel.UNIDENTIFIED
+
 
 def pick_name_and_model(matches: Iterable[SignatureMatch]) -> tuple[str | None, str | None]:
     """Name and model from the strongest match that gives a name; (None, None) if none does."""
