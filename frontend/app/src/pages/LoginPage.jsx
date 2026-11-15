@@ -6,7 +6,7 @@ import { useMessages } from "../components/Messages";
 export default function LoginPage() {
 
     const { login } = useAuth();
-    const { showMessage } = useMessages();
+    const { showMessage, clearMessage } = useMessages();
     const navigate = useNavigate();
     const [params] = useSearchParams();
     const [username, setUsername] = useState("");
@@ -23,6 +23,7 @@ export default function LoginPage() {
     async function onSubmit(event) {
 
         event.preventDefault();
+        clearMessage();
         setWaiting(true);
 
         try {

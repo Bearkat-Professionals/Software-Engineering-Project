@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "../components/api";
+import { useMessages } from "../components/Messages";
 
 const AuthContext = createContext(null);
 
@@ -7,6 +8,7 @@ export function AuthProvider({ children }) {
 
   const [user, setUser] = useState(undefined);
   const [permissions, setPermissions] = useState([]);
+  const { showMessage } = useMessages();
 
   useEffect(() => {
 
@@ -23,9 +25,13 @@ export function AuthProvider({ children }) {
 
       })
 
-      .catch(() => {
+      .catch((err) => {
 
-        if (!ignore) setUser(null);
+        if (ignore) return;
+
+        setUser(null);
+
+        if (err.status !== 401) showMessage("error", err.message);
 
       });
 
@@ -35,7 +41,7 @@ export function AuthProvider({ children }) {
 
     };
 
-  }, []);
+  }, [showMessage]);
 
   const value = useMemo(() => ({
 
@@ -52,11 +58,21 @@ export function AuthProvider({ children }) {
 
     async logout() {
 
-      await api("/api/logout", { method: "POST", body: {} });
+      try {
 
-      setUser(null);
-      setPermissions([]);
-      
+        await api("/api/logout", { method: "POST", body: {} });
+
+      } catch {
+
+        // The session may already be gone. Sign out on this side anyway.
+
+      } finally {
+
+        setUser(null);
+        setPermissions([]);
+
+      }
+
     },
 
     can(permission) {
