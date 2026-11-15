@@ -13,7 +13,9 @@ reported at once (OUT-04), and nothing is stored unless all of them pass.
          ReferenceKind.DEVICE_TYPE: ReferenceStore(engine, DeviceType),
          ReferenceKind.SIGNATURE: ReferenceStore(engine, DeviceSignature)},
         OuiPrefixStore(engine), engine.unit_of_work)
-
+    maintenance.list_page(ReferenceKind.VENDOR, page=1, per_page=50, text="apple")   # the list screen
+    maintenance.load(ReferenceKind.VENDOR, 3)      # the edit form: usage, prefixes, loaded_at
+    
     result = maintenance.add(ReferenceKind.VENDOR, {"vendor_name": "Acme"}, acting_user_id=1)
     result.status       # MaintenanceStatus.DONE, REJECTED, NOT_FOUND, DUPLICATE, PROTECTED or CONFLICT
     result.reasons      # sentences a person can read, when it wasn't DONE
@@ -23,20 +25,21 @@ escape them (XSS).
 """
 
 from __future__ import annotations
-from backend.data_access.database_engine import IntegrityConstraintError
-from collections.abc import Callable, Mapping
+
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
+from backend.data_access.database_engine import IntegrityConstraintError
 from backend.data_access.reference_data import (DuplicateReferenceError, EditConflictError,
                                                 InactiveReferenceError, InvalidPrefixError,
                                                 ProtectedReferenceError, normalize_prefix)
 from backend.data_access.repository import RecordNotFoundError
 from backend.records import DeviceSignature, DeviceType, OuiPrefix, Vendor
-from backend.records.enums import EvidenceType
+from backend.records.enums import EvidenceType, RecordStatus
 from backend.records.reference_entity import ReferenceEntity
 from backend.shared_modules.validate_input import validate_reference_name, validate_signature_pattern
 
@@ -140,6 +143,25 @@ class ReferenceUsage:
     counts: Mapping[str, int]
     sentence: str
 
+@dataclass(frozen=True)
+class ReferenceListing:
+    """One page of one kind for the list screen, retired records included."""
+    records: list[ReferenceEntity]
+    page: int
+    per_page: int
+    total: int
+    device_type_names: Mapping[int, str]        # signatures: their types' names; empty for the others
+
+@dataclass(frozen=True)
+class ReferenceDetail:
+    """One record for the edit form: what uses it, and the version the user is looking at."""
+    record: ReferenceEntity
+    usage: Mapping[str, int]
+    usage_text: str
+    loaded_at: datetime                         # send it back with the change (conflict check)
+    prefixes: tuple[str, ...] = ()              # vendors only
+    device_type_name: str | None = None         # signatures only
+
 #what the service needs from 3.2
 class ReferenceRecords(Protocol):
     """ReferenceStore(engine, kind) is one; tests pass a fake."""
@@ -153,11 +175,14 @@ class ReferenceRecords(Protocol):
     def reactivate(self, pk: int, changed_by: int, unit: Any = None,
                    *, loaded_at: datetime | None = None) -> Any: ...
     def usage(self, pk: int, unit: Any = None) -> dict[str, int]: ...
+    def list_page(self, page: int = 1, per_page: int = 50, *, text: str | None = None,
+                  status: RecordStatus | str | None = None, unit: Any = None) -> Any: ...
 
 class PrefixRecords(Protocol):
     """OuiPrefixStore(engine) is one."""
 
     def find(self, prefix: str, unit: Any = None) -> OuiPrefix | None: ...
+    def for_vendor(self, vendor_id: int, unit: Any = None) -> list[OuiPrefix]: ...
     def add(self, prefix: str, vendor_id: int, changed_by: int, unit: Any = None) -> OuiPrefix: ...
     def reassign(self, prefix: str, vendor_id: int, changed_by: int, unit: Any = None,
                  *, loaded_at: datetime | None = None) -> OuiPrefix: ...
@@ -236,6 +261,35 @@ class ReferenceMaintenance:
             counts = store.usage(record_id, unit)
         return ReferenceUsage(MaintenanceStatus.DONE, counts, usage_sentence(kind, counts))
 
+    def list_page(self, kind: ReferenceKind, page: int, per_page: int, *, text: str | None = None,
+                  status: RecordStatus | str | None = None) -> ReferenceListing:
+        """One page of a kind, by name (signatures by evidence type, then pattern). Raises
+        ValueError for a bad page, page size or status; the routes check those first."""
+        kind = ReferenceKind(kind)
+        with self._unit_of_work() as unit:
+            found = self._stores[kind].list_page(page, per_page, text=text, status=status, unit=unit)
+            names = (self._type_names((record.device_type_id for record in found.records), unit)
+                     if kind is ReferenceKind.SIGNATURE else {})
+        return ReferenceListing(found.records, found.page, found.per_page, found.total, names)
+
+    def load(self, kind: ReferenceKind, record_id: int) -> ReferenceDetail | None:
+        """One record for the edit form, or None if there's no such record."""
+        kind = ReferenceKind(kind)
+        store = self._stores[kind]
+        loaded_at = self._clock()       # BEFORE reading: anything stamped later counts as newer
+        with self._unit_of_work() as unit:
+            record = store.find(record_id, unit)
+            if record is None:
+                return None
+            counts = store.usage(record_id, unit)
+            prefixes: tuple[str, ...] = ()
+            type_name = None
+            if kind is ReferenceKind.VENDOR:
+                prefixes = tuple(sorted(prefix.oui_prefix for prefix in self._prefixes.for_vendor(record_id, unit)))
+            elif kind is ReferenceKind.SIGNATURE:
+                type_name = self._type_names((record.device_type_id,), unit).get(record.device_type_id)
+        return ReferenceDetail(record, counts, usage_sentence(kind, counts), loaded_at, prefixes, type_name)
+
 #OUI prefixes 
 
     def add_prefix(self, vendor_id: int, prefix: str, acting_user_id: int) -> MaintenanceResult:
@@ -303,6 +357,16 @@ class ReferenceMaintenance:
             return _rejected([f"The vendor '{vendor.vendor_name}' is retired, so it can't be given "
                               "OUI prefixes. Reactivate it first."])
         return None
+
+    def _type_names(self, type_ids: Iterable[int], unit: Any) -> dict[int, str]:
+        """Device type names by id, one lookup per distinct id."""
+        types = self._stores[ReferenceKind.DEVICE_TYPE]
+        names: dict[int, str] = {}
+        for type_id in sorted(set(type_ids)):
+            found = types.find(type_id, unit)
+            if found is not None:
+                names[type_id] = found.category_name
+        return names
 
     def _done(self, record: Any, acting_user_id: int) -> MaintenanceResult:
         # Read after the store wrote its audit entry, so it is never earlier than that entry:
