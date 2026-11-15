@@ -318,6 +318,78 @@ Any role.
 - `page` defaults to 1 and `per_page` to 50 (at most 200). A page past the end gives an empty `devices` list with the real `total`.
 - A `page` or `per_page` that isn't a whole number in range gets a 400 naming the bad value.
 
+### Reference data: vendors, device types, signatures and OUI prefixes (#126)
+`<kind>` is `vendors`, `device-types` or `signatures`; anything else is 404. Reading needs any role; changing needs `editor` or `admin` (a viewer gets 403, and the refusal is logged). Nothing is ever deleted: records are retired and can be reactivated (DI-06).
+
+| Request | Body | Success |
+|---|---|---|
+| `GET /api/reference/<kind>?q=apple&status=active&page=1&per_page=50` | none | 200, one page |
+| `GET /api/reference/<kind>/<id>` | none | 200, one record |
+| `POST /api/reference/<kind>` | the fields | 201, the record |
+| `PUT /api/reference/<kind>/<id>` | the fields to change, and `loaded_at` | 200, the record |
+| `POST /api/reference/<kind>/<id>/retire` | `{"loaded_at": "..."}` | 200, the record |
+| `POST /api/reference/<kind>/<id>/reactivate` | `{"loaded_at": "..."}` | 200, the record |
+| `POST /api/reference/vendors/<id>/prefixes` | `{"prefix": "f0-d1-a9"}` | 201, the prefix |
+| `PUT /api/reference/prefixes/<prefix>` | `{"vendor_id": 12, "loaded_at": "..."}` | 200, the prefix |
+
+**A list.** Retired records are included unless `status` says otherwise:
+```json
+{"records": [{"id": 3, "name": "Apple, Inc.", "status": "active"}],
+ "page": 1, "per_page": 50, "total": 14}
+```
+- `q` finds names (or a signature's pattern) containing the text, ignoring case; at most 100 characters.
+- `status` is `active`, `retired` or `both` (the default).
+- `page` defaults to 1 and `per_page` to 50 (at most 200), as for devices.
+- Sorted by name; signatures by evidence type, then pattern.
+
+A signature record has more fields, including its device type's name:
+```json
+{"id": 9, "evidence_type": "mdns", "pattern": "echo", "device_type_id": 4,
+ "device_type": "smart speaker", "resulting_device_name": "Amazon Echo",
+ "resulting_model": null, "status": "active"}
+```
+
+**One record**, with what uses it and the version you're looking at (`prefixes` only for vendors):
+```json
+{"record": {"id": 3, "name": "Apple, Inc.", "status": "active"},
+ "usage": {"device": 12},
+ "usage_text": "12 devices use this vendor.",
+ "prefixes": ["3C:07:54", "F0:D1:A9"],
+ "loaded_at": "2026-11-11T10:15:02"}
+```
+A device type's `usage` is `{"device": 12, "device_signature": 3}`; a signature's is `{"identification_evidence": 5}`. Show `usage_text` in the retire confirmation.
+
+**Adding and editing.** Vendors and device types: `{"name": "Acme"}`. Signatures:
+```json
+{"evidence_type": "mdns", "pattern": "echo", "device_type_id": 4,
+ "resulting_device_name": "Amazon Echo", "resulting_model": null}
+```
+- An edit sends only the fields that change, plus `loaded_at`. `null` clears a signature's resulting name or model.
+- A signature's evidence type is `mdns`, `ssdp`, `netbios_llmnr` or `reverse_dns` (not `oui`: prefixes belong to vendors). Its pattern is 3 to 255 characters and matches anywhere in the value, ignoring case. Its device type must be active.
+- Any other field is refused with a 400 naming the ones allowed.
+- **A record change replies with the same JSON as `GET /api/reference/<kind>/<id>`**, including a new `loaded_at` to use for the next change. Replace what the screen shows with the reply.
+- Changes take effect on the next scan; a running scan keeps the rules it started with.
+
+**OUI prefixes.** Add one to a vendor with `{"prefix": "f0-d1-a9"}`; any common spelling works, and it's stored as `F0:D1:A9`. Move one to another vendor with `PUT /api/reference/prefixes/F0:D1:A9` and `{"vendor_id": 12, "loaded_at": "..."}`, sending the vendor page's `loaded_at`. Prefixes can't be deleted; a wrong one is moved. Both reply:
+```json
+{"prefix": "F0:D1:A9", "vendor_id": 12, "loaded_at": "2026-11-11T10:16:40"}
+```
+Reload the vendor afterwards to show its new list of prefixes.
+
+**`loaded_at`** comes from `GET .../<id>` and is sent back unchanged with every edit, retire, reactivate and move. If someone else changed the record after that time, the change is refused with 409 and nothing is saved. It's required: missing, unreadable, or with a time zone (like a trailing `Z`) gives 400 "loaded_at is missing or unreadable. Reload the record and try again."
+
+| Refused because | Status | Body |
+|---|---|---|
+| Invalid values (every problem listed) | 400 | `{"error": "The signature can't be saved.", "reasons": ["The pattern is 2 characters long; it must be 3 to 255."]}` |
+| The built-in "Unknown" vendor or type | 403 | `{"error": "The built-in 'Unknown' device type can't be changed or retired: new devices use it until they are identified."}` |
+| Role can't edit reference data | 403 | `{"error": "Your role (viewer) can't edit reference data."}` |
+| No such record or prefix | 404 | `{"error": "There is no vendor with id 999. It may have been removed; reload the list."}` |
+| Name, pattern or prefix already exists | 409 | `{"error": "A vendor with this name already exists.", "existing_id": 88}` |
+| Changed by someone else since you loaded it | 409 | `{"error": "This vendor was changed by sam at 14:05 after you opened it. Reload to see their changes.", "changed_by": "sam", "changed_at": "2026-11-11T14:05:31"}` |
+
+A prefix refusal says "The OUI prefix can't be saved." A duplicate offers `existing_id` so the screen can link to the existing record (`null` when two people added it at the same moment). Names and patterns are stored exactly as typed, so show them as text, never as HTML.
+
+
 ## CRUD test page and server (development only)
 A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.
 

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from backend.controller import api_routes, auth
+from backend.controller import api_routes, auth, reference_routes
 from backend.controller.auth import requires
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import DeviceStore
@@ -28,6 +28,7 @@ from backend.services.access_control.access_control_service import AccessControl
 from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_manager import ScanManager, ScanResult
 from backend.services.scan.scan_session import ScanSessionController
+from backend.services.records.reference_maintenance import ReferenceMaintenance
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class Services:
     devices: DeviceStore
     users: UserStore
     access: AccessControlService
+    reference: ReferenceMaintenance | None = None
 
 
 def create_app(services: Services, *, secret_key: str, https: bool = False,
@@ -78,6 +80,7 @@ def create_app(services: Services, *, secret_key: str, https: bool = False,
 def register_routes(app: Flask, services: Services) -> None:
     """Add the API routes. Each group lives in its own module with a register(app, services)."""
     api_routes.register(app, services)          # scans and devices (#51)
+    reference_routes.register(app, services)    # vendors, device types, signatures, OUI prefixes (#126)
 
 
 def on_scan_finished(result: ScanResult) -> None:

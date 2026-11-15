@@ -6,6 +6,7 @@ with fake stores and a fake clock. No database, network or argon2.
 from __future__ import annotations
 
 import os
+import re
 import unittest
 from unittest import mock
 
@@ -47,13 +48,20 @@ class AuthTestCase(unittest.TestCase):
         return (client or self.client).post("/api/login", json={"username": user.username, "password": PASSWORD})
 
     def api_routes(self) -> list[tuple[str, str]]:
-        """Every (method, path) the app answers under /api/."""
-        return [(method, rule.rule) for rule in self.app.url_map.iter_rules() if rule.rule.startswith("/api/")
+        """Every (method, URL) the app answers under /api/, with each <placeholder> filled in
+        (a number for <int:...>, otherwise "x"), so the URL reaches the route's own checks."""
+        return [(method, _example_url(rule.rule)) for rule in self.app.url_map.iter_rules()
+                if rule.rule.startswith("/api/")
                 for method in sorted(rule.methods - {"HEAD", "OPTIONS"})]
+
 
     def call(self, method: str, path: str, client: FlaskClient | None = None):
         return (client or self.client).open(path, method=method, json={} if method != "GET" else None)
 
+def _example_url(rule: str) -> str:
+    """'/api/reference/<kind>/<int:record_id>' -> '/api/reference/x/1'."""
+    return re.sub(r"<(?:(\w+)(?:\([^)]*\))?:)?\w+>",
+                  lambda match: "1" if match.group(1) == "int" else "x", rule)
 
 class EveryRouteIsProtectedTests(AuthTestCase):
     def test_every_api_route_has_requires_or_public(self) -> None:

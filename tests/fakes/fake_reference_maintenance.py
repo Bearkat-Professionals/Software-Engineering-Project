@@ -22,10 +22,10 @@ from typing import Any, Iterable
 from backend.data_access.database_engine import IntegrityConstraintError
 from backend.data_access.reference_data import (DuplicateReferenceError, EditConflictError,
                                                 InactiveReferenceError, ProtectedReferenceError,
-                                                normalize_prefix)
+                                                ReferencePage, normalize_prefix)
 from backend.data_access.repository import RecordNotFoundError
 from backend.records import AuditLog, DeviceSignature, DeviceType, OuiPrefix, Vendor
-from backend.records.enums import AuditAction
+from backend.records.enums import AuditAction, RecordStatus
 from tests.fakes.fake_reference_store import UNKNOWN_ID, FakeReferenceStore
 
 DUPLICATE_KEYS = {
@@ -40,6 +40,13 @@ USED_BY = {
     DeviceSignature: ("identification_evidence",),
 }
 
+TEXT_FIELD = {Vendor: "vendor_name", DeviceType: "category_name", DeviceSignature: "pattern_value"}
+ORDER_FIELDS = {
+    Vendor: ("vendor_name",),
+    DeviceType: ("category_name",),
+    DeviceSignature: ("evidence_type", "pattern_value"),
+}
+MAX_PER_PAGE = 200
 
 class FakeClock:
     """datetime.now stand-in that moves only when told to."""
@@ -115,6 +122,7 @@ class FakeMaintenanceStore(FakeReferenceStore, _Audited):
         self.usage_counts: dict[int, dict[str, int]] = {}
         self.locked: list[int] = []             # ids read with find_for_update
         self.unique_index_refuses_next = False  # act like a second admin's insert won the race
+        self.list_calls: list[dict[str, Any]] = []    # every list_page call's arguments
         self._next_id = max(self.rows, default=0) + 1
 
     def find(self, pk: int, unit: Any = None) -> Any:
@@ -156,6 +164,27 @@ class FakeMaintenanceStore(FakeReferenceStore, _Audited):
     def usage(self, pk: int, unit: Any = None) -> dict[str, int]:
         self._seen(unit)
         return {table: self.usage_counts.get(pk, {}).get(table, 0) for table in USED_BY[self.record_type]}
+
+    def list_page(self, page: int = 1, per_page: int = 50, *, text: str | None = None,
+                  status: RecordStatus | str | None = None, unit: Any = None) -> ReferencePage:
+        """ReferenceStore.list_page in memory: the same filters, order and refusals."""
+        self._seen(unit)
+        self.list_calls.append({"page": page, "per_page": per_page, "text": text, "status": status})
+        if page < 1 or not 1 <= per_page <= MAX_PER_PAGE:
+            raise ValueError(f"page must be 1 or more and per_page 1 to {MAX_PER_PAGE}")
+        wanted = _status(status)
+
+        def matches(row: Any) -> bool:
+            if text and text.casefold() not in getattr(row, TEXT_FIELD[self.record_type]).casefold():
+                return False
+            return wanted is None or row.status == wanted
+
+        def order(row: Any) -> tuple:
+            return (*(_fold(getattr(row, name)) for name in ORDER_FIELDS[self.record_type]), row.pk)
+
+        found = sorted((row for row in self.rows.values() if matches(row)), key=order)
+        start = (page - 1) * per_page
+        return ReferencePage([deepcopy(row) for row in found[start:start + per_page]], page, per_page, len(found))
 
     def _set_status(self, pk: int, changed_by: int, unit: Any, loaded_at: datetime | None, *, retire: bool) -> Any:
         self._seen(unit)
@@ -201,6 +230,11 @@ class FakePrefixStore(_Audited):
         found = self.rows.get(normalize_prefix(prefix))
         return deepcopy(found) if found is not None else None
 
+    def for_vendor(self, vendor_id: int, unit: Any = None) -> list[OuiPrefix]:
+        """Every prefix one vendor owns, in stored order (the service sorts them)."""
+        self._seen(unit)
+        return [deepcopy(prefix) for prefix in self.rows.values() if prefix.vendor_id == vendor_id]
+
     def add(self, prefix: str, vendor_id: int, changed_by: int, unit: Any = None) -> OuiPrefix:
         self._seen(unit)
         normalized = normalize_prefix(prefix)
@@ -237,3 +271,12 @@ def _fold(value: Any) -> Any:
     """Compare like the database's collation: "ACME" and "acme" are the same name."""
     text = getattr(value, "value", value)
     return text.casefold() if isinstance(text, str) else text
+
+def _status(status: RecordStatus | str | None) -> RecordStatus | None:
+    """Like the real store: 'active', 'retired', or 'both' / None for every record."""
+    if status is None or status == "both":
+        return None
+    try:
+        return RecordStatus(status)
+    except ValueError as exc:
+        raise ValueError("status must be 'active', 'retired' or 'both'") from exc

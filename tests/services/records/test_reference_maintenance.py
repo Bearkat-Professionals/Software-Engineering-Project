@@ -11,7 +11,8 @@ from backend.data_access.database_engine import IntegrityConstraintError
 from backend.records import DeviceSignature, DeviceType, OuiPrefix, Vendor
 from backend.records.enums import EvidenceType, RecordStatus
 from backend.services.records.reference_maintenance import (MaintenanceResult, MaintenanceStatus,
-                                                            ReferenceKind, ReferenceMaintenance,
+                                                            ReferenceDetail, ReferenceKind,
+                                                            ReferenceListing, ReferenceMaintenance,
                                                             usage_sentence)
 from tests.fakes.fake_reference_maintenance import (FakeClock, FakeMaintenanceStore, FakePrefixStore,
                                                     FakeUnitOfWork)
@@ -461,6 +462,106 @@ class PrefixTests(MaintenanceTestCase):
             with self.subTest(text=text):
                 self.assertStatus(self.service.add_prefix(5, text, ADMIN), REJECTED, "is not an OUI prefix")
         self.assertNothingStored()
+
+
+class ReadTests(MaintenanceTestCase):
+    def ids(self, listing: ReferenceListing) -> list[int]:
+        return [record.pk for record in listing.records]
+
+    def test_a_list_is_by_name_ignoring_case_with_retired_records(self) -> None:
+        listing = self.service.list_page(VENDOR, 1, 50)
+        self.assertIsInstance(listing, ReferenceListing)
+        self.assertEqual(self.ids(listing), [4, 5, 6, 1])          # Acme, Apple, OldCo (retired), Unknown
+        self.assertEqual((listing.page, listing.per_page, listing.total), (1, 50, 4))
+        self.assertEqual(listing.device_type_names, {})
+        self.assertNothingStored()
+        self.assertOneUnitOfWork()
+
+    def test_paging(self) -> None:
+        listing = self.service.list_page(VENDOR, 2, 2)
+        self.assertEqual(self.ids(listing), [6, 1])
+        self.assertEqual(listing.total, 4)
+
+    def test_the_search_and_status_reach_the_store_unchanged(self) -> None:
+        listing = self.service.list_page(VENDOR, 1, 50, text="app", status="active")
+        self.assertEqual(self.ids(listing), [5])
+        self.assertEqual(self.vendors.list_calls, [{"page": 1, "per_page": 50, "text": "app", "status": "active"}])
+
+    def test_signatures_come_with_their_type_names_one_lookup_per_type(self) -> None:
+        self.signatures.rows[32] = DeviceSignature(signature_id=32, device_type_id=2, pattern_value="roku tv",
+                                                   evidence_type=EvidenceType.SSDP)
+        listing = self.service.list_page(SIGNATURE, 1, 50)
+        self.assertEqual(self.ids(listing), [31, 30, 32])          # mdns before ssdp, then by pattern
+        self.assertEqual(listing.device_type_names, {2: "Phone", 3: "Pager"})   # a retired type keeps its name
+        self.assertEqual(sorted(self.types.lookups), [2, 3])       # Phone once, though two signatures use it
+        self.assertOneUnitOfWork()
+
+    def test_other_kinds_dont_look_up_types(self) -> None:
+        for kind in (VENDOR, DEVICE_TYPE):
+            with self.subTest(kind=kind.value):
+                self.setUp()
+                self.service.list_page(kind, 1, 50)
+                self.assertEqual(self.types.lookups, [])
+
+    def test_bad_paging_or_status_is_a_value_error(self) -> None:
+        for page, per_page, status in ((0, 50, None), (1, 0, None), (1, 201, None), (1, 50, "gone")):
+            with self.subTest(page=page, per_page=per_page, status=status):
+                with self.assertRaises(ValueError):
+                    self.service.list_page(VENDOR, page, per_page, status=status)
+
+    def test_load_a_vendor_with_its_usage_and_sorted_prefixes(self) -> None:
+        self.prefixes.rows["00:1B:44"] = OuiPrefix(oui_id=51, oui_prefix="00:1B:44", vendor_id=4)
+        self.prefixes.rows["3C:07:54"] = OuiPrefix(oui_id=52, oui_prefix="3C:07:54", vendor_id=5)   # Apple's
+        self.vendors.usage_counts[4] = {"device": 12}
+        detail = self.service.load(VENDOR, 4)
+        self.assertIsInstance(detail, ReferenceDetail)
+        self.assertEqual(detail.record.vendor_name, "Acme")
+        self.assertEqual(detail.usage, {"device": 12})
+        self.assertEqual(detail.usage_text, "12 devices use this vendor.")
+        self.assertEqual(detail.prefixes, ("00:1B:44", "28:6F:B9"))
+        self.assertEqual(detail.loaded_at, self.clock())
+        self.assertIsNone(detail.device_type_name)
+        self.assertNothingStored()
+        self.assertOneUnitOfWork()
+
+    def test_load_a_device_type(self) -> None:
+        self.types.usage_counts[2] = {"device": 12, "device_signature": 3}
+        detail = self.service.load(DEVICE_TYPE, 2)
+        self.assertEqual(detail.usage_text, "12 devices and 3 signatures use this device type.")
+        self.assertEqual((detail.prefixes, detail.device_type_name), ((), None))
+
+    def test_load_a_signature_with_its_type_name(self) -> None:
+        self.assertEqual(self.service.load(SIGNATURE, 30).device_type_name, "Phone")
+        self.assertEqual(self.service.load(SIGNATURE, 31).device_type_name, "Pager")     # retired type
+        self.assertEqual(self.service.load(SIGNATURE, 30).usage_text, "Nothing uses this signature.")
+
+    def test_loading_a_missing_record_is_none(self) -> None:
+        for kind in ReferenceKind:
+            with self.subTest(kind=kind.value):
+                self.assertIsNone(self.service.load(kind, 999))
+
+    def test_loaded_at_is_read_before_the_record(self) -> None:
+        before = self.clock()
+        reading = self.vendors.find
+
+        def slow_find(pk, unit=None):
+            self.clock.advance(1)                                  # the read takes a minute
+            return reading(pk, unit)
+
+        self.vendors.find = slow_find
+        self.assertEqual(self.service.load(VENDOR, 4).loaded_at, before)
+
+    def test_editing_with_the_loaded_at_from_load(self) -> None:
+        detail = self.service.load(VENDOR, 4)
+        self.clock.advance(1)
+        self.assertStatus(self.service.edit(VENDOR, 4, EDIT[VENDOR], ADMIN, detail.loaded_at), DONE)
+
+        detail = self.service.load(VENDOR, 4)
+        self.clock.advance(1)
+        self.vendors.changed_elsewhere(4, OTHER_ADMIN, self.clock())   # someone else saves after we loaded
+        result = self.service.edit(VENDOR, 4, {"vendor_name": "Acme Labs"}, ADMIN, detail.loaded_at)
+        self.assertStatus(result, MaintenanceStatus.CONFLICT)
+        self.assertEqual(result.changed_by, OTHER_ADMIN)
 
 
 class SetupTests(unittest.TestCase):
