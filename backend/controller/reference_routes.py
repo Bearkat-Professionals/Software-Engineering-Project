@@ -23,9 +23,9 @@ from typing import TYPE_CHECKING, Any
 from flask import Flask, abort, g, jsonify, request
 from flask.typing import ResponseReturnValue
 
-from backend.controller.api_routes import MAX_PAGE, _whole_number
 from backend.controller.auth import requires
 from backend.data_access.reference_data.reference_store import DEFAULT_PER_PAGE, MAX_PER_PAGE
+from backend.controller.route_helpers import MAX_PAGE, conflict_json, json_body, read_loaded_at, whole_number
 from backend.records.reference_entity import ReferenceEntity
 from backend.services.access_control.permissions import Permission
 from backend.services.records.reference_maintenance import (MaintenanceResult, MaintenanceStatus,
@@ -65,7 +65,6 @@ REFUSAL_STATUS: dict[MaintenanceStatus, int] = {
 STATUSES = ("active", "retired", "both")
 SEARCH_MAX = 100
 RELOAD = "loaded_at is missing or unreadable. Reload the record and try again."
-NOT_AN_OBJECT = "Send the values as a JSON object."
 
 
 def register(app: Flask, services: Services) -> None:
@@ -75,8 +74,8 @@ def register(app: Flask, services: Services) -> None:
     @requires_view
     def list_records(kind: str) -> ResponseReturnValue:
         reference_kind = _kind(kind)
-        page = _whole_number("page", default=1, largest=MAX_PAGE)
-        per_page = _whole_number("per_page", default=DEFAULT_PER_PAGE, largest=MAX_PER_PAGE)
+        page = whole_number("page", default=1, largest=MAX_PAGE)
+        per_page = whole_number("per_page", default=DEFAULT_PER_PAGE, largest=MAX_PER_PAGE)
         listing = services.reference.list_page(reference_kind, page, per_page,
                                                text=_search_text(), status=_status())
         records = [record_json(reference_kind, record,
@@ -97,7 +96,7 @@ def register(app: Flask, services: Services) -> None:
     @requires_edit
     def add_record(kind: str) -> ResponseReturnValue:
         reference_kind = _kind(kind)
-        body = _body()
+        body = json_body()
         values, reasons = _values(reference_kind, body, adding=True)
         if reasons:
             return _rejected(reference_kind.label, reasons)
@@ -108,7 +107,7 @@ def register(app: Flask, services: Services) -> None:
     @requires_edit
     def edit_record(kind: str, record_id: int) -> ResponseReturnValue:
         reference_kind = _kind(kind)
-        body = _body()
+        body = json_body()
         loaded_at = _loaded_at(body)
         values, reasons = _values(reference_kind, body, adding=False)
         if reasons:
@@ -120,7 +119,7 @@ def register(app: Flask, services: Services) -> None:
     @requires_edit
     def retire_record(kind: str, record_id: int) -> ResponseReturnValue:
         reference_kind = _kind(kind)
-        loaded_at = _loaded_at(_body())
+        loaded_at = _loaded_at(json_body())
         result = services.reference.retire(reference_kind, record_id, g.user.user_id, loaded_at)
         return _record_reply(services, reference_kind, result, loaded_at)
 
@@ -128,14 +127,14 @@ def register(app: Flask, services: Services) -> None:
     @requires_edit
     def reactivate_record(kind: str, record_id: int) -> ResponseReturnValue:
         reference_kind = _kind(kind)
-        loaded_at = _loaded_at(_body())
+        loaded_at = _loaded_at(json_body())
         result = services.reference.reactivate(reference_kind, record_id, g.user.user_id, loaded_at)
         return _record_reply(services, reference_kind, result, loaded_at)
 
     @app.post("/api/reference/vendors/<int:vendor_id>/prefixes")
     @requires_edit
     def add_prefix(vendor_id: int) -> ResponseReturnValue:
-        prefix = _body().get("prefix")
+        prefix = json_body().get("prefix")
         if not isinstance(prefix, str):
             abort(400, description='The prefix is missing. Send JSON like {"prefix": "28:6F:B9"}.')
         result = services.reference.add_prefix(vendor_id, prefix, g.user.user_id)
@@ -144,7 +143,7 @@ def register(app: Flask, services: Services) -> None:
     @app.put("/api/reference/prefixes/<prefix>")
     @requires_edit
     def move_prefix(prefix: str) -> ResponseReturnValue:
-        body = _body()
+        body = json_body()
         loaded_at = _loaded_at(body)
         if "vendor_id" not in body:
             abort(400, description='Say which vendor gets the prefix: {"vendor_id": 12, "loaded_at": "..."}.')
@@ -222,18 +221,7 @@ def _rejected(label: str, reasons: list[str]) -> ResponseReturnValue:
 def _conflict(services: Services, label: str, result: MaintenanceResult,
               loaded_at: datetime | None) -> Any:
     """'This vendor was changed by sam at 14:05 after you opened it.' The service knows only the id."""
-    user = services.users.find(result.changed_by) if result.changed_by is not None else None
-    who = user.username if user is not None else "another user"
-    at = result.changed_at
-    if at is None:
-        when = ""
-    elif loaded_at is not None and at.date() == loaded_at.date():
-        when = f" at {at:%H:%M}"
-    else:
-        when = f" at {at:%Y-%m-%d %H:%M}"
-    return jsonify(error=f"This {label} was changed by {who}{when} after you opened it. "
-                         "Reload to see their changes.",
-                   changed_by=who, changed_at=at.isoformat() if at is not None else None)
+    return jsonify(conflict_json(services.users, label, result.changed_by, result.changed_at, loaded_at))
 
 
 # ---- reading the request ---------------------------------------------------------------
@@ -244,15 +232,6 @@ def _kind(text: str) -> ReferenceKind:
         abort(404, description=f"There's no reference list called '{text[:40]}'. "
                                f"Use {', '.join(KINDS)}.")
     return kind
-
-
-def _body() -> dict[str, Any]:
-    """The JSON body as a dict. A body that isn't JSON at all is already 415 (auth.py)."""
-    body = request.get_json(silent=True)
-    if not isinstance(body, dict):
-        abort(400, description=NOT_AN_OBJECT)
-    return body
-
 
 def _values(kind: ReferenceKind, body: dict[str, Any], *, adding: bool) -> tuple[dict[str, Any], list[str]]:
     """The body's fields under the service's names, and every problem with which fields were sent."""
@@ -269,16 +248,7 @@ def _values(kind: ReferenceKind, body: dict[str, Any], *, adding: bool) -> tuple
 def _loaded_at(body: dict[str, Any]) -> datetime:
     """When the user loaded the record (from GET), as sent back. Required for every change to
     an existing record, so the conflict check always runs (CM-01)."""
-    text = body.get("loaded_at")
-    if not isinstance(text, str):
-        abort(400, description=RELOAD)
-    try:
-        when = datetime.fromisoformat(text.strip())
-    except ValueError:
-        abort(400, description=RELOAD)
-    if when.tzinfo is not None:                 # the audit log's times are plain local times
-        abort(400, description=RELOAD)
-    return when
+    return read_loaded_at(body.get("loaded_at"), RELOAD)
 
 
 def _search_text() -> str | None:

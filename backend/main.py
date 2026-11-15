@@ -18,7 +18,9 @@ from backend.data_access.network_data import DeviceStore, ScanStore
 from backend.data_access.reference_data import OuiPrefixStore, ReferenceStore
 from backend.records import DeviceSignature, DeviceType, Vendor
 from backend.services.access_control.access_control_service import AccessControlService
-from backend.services.records.reference_maintenance import ReferenceKind, ReferenceMaintenance                                    
+from backend.services.records.reference_maintenance import ReferenceKind, ReferenceMaintenance
+from backend.services.records.device_maintenance import DeviceMaintenance
+from backend.shared_modules.save_device_record import DeviceRecordSaver
 from backend.services.scan.scan_manager import build_scan_manager
 from backend.services.scan.scan_session import ScanSessionController
 from backend.services.scan.scan_settings import ScanSettings
@@ -62,14 +64,22 @@ def main() -> None:
         logger.warning("Closed %d scan(s) left running by the last stop or crash", stuck)
     manager = build_scan_manager(engine, sessions, settings, on_finished=on_scan_finished)
 
+    devices = DeviceStore(engine)
+    vendors, device_types = ReferenceStore(engine, Vendor), ReferenceStore(engine, DeviceType)
+
     reference = ReferenceMaintenance(
-        {ReferenceKind.VENDOR: ReferenceStore(engine, Vendor),
-         ReferenceKind.DEVICE_TYPE: ReferenceStore(engine, DeviceType),
+        {ReferenceKind.VENDOR: vendors,
+         ReferenceKind.DEVICE_TYPE: device_types,
          ReferenceKind.SIGNATURE: ReferenceStore(engine, DeviceSignature)},
         OuiPrefixStore(engine), engine.unit_of_work)
 
-    services = Services(scan_manager=manager, scan_sessions=sessions, devices=DeviceStore(engine),
-                        users=users, access=AccessControlService(users), reference=reference)
+    # SH-4 the same way the scans build it, plus users so its conflict notice can name who
+    saver = DeviceRecordSaver(devices, vendors, device_types, users)
+    device_maintenance = DeviceMaintenance(engine, saver, devices, users)
+
+    services = Services(scan_manager=manager, scan_sessions=sessions, devices=devices,
+                        users=users, access=AccessControlService(users), reference=reference,
+                        device_maintenance=device_maintenance)
     app = create_app(services, secret_key=secret_key)      # https=True once HTTPS arrives (M7)
     try:
         app.run(host=HOST, port=port, debug=False)

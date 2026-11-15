@@ -207,6 +207,39 @@ class DeviceStoreTests(NetworkDataTestCase):
                     self.devices.list_page(**bad)
 
 
+class FindListingTests(NetworkDataTestCase):
+    """3.1.2 for the edit form: one device with its vendor and type NAMES."""
+
+    def test_one_device_with_its_vendor_and_type_names(self):
+        acme = ReferenceStore(self.engine, Vendor).store(Vendor(vendor_name="Acme"), self.admin)
+        printer = ReferenceStore(self.engine, DeviceType).store(DeviceType(category_name="printer"), self.admin)
+        device = self.device("28:6F:B9:00:00:01", vendor_id=acme.pk, device_type_id=printer.pk,
+                             device_name="Office printer")
+        listing = self.devices.find_listing(device.pk)
+        self.assertEqual((listing.device.pk, listing.device.device_name, listing.vendor_name, listing.device_type_name),
+                         (device.pk, "Office printer", "Acme", "printer"))
+
+    def test_it_is_the_same_as_the_devices_row_in_the_list(self):
+        device = self.device("28:6F:B9:00:00:02", device_name="Den TV")
+        [row] = self.devices.list_page().devices
+        self.assertEqual(self.devices.find_listing(device.pk), row)
+
+    def test_a_new_device_shows_the_unknown_names(self):
+        device = self.device("28:6F:B9:00:00:03")
+        listing = self.devices.find_listing(device.pk)
+        self.assertEqual((listing.vendor_name.casefold(), listing.device_type_name.casefold()), ("unknown", "unknown"))
+
+    def test_a_retired_vendor_still_shows_its_name(self):                     # DI-06
+        vendors = ReferenceStore(self.engine, Vendor)
+        old = vendors.store(Vendor(vendor_name="OldCo"), self.admin)
+        device = self.device("28:6F:B9:00:00:04", vendor_id=old.pk)
+        vendors.retire(old.pk, self.admin)
+        self.assertEqual(self.devices.find_listing(device.pk).vendor_name, "OldCo")
+
+    def test_a_missing_device_is_none(self):
+        self.assertIsNone(self.devices.find_listing(999_999))
+
+
 class DeviceSearchTests(NetworkDataTestCase):
     """3.1.2 search: FR-10 filters, text search, sorting and paging."""
 

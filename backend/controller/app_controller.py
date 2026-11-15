@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from backend.controller import api_routes, auth, reference_routes
+from backend.controller import api_routes, auth, reference_routes, device_routes
 from backend.controller.auth import requires
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import DeviceStore
@@ -29,6 +29,7 @@ from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_manager import ScanManager, ScanResult
 from backend.services.scan.scan_session import ScanSessionController
 from backend.services.records.reference_maintenance import ReferenceMaintenance
+from backend.services.records.device_maintenance import DeviceMaintenance
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,8 @@ class Services:
     devices: DeviceStore
     users: UserStore
     access: AccessControlService
-    reference: ReferenceMaintenance | None = None
+    reference: ReferenceMaintenance | None = None     # None only in tests that don't use reference data
+    device_maintenance: DeviceMaintenance | None = None   # None only in tests that don't change devices
 
 
 def create_app(services: Services, *, secret_key: str, https: bool = False,
@@ -79,8 +81,9 @@ def create_app(services: Services, *, secret_key: str, https: bool = False,
 
 def register_routes(app: Flask, services: Services) -> None:
     """Add the API routes. Each group lives in its own module with a register(app, services)."""
-    api_routes.register(app, services)          # scans and devices (#51)
+    api_routes.register(app, services)          # scans and the device list (#51)
     reference_routes.register(app, services)    # vendors, device types, signatures, OUI prefixes (#126)
+    device_routes.register(app, services)       # one device: read, add, edit, mark, delete; the pickers (2.3.1)
 
 
 def on_scan_finished(result: ScanResult) -> None:

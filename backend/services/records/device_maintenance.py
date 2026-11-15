@@ -34,7 +34,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Protocol
 
-from backend.data_access.network_data import EditConflictError
+from backend.data_access.database_engine import IntegrityConstraintError
+from backend.data_access.network_data import DeviceListing, EditConflictError
 from backend.data_access.repository import RecordNotFoundError
 from backend.records import Device, User
 from backend.records.enums import IdentificationLevel
@@ -91,9 +92,12 @@ class DeviceEdit:
 
 @dataclass(frozen=True)
 class LoadedDevice:
-    """load()'s answer for the edit form: the device, and the database time it was read."""
+    """load()'s answer for the edit form: the device with its vendor and type names, and
+    when it was read (on the audit log's clock)."""
     device: Device | None
     loaded_at: datetime | None
+    vendor_name: str | None = None
+    device_type_name: str | None = None
 
     @property
     def found(self) -> bool:
@@ -120,6 +124,7 @@ class DeviceRecords(Protocol):
                     unit: Any = None) -> Device | None: ...
     def delete(self, device_id: int, changed_by: int, unit: Any = None,
                *, loaded_at: datetime | None = None) -> dict[str, int]: ...
+    def find_listing(self, device_id: int, unit: Any = None) -> DeviceListing | None: ...
 
 class DeviceMaintenance:
     def __init__(self, engine: UnitOfWork, saver: DeviceRecordSaver, devices: DeviceRecords,
@@ -137,22 +142,30 @@ class DeviceMaintenance:
     def add(self, mac: str, edit: DeviceEdit, acting_user_id: int, *,
             ip: str | None = None, trusted: bool = False) -> DeviceMaintenanceResult:
         """A device added by hand. It hasn't been seen by a scan yet, so it starts
-        offline with no first or last seen."""
-        with self._engine.unit_of_work() as unit:
-            checked = validate_mac(mac)
-            if checked:                                     # a bad MAC is left for SH-4 to reject
-                known = self._devices.find_by_mac(checked.value, is_randomized_mac(checked.value), unit)
+        offline with no first or last seen. If someone else adds the same MAC at the same
+        moment, the second add gets ALREADY_EXISTS, not an error."""
+        try:
+            with self._engine.unit_of_work() as unit:
+                known = self._known(mac, unit)
                 if known is not None:
-                    return DeviceMaintenanceResult(DeviceMaintenanceStatus.ALREADY_EXISTS, existing_device_id=known.pk, reasons=(
-                        f"A device with MAC {checked.value} is already stored. Edit that one instead.",))
-
-            changes = DeviceChanges(mac_address=mac, current_ip=ip,         # no seen_at: not a sighting
-                                    device_name=edit.device_name, device_type_id=edit.device_type_id,
-                                    vendor_id=edit.vendor_id, model=edit.model,
-                                    trusted_status=True if trusted else None)
-            level = stored_level(edit.device_type_id, edit.vendor_id, edit.device_name, 0)   # no evidence yet
-            outcome = self._saver.save(changes, acting_user_id, level, unit)
-            return self._result(outcome, acting_user_id, unit)
+                    return _already_exists(known, just_added=False)
+                changes = DeviceChanges(mac_address=mac, current_ip=ip,         # no seen_at: not a sighting
+                                        device_name=edit.device_name, device_type_id=edit.device_type_id,
+                                        vendor_id=edit.vendor_id, model=edit.model,
+                                        trusted_status=True if trusted else None)
+                level = stored_level(edit.device_type_id, edit.vendor_id, edit.device_name, 0)   # no evidence yet
+                outcome = self._saver.save(changes, acting_user_id, level, unit)
+                return self._result(outcome, acting_user_id, unit)
+        except IntegrityConstraintError:
+            # Another add of the same fixed MAC committed between our check and our insert, and
+            # the unique index refused ours; the unit has rolled back. Look again in a fresh unit
+            # (it sees their commit): if the device is there, it was a duplicate. If not, it was
+            # some other fault, so don't hide it.
+            with self._engine.unit_of_work() as unit:
+                known = self._known(mac, unit)
+            if known is None:
+                raise
+            return _already_exists(known, just_added=True)
 
     #edit
     def edit(self, device_id: int, edit: DeviceEdit, acting_user_id: int,
@@ -213,13 +226,21 @@ class DeviceMaintenance:
         missing from the form and still pass the conflict check."""
         loaded_at = self._clock()
         with self._engine.unit_of_work() as unit:
-            device = self._devices.find(device_id, unit)
-        if device is None:
+            listing = self._devices.find_listing(device_id, unit)
+        if listing is None:
             return LoadedDevice(None, None)
-        return LoadedDevice(device, loaded_at)  
+        return LoadedDevice(listing.device, loaded_at, listing.vendor_name, listing.device_type_name) 
 
     
 #helpers 
+
+    def _known(self, mac: str, unit: Any) -> Device | None:
+        """The stored device with this MAC, fixed and randomized looked up separately (DI-02).
+        None for a MAC that isn't valid: SH-4 rejects that with its reason."""
+        checked = validate_mac(mac)
+        if not checked:
+            return None
+        return self._devices.find_by_mac(checked.value, is_randomized_mac(checked.value), unit)
 
     def _find(self, device_id: int, unit: Any) -> tuple[Device | None, DeviceMaintenanceResult | None]:
         """The device by id, or the result to return instead.
@@ -275,3 +296,8 @@ def _rejected(reasons: list[str]) -> DeviceMaintenanceResult:
 def _not_found(device_id: int) -> DeviceMaintenanceResult:
     return DeviceMaintenanceResult(DeviceMaintenanceStatus.NOT_FOUND, reasons=(
         f"There is no device with id {device_id}. It may have been deleted; reload the list.",))
+
+def _already_exists(known: Device, *, just_added: bool) -> DeviceMaintenanceResult:
+    how = "was just added by someone else" if just_added else "is already stored"
+    return DeviceMaintenanceResult(DeviceMaintenanceStatus.ALREADY_EXISTS, existing_device_id=known.pk, reasons=(
+        f"A device with MAC {known.mac_address} {how}. Edit that one instead.",))

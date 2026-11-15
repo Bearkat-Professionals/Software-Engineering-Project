@@ -318,6 +318,76 @@ Any role.
 - `page` defaults to 1 and `per_page` to 50 (at most 200). A page past the end gives an empty `devices` list with the real `total`.
 - A `page` or `per_page` that isn't a whole number in range gets a 400 naming the bad value.
 
+### One device: read, add, edit, mark and delete (2.3.1)
+Reading needs any role; changing needs `editor` or `admin` (a viewer gets 403, and the refusal is logged). Every change goes through the same save path as scans (SH-4) and is audited.
+
+| Request | Body | Success |
+|---|---|---|
+| `GET /api/devices/<id>` | none | 200, the device and `loaded_at` |
+| `POST /api/devices` | `mac`, and any of the fields below | 201, the device |
+| `PUT /api/devices/<id>` | the fields to change, and `loaded_at` | 200, the device |
+| `PUT /api/devices/<id>/mark` | `{"mark": "flagged", "loaded_at": "..."}` | 200, the device |
+| `DELETE /api/devices/<id>?loaded_at=...` | `{}` | 200, what was removed |
+| `GET /api/device-types` | none | 200, active types for the type picker |
+| `GET /api/vendors?search=app&limit=20` | none | 200, active vendors for the vendor search |
+
+**The device**, as GET and every change reply. It's the device list's fields plus what the edit form needs:
+```json
+{"device": {"device_id": 7, "name": "Office printer", "type": "printer", "vendor": "HP Inc.",
+            "device_type_id": 4, "vendor_id": 12, "model": "LaserJet 4000",
+            "ip": "192.168.1.23", "hostname": "NPI1A2B3C", "mac": "F0:D1:A9:12:34:56",
+            "is_randomized_mac": false, "network_status": "online", "confidence": 20,
+            "flagged": false, "trusted": true, "mark": "trusted",
+            "first_seen": "2026-10-26T14:03:09", "last_seen": "2026-11-08T09:12:44"},
+ "loaded_at": "2026-11-08T10:15:02"}
+```
+- `type` and `vendor` are names (retired ones still show); `device_type_id` and `vendor_id` are for the pickers.
+- `mark` is the user's choice: `trusted` (never flagged), `flagged` (stays flagged whatever scans find), or `automatic` (the flag follows the identification level, so a device that isn't fully identified stays flagged until someone trusts it).
+- IP, hostname, first and last seen, network status and confidence come from scans and can't be edited here.
+
+**Adding.** Only `mac` is required:
+```json
+{"mac": "F0:D1:A9:12:34:56", "name": "Office printer", "device_type_id": 4,
+ "vendor_id": 12, "model": "LaserJet 4000", "ip": "192.168.1.23", "trusted": false}
+```
+A device added by hand starts offline, with no first or last seen, until a scan sees it.
+
+**Editing.** Send `loaded_at` and only the fields that change: `name`, `device_type_id`, `vendor_id`, `model`.
+- A field left out stays as it is. `""` clears a name or model. `null` is refused ("must be text"): send `""` or leave the field out.
+- The MAC can't be edited, because it's the device's identity (DI-01). For a wrong MAC, delete the device and add it again.
+- A vendor you choose always wins over the one the OUI suggested.
+
+**Marking.** `{"mark": "trusted" | "flagged" | "automatic", "loaded_at": "..."}`. Trusted and flagged are opposites: choosing one clears the other.
+
+**Deleting.** `DELETE /api/devices/7?loaded_at=2026-11-08T10:15:02`, sent with the body `{}` and `Content-Type: application/json` (every change must be JSON). Its scan history and evidence go with it:
+```json
+{"deleted": 7, "observations_removed": 3, "evidence_removed": 2}
+```
+A scan may add the device again if it's still on the network.
+
+**The pickers.** `GET /api/device-types` lists the active types by name:
+```json
+{"device_types": [{"device_type_id": 4, "name": "printer"}, {"device_type_id": 1, "name": "unknown"}]}
+```
+`GET /api/vendors?search=app&limit=20` finds active vendors whose name contains the text, ignoring case, with names that start with it first:
+```json
+{"vendors": [{"vendor_id": 3, "name": "Apple, Inc."}, {"vendor_id": 88, "name": "Appleton Systems"}]}
+```
+`search` is 2 to 100 characters; `limit` defaults to 20 (at most 50). There are tens of thousands of vendors, so the form searches instead of showing a dropdown.
+
+**`loaded_at`** comes from `GET /api/devices/<id>` (or a change's reply) and is sent back unchanged with every edit, mark and delete. If someone else changed the device after that time, nothing is saved and you get a 409. Missing, unreadable, or with a time zone (like a trailing `Z`) gives 400 "loaded_at is missing or unreadable. Reload the device and try again."
+
+| Refused because | Status | Body |
+|---|---|---|
+| Invalid values or fields (every problem listed) | 400 | `{"error": "The device can't be saved.", "reasons": ["F0:D1 is not a valid MAC address.", "'vendor_id' must be a whole number."]}` |
+| Role can't edit devices | 403 | `{"error": "Your role (viewer) can't edit devices."}` |
+| No such device | 404 | `{"error": "There is no device with id 7. It may have been deleted; reload the list."}` |
+| Changed by someone else since you loaded it | 409 | `{"error": "This device was changed by sam at 14:05 after you opened it. Reload to see their changes.", "changed_by": "sam", "changed_at": "2026-11-08T14:05:31"}` |
+| That MAC is already a device | 409 | `{"error": "A device with MAC F0:D1:A9:12:34:56 is already stored. Edit that one instead.", "device_id": 7}` |
+
+`device_id` in the last refusal lets the screen offer a link to the existing device. Device names and models are stored exactly as typed, so show them as text, never as HTML.
+
+
 ### Reference data: vendors, device types, signatures and OUI prefixes (#126)
 `<kind>` is `vendors`, `device-types` or `signatures`; anything else is 404. Reading needs any role; changing needs `editor` or `admin` (a viewer gets 403, and the refusal is logged). Nothing is ever deleted: records are retired and can be reactivated (DI-06).
 

@@ -51,6 +51,7 @@ PROTECTED: set[type[ReferenceEntity]] = {Vendor, DeviceType}
 
 DEFAULT_PER_PAGE = 50
 MAX_PER_PAGE = 200
+SEARCH_MAX_LIMIT = 50
 
 _TEXT_COLUMNS: dict[type[ReferenceEntity], str] = {
     Vendor: "vendor_name",
@@ -142,8 +143,8 @@ class ReferenceStore(Generic[T]):
             params.append(normalized_status.value)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
 
-        columns = ", ".join(f"`{name}`" for name in self._type.column_names())
-        order = ", ".join(f"`{name}`" for name in (*_ORDER_COLUMNS[self._type], self._type.PK))
+        columns = self._columns()
+        order = self._order_by()
         with _unit_of_work(self._engine, unit) as cursor:
             cursor.execute(f"SELECT COUNT(*) AS n FROM `{self._type.TABLE}`{where}", tuple(params))
             total = int(cursor.fetchone()["n"])
@@ -154,6 +155,39 @@ class ReferenceStore(Generic[T]):
             )
             rows = cursor.fetchall()
         return ReferencePage([self._type.from_row(row) for row in rows], page, per_page, total)
+
+    def list_active(self, unit: Any = None) -> list[T]:
+        """Every active record, in list order (by name; signatures by evidence type, then
+        pattern). For the small kinds, like the device type picker: vendors number in the
+        tens of thousands, so use search() for them."""
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(f"SELECT {self._columns()} FROM `{self._type.TABLE}` "
+                           f"WHERE `status` = %s ORDER BY {self._order_by()}",
+                           (RecordStatus.ACTIVE.value,))
+            rows = cursor.fetchall()
+        return [self._type.from_row(row) for row in rows]
+
+    def search(self, text: str, limit: int = 20, unit: Any = None) -> list[T]:
+        """At most `limit` active records whose name (or a signature's pattern) contains
+        `text`, ignoring case: those that START with it first, then by name. %, _ and \\
+        in the text are matched literally. Raises ValueError for blank text or a limit
+        outside 1 to SEARCH_MAX_LIMIT."""
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text must be a non-blank string")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= SEARCH_MAX_LIMIT:
+            raise ValueError(f"limit must be 1 to {SEARCH_MAX_LIMIT}")
+        column = _TEXT_COLUMNS[self._type]
+        escaped = _escape_like(text.strip())
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(
+                f"SELECT {self._columns()} FROM `{self._type.TABLE}` "
+                f"WHERE `status` = %s AND `{column}` LIKE %s ESCAPE '\\\\' "
+                f"ORDER BY `{column}` LIKE %s ESCAPE '\\\\' DESC, {self._order_by()} "
+                "LIMIT %s",
+                (RecordStatus.ACTIVE.value, f"%{escaped}%", f"{escaped}%", limit),
+            )
+            rows = cursor.fetchall()
+        return [self._type.from_row(row) for row in rows]
 
     # ---- 3.2.2 Store Reference Record ---------------------------------------------
 
@@ -257,6 +291,13 @@ class ReferenceStore(Generic[T]):
         return any(self.usage(pk, unit).values())
 
     # ---- helpers ---------------------------------------------------------------
+
+    def _columns(self) -> str:
+        return ", ".join(f"`{name}`" for name in self._type.column_names())
+
+    def _order_by(self) -> str:
+        """By name (signatures by evidence type, then pattern), the id breaking ties."""
+        return ", ".join(f"`{name}`" for name in (*_ORDER_COLUMNS[self._type], self._type.PK))
 
     def _refuse_if_protected(self, pk: int | None) -> None:
         if self._type in PROTECTED and pk == UNKNOWN_ID:

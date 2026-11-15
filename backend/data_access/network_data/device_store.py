@@ -119,6 +119,20 @@ class EditConflictError(Exception):
         super().__init__(f"device {device_id} was changed by user {latest.user_id} "
                          f"at {latest.changed_at} after it was loaded")
 
+# One device row plus its vendor and type NAMES, for the list and the edit form. Both
+# columns are NOT NULL (default 1, "unknown"), so a plain JOIN never drops a device.
+_LISTING_SELECT = (
+    "SELECT " + ", ".join(f"d.`{name}`" for name in Device.column_names()) + ", "
+    "v.`vendor_name`, t.`category_name` "
+    "FROM `device` d "
+    "JOIN `vendor` v ON v.`vendor_id` = d.`vendor_id` "
+    "JOIN `device_type` t ON t.`device_type_id` = d.`device_type_id` "
+)
+
+
+def _listing(row: dict[str, Any]) -> DeviceListing:
+    return DeviceListing(Device.from_row(row), row["vendor_name"], row["category_name"])
+
 class DeviceStore:
     def __init__(self, engine: DatabaseEngine):
         self._engine = engine
@@ -138,6 +152,14 @@ class DeviceStore:
         matches = self._devices.list(unit, mac_address=mac_address, is_randomized_mac=is_randomized_mac)
         return matches[-1] if matches else None
 
+    def find_listing(self, device_id: int, unit: Any = None) -> DeviceListing | None:
+        """One device with its vendor and type NAMES, exactly as the device list shows it
+        (retired vendors and types included, DI-06). None if there's no such device."""
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(_LISTING_SELECT + "WHERE d.`device_id` = %s", (device_id,))
+            row = cursor.fetchone()
+        return _listing(row) if row is not None else None
+
     def search(self, search: DeviceSearch = DeviceSearch(), page: int = 1,
                per_page: int = DEFAULT_PER_PAGE, unit: Any = None) -> DevicePage:
         """One page of the devices matching the search, each with its vendor and
@@ -150,11 +172,7 @@ class DeviceStore:
         sort = SORT_COLUMNS[search.sort]
         direction = "DESC" if search.descending else "ASC"
         columns = ", ".join(f"d.`{name}`" for name in Device.column_names())
-        sql = (f"SELECT {columns}, v.`vendor_name`, t.`category_name` "
-               "FROM `device` d "
-               "JOIN `vendor` v ON v.`vendor_id` = d.`vendor_id` "
-               "JOIN `device_type` t ON t.`device_type_id` = d.`device_type_id` "
-               f"{where} "
+        sql = (f"{_LISTING_SELECT}{where} "
                f"ORDER BY {sort} IS NULL, {sort} {direction}, d.`device_id` {direction} "
                "LIMIT %s OFFSET %s")
         with _unit_of_work(self._engine, unit) as cursor:
@@ -163,9 +181,7 @@ class DeviceStore:
             total = cursor.fetchone()["n"]
             cursor.execute(sql, (*params, per_page, (page - 1) * per_page))
             rows = cursor.fetchall()
-        listings = [DeviceListing(Device.from_row(row), row["vendor_name"], row["category_name"])
-                    for row in rows]
-        return DevicePage(listings, page, per_page, total)
+        return DevicePage([_listing(row) for row in rows], page, per_page, total)
 
     def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE, unit: Any = None,
                   **criteria: Any) -> DevicePage:

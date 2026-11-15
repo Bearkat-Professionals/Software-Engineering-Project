@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Iterable
 
-from backend.data_access.network_data import EditConflictError
+from backend.data_access.database_engine import IntegrityConstraintError
+from backend.data_access.network_data import DeviceListing, EditConflictError
 from backend.data_access.repository import RecordNotFoundError
 from backend.records import AuditLog, Device, User
 from backend.records.enums import AuditAction
@@ -73,14 +74,32 @@ class FakeMaintainedDevices(FakeDeviceStore):
         self.clock = clock or FakeClock()
         self.latest: dict[int, tuple[int, datetime]] = {}     # device id -> (user, when) of its last change
         self.children: dict[int, dict[str, int]] = {}         # device id -> rows the delete cascades to
+        self.vendor_names: dict[int, str] = {}                # for find_listing; anything else is "Unknown"
+        self.type_names: dict[int, str] = {}
+        self.added_meanwhile: Device | None = None            # another user's insert that wins the race
+        self.integrity_error_next = False                     # the next insert fails for another reason
 
     def find(self, device_id: int, unit: Any = None) -> Device | None:
         self.units_seen.append(unit)
         found = self.rows.get(device_id)
         return deepcopy(found) if found is not None else None
 
+    def find_listing(self, device_id: int, unit: Any = None) -> DeviceListing | None:
+        """DeviceStore.find_listing: the device with its vendor and type names."""
+        device = self.find(device_id, unit)
+        if device is None:
+            return None
+        return DeviceListing(device, self.vendor_names.get(device.vendor_id, "Unknown"),
+                             self.type_names.get(device.device_type_id, "Unknown"))
+
     def store(self, device: Device, changed_by: int, unit: Any = None,
               *, loaded_at: datetime | None = None) -> Device:
+        if device.pk is None and (self.added_meanwhile is not None or self.integrity_error_next):
+            if self.added_meanwhile is not None:              # their insert committed first
+                self.rows[self.added_meanwhile.pk] = deepcopy(self.added_meanwhile)
+                self.added_meanwhile = None
+            self.integrity_error_next = False
+            raise IntegrityConstraintError("Duplicate entry for key 'unique_nonrandomized_mac'")
         if device.pk is not None:
             self._check_unchanged_since(device.pk, loaded_at)
         stored = super().store(device, changed_by, unit, loaded_at=loaded_at)
