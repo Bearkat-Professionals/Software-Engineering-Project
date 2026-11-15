@@ -1,7 +1,19 @@
-import { NavLink, Outlet } from "react-router-dom";
-import { MessageArea } from "./Messages";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useAuth } from "../auth/AuthProvider";
+
 
 export default function Layout() {
+
+  const {user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  async function onSignOut() {
+
+    await logout();
+
+    navigate("/login", { replace: true });
+
+  }
 
     return (
 
@@ -18,9 +30,16 @@ export default function Layout() {
 
             </nav>
 
+            <p>
+
+              {user.username} ({user.role})
+
+              <button type="button" onClick={onSignOut}>Sign out</button>
+              
+            </p>
+
           </header>
 
-          <MessageArea />
           <Outlet />
 
         </>

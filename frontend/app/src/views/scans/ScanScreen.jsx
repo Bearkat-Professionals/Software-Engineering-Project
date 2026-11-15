@@ -4,10 +4,12 @@ import { api } from "../../components/api";
 import { useMessages } from "../../components/Messages";
 import { phaseText, progressText } from "./statusText";
 import { useScanStatus } from "./useScanStatus";
+import { useAuth } from "../../auth/AuthProvider";
 
 export default function ScanScreen() {
 
     const { showMessage } = useMessages();
+    const { can } = useAuth();
     const { status, follow } = useScanStatus();
     const [scopeDraft, setScopeDraft] = useState(null);
     const running = status?.running === true;
@@ -69,7 +71,11 @@ export default function ScanScreen() {
 
                 </label>
 
-                <button type="submit" disabled={running}>Start Scan</button>
+                {can("START_SCAN") && (
+
+                    <button type="submit" disabled={running}>Start Scan</button>
+                    
+                )}
 
             </form>
 

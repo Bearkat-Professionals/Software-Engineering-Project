@@ -27,6 +27,19 @@ export async function api(path, { method = "GET", body } = {}) {
 
   if (import.meta.env.VITE_USE_SAMPLES === "true") {
 
+    if (path === "/api/me" || path === "/api/login") {
+
+      return {
+
+        user: { username: "sam", role: "editor" },
+        permissions: ["VIEW_DATA", "EXPORT", "START_SCAN", "EDIT_DEVICES", "EDIT_REFERENCE_DATA"],
+
+      }
+
+    }
+
+    if (method === "POST" && path === "/api/logout") return null;
+
     if (method === "GET" && path.startsWith("/api/devices")) {
 
       const query = new URLSearchParams(path.split("?")[1] || "");
@@ -86,6 +99,25 @@ export async function api(path, { method = "GET", body } = {}) {
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
+
+    if (response.status === 401 && path !== "/api/login") {
+
+      const message = path.startsWith("/api/me")
+
+        ? "Sign in to continue."
+        : "Your session ended. Sign in again to continue.";
+
+      if (!path.startsWith("/api/me") && !window.location.pathname.startsWith("/login")) {
+
+        const next = window.location.pathname + window.location.search;
+
+        window.location.assign(`/login?next=${encodeURIComponent(next)}&ended=1`);
+
+      }
+
+      throw new ApiError(message, { status: 401 });
+      
+    }
 
     if (response.status >= 500 && !(payload && typeof payload.error === "string")) {
 
