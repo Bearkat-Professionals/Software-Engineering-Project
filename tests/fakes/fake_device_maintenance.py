@@ -1,6 +1,6 @@
 """Fakes for testing 2.3.1 Device Record Maintenance without a database.
 
-    engine = FakeEngine(clock)                      # unit_of_work() and SELECT NOW(6)
+    engine = FakeEngine()                           # unit_of_work(); refuses any SQL
     devices = FakeMaintainedDevices([...], clock)   # FakeDeviceStore + find, delete and conflicts
     saver = SpySaver(devices, vendors, types)       # the real SH-4, recording every call
 """
@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 from backend.data_access.network_data import EditConflictError
 from backend.data_access.repository import RecordNotFoundError
-from backend.records import AuditLog, Device
+from backend.records import AuditLog, Device, User
 from backend.records.enums import AuditAction
 from backend.shared_modules.save_device_record import DeviceChanges, DeviceRecordSaver, SaveOutcome
 from tests.fakes.fake_device_store import AuditEntry, FakeDeviceStore
@@ -32,20 +32,14 @@ class FakeClock:
 
 
 class FakeCursor:
-    """Answers only what the service asks the database directly: SELECT NOW(6)."""
+    """The unit of work the stores are given. The service itself sends no SQL (the
+    stores do that), so any query sent to it straight is a test failure."""
 
-    def __init__(self, name: str, clock: FakeClock) -> None:
+    def __init__(self, name: str) -> None:
         self.name = name
-        self._clock = clock
-        self._row: dict[str, Any] | None = None
 
     def execute(self, sql: str, params: Any = None) -> None:
-        if sql.strip().upper() != "SELECT NOW(6) AS NOW":
-            raise AssertionError(f"the service sent unexpected SQL: {sql}")
-        self._row = {"now": self._clock()}
-
-    def fetchone(self) -> dict[str, Any] | None:
-        return self._row
+        raise AssertionError(f"the service sent SQL itself: {sql}")
 
     def __repr__(self) -> str:
         return self.name
@@ -54,8 +48,7 @@ class FakeCursor:
 class FakeEngine:
     """engine.unit_of_work() stand-in: counts commits and rollbacks."""
 
-    def __init__(self, clock: FakeClock) -> None:
-        self.clock = clock
+    def __init__(self) -> None:
         self.opened = 0
         self.committed = 0
         self.rolled_back = 0
@@ -63,7 +56,7 @@ class FakeEngine:
     @contextmanager
     def unit_of_work(self):
         self.opened += 1
-        unit = FakeCursor(f"unit-{self.opened}", self.clock)
+        unit = FakeCursor(f"unit-{self.opened}")
         try:
             yield unit
         except Exception:
@@ -116,6 +109,16 @@ class FakeMaintainedDevices(FakeDeviceStore):
         if when > loaded_at:
             raise EditConflictError(device_id, AuditLog(user_id=user, record_type="device", record_id=device_id,
                                                          action=AuditAction.UPDATE, changed_at=when))
+
+
+class FakeUsers:
+    """UserStore.find in memory, to name who caused a conflict."""
+
+    def __init__(self, *users: User) -> None:
+        self.users = {user.user_id: user for user in users}
+
+    def find(self, user_id: int, unit: Any = None) -> User | None:
+        return self.users.get(user_id)
 
 
 @dataclass(frozen=True)

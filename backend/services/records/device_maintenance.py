@@ -7,7 +7,7 @@ Services never call each other (OOD), so this uses SH-4 and the stores, not the
 Scan Manager.
 
 Every method runs in ONE unit of work, so a failure leaves nothing half-saved
-(CM-04), and returns one MaintenanceResult the routes turn into JSON.
+(CM-04), and returns one DeviceMaintenanceResult the routes turn into JSON.
 
     maintenance = DeviceMaintenance(engine, saver, DeviceStore(engine))
 
@@ -16,9 +16,18 @@ Every method runs in ONE unit of work, so a failure leaves nothing half-saved
                               loaded_at=form.loaded_at)
     result.status       # DONE, REJECTED, NOT_FOUND, CONFLICT or ALREADY_EXISTS
     result.reasons      # sentences a person can read, when it wasn't DONE
+
+Flagging uses the same level rule as scans (stored_level, next to assign_level), worked
+out from the device as it will be after the change. Typing a name and a type doesn't
+raise the confidence score (only evidence does), so a device under 50 stays partial and
+flagged on "automatic": mark it Trusted to clear that. This is on purpose, not a bug.
+
+Times (loaded_at, changed_at) come from the same clock the audit log uses, so the
+conflict check compares like with like.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,14 +36,15 @@ from typing import Any, Protocol
 
 from backend.data_access.network_data import EditConflictError
 from backend.data_access.repository import RecordNotFoundError
-from backend.records import Device
+from backend.records import Device, User
+from backend.records.enums import IdentificationLevel
+from backend.services.scan.assign_level import stored_level
 from backend.services.scan.detect_randomized_mac import is_randomized_mac
 from backend.shared_modules.save_device_record import (DeviceChanges, DeviceRecordSaver, SaveOutcome,
-                                                       SaveStatus, provisional_level)
+                                                       SaveStatus)
 from backend.shared_modules.validate_input import validate_mac
 
-# What each mark sets, as (trusted_status, flag_set_by_user): #PARENT's table.
-# "automatic" clears both, so SH-4.1 decides the flag from the identification level.
+
 MARKS: dict[str, tuple[bool, bool]] = {
     "trusted": (True, False),
     "flagged": (False, True),
@@ -42,7 +52,7 @@ MARKS: dict[str, tuple[bool, bool]] = {
 }
 
 
-class MaintenanceStatus(str, Enum):
+class DeviceMaintenanceStatus(str, Enum):
     DONE = "done"
     REJECTED = "rejected"              
     NOT_FOUND = "not_found"
@@ -51,8 +61,8 @@ class MaintenanceStatus(str, Enum):
 
 
 @dataclass(frozen=True)
-class MaintenanceResult:
-    status: MaintenanceStatus
+class DeviceMaintenanceResult:
+    status: DeviceMaintenanceStatus
     device: Device | None = None                
     reasons: tuple[str, ...] = ()               
     changed_by: int | None = None               
@@ -62,7 +72,7 @@ class MaintenanceResult:
 
     @property
     def done(self) -> bool:
-        return self.status is MaintenanceStatus.DONE
+        return self.status is DeviceMaintenanceStatus.DONE
 
 
 @dataclass(frozen=True)
@@ -96,6 +106,12 @@ class UnitOfWork(Protocol):
     def unit_of_work(self) -> AbstractContextManager[Any]: ...
 
 
+class UserFinder(Protocol):
+    """3.3.1 Find User, to name who caused a conflict. UserStore is one."""
+
+    def find(self, user_id: int, unit: Any = None) -> User | None: ...
+
+
 class DeviceRecords(Protocol):
     """The parts of 3.1 DeviceStore this uses."""
 
@@ -106,15 +122,20 @@ class DeviceRecords(Protocol):
                *, loaded_at: datetime | None = None) -> dict[str, int]: ...
 
 class DeviceMaintenance:
-    def __init__(self, engine: UnitOfWork, saver: DeviceRecordSaver, devices: DeviceRecords) -> None:
+    def __init__(self, engine: UnitOfWork, saver: DeviceRecordSaver, devices: DeviceRecords,
+                 users: UserFinder | None = None, clock: Callable[[], datetime] = datetime.now) -> None:
+        """users names who caused a delete conflict (without it, "another user"). clock must be
+        the audit log's clock (AuditTrail uses datetime.now), or the conflict check is wrong."""
         self._engine = engine
         self._saver = saver
         self._devices = devices
+        self._users = users
+        self._clock = clock
 
     #add
 
     def add(self, mac: str, edit: DeviceEdit, acting_user_id: int, *,
-            ip: str | None = None, trusted: bool = False) -> MaintenanceResult:
+            ip: str | None = None, trusted: bool = False) -> DeviceMaintenanceResult:
         """A device added by hand. It hasn't been seen by a scan yet, so it starts
         offline with no first or last seen."""
         with self._engine.unit_of_work() as unit:
@@ -122,19 +143,20 @@ class DeviceMaintenance:
             if checked:                                     # a bad MAC is left for SH-4 to reject
                 known = self._devices.find_by_mac(checked.value, is_randomized_mac(checked.value), unit)
                 if known is not None:
-                    return MaintenanceResult(MaintenanceStatus.ALREADY_EXISTS, existing_device_id=known.pk, reasons=(
+                    return DeviceMaintenanceResult(DeviceMaintenanceStatus.ALREADY_EXISTS, existing_device_id=known.pk, reasons=(
                         f"A device with MAC {checked.value} is already stored. Edit that one instead.",))
 
             changes = DeviceChanges(mac_address=mac, current_ip=ip,         # no seen_at: not a sighting
                                     device_name=edit.device_name, device_type_id=edit.device_type_id,
                                     vendor_id=edit.vendor_id, model=edit.model,
                                     trusted_status=True if trusted else None)
-            outcome = self._saver.save(changes, acting_user_id, provisional_level(edit.vendor_id), unit)
+            level = stored_level(edit.device_type_id, edit.vendor_id, edit.device_name, 0)   # no evidence yet
+            outcome = self._saver.save(changes, acting_user_id, level, unit)
             return self._result(outcome, acting_user_id, unit)
 
     #edit
     def edit(self, device_id: int, edit: DeviceEdit, acting_user_id: int,
-             loaded_at: datetime | None) -> MaintenanceResult:
+             loaded_at: datetime | None) -> DeviceMaintenanceResult:
         if edit.empty:
             return _rejected(["Nothing to change. Send a name, type, vendor or model."])
         with self._engine.unit_of_work() as unit:
@@ -144,14 +166,13 @@ class DeviceMaintenance:
             changes = DeviceChanges(mac_address=device.mac_address,
                                     device_name=edit.device_name, device_type_id=edit.device_type_id,
                                     vendor_id=edit.vendor_id, model=edit.model)
-            vendor_id = edit.vendor_id if edit.vendor_id is not None else device.vendor_id
-            outcome = self._saver.save(changes, acting_user_id, provisional_level(vendor_id), unit, loaded_at)
+            outcome = self._saver.save(changes, acting_user_id, _level_after(device, edit), unit, loaded_at)
             return self._result(outcome, acting_user_id, unit)
 
   
 #trusted / flagged / automatic 
     def set_mark(self, device_id: int, mark: str, acting_user_id: int,
-                 loaded_at: datetime | None) -> MaintenanceResult:
+                 loaded_at: datetime | None) -> DeviceMaintenanceResult:
         if mark not in MARKS:
             return _rejected([f"'{mark}' is not a mark. Use one of: {', '.join(MARKS)}."])
         trusted, flagged = MARKS[mark]
@@ -161,41 +182,46 @@ class DeviceMaintenance:
                 return refused
             changes = DeviceChanges(mac_address=device.mac_address,
                                     trusted_status=trusted, flag_set_by_user=flagged)
-            outcome = self._saver.save(changes, acting_user_id, provisional_level(device.vendor_id),
+            outcome = self._saver.save(changes, acting_user_id, _level_after(device, DeviceEdit()),
                                        unit, loaded_at)
             return self._result(outcome, acting_user_id, unit)
 
 #delete 
-    def delete(self, device_id: int, acting_user_id: int, loaded_at: datetime | None) -> MaintenanceResult:
+    def delete(self, device_id: int, acting_user_id: int, loaded_at: datetime | None) -> DeviceMaintenanceResult:
         """Its observations and evidence go with it (DI-05); the counts come back in removed."""
         try:
             with self._engine.unit_of_work() as unit:
                 removed = self._devices.delete(device_id, acting_user_id, unit, loaded_at=loaded_at)
-                return MaintenanceResult(MaintenanceStatus.DONE, changed_by=acting_user_id,
-                                         changed_at=_database_now(unit), removed=dict(removed))
+                return DeviceMaintenanceResult(DeviceMaintenanceStatus.DONE, changed_by=acting_user_id,
+                                               changed_at=self._clock(), removed=dict(removed))
         except RecordNotFoundError:             # the unit has rolled back by the time we get here
             return _not_found(device_id)
         except EditConflictError as conflict:
-            return MaintenanceResult(MaintenanceStatus.CONFLICT, changed_by=conflict.changed_by,
-                                     changed_at=conflict.changed_at, reasons=(
-                                         f"This device was changed at {conflict.changed_at:%H:%M} after you "
-                                         "opened it, so it wasn't deleted. Reload it to see the change.",))
+            with self._engine.unit_of_work() as unit:       # a read only, to name the user
+                reason = self._conflict_reason(conflict, loaded_at, unit)
+            return DeviceMaintenanceResult(DeviceMaintenanceStatus.CONFLICT, changed_by=conflict.changed_by,
+                                           changed_at=conflict.changed_at, reasons=(reason,))
 
 #for the edit form
 
     def load(self, device_id: int) -> LoadedDevice:
-        """The device and when it was read, from the database's clock in the same unit of
-        work. Send loaded_at back with the edit so a change made in between is caught."""
+        """The device and when it was read. Send loaded_at back with the edit so a change
+        made in between is caught.
+
+        The time is read BEFORE the device: the read fixes what this unit of work can see,
+        so a change committed after it but stamped earlier than a later loaded_at would be
+        missing from the form and still pass the conflict check."""
+        loaded_at = self._clock()
         with self._engine.unit_of_work() as unit:
             device = self._devices.find(device_id, unit)
-            if device is None:
-                return LoadedDevice(None, None)
-            return LoadedDevice(device, _database_now(unit))  
+        if device is None:
+            return LoadedDevice(None, None)
+        return LoadedDevice(device, loaded_at)  
 
     
 #helpers 
 
-    def _find(self, device_id: int, unit: Any) -> tuple[Device | None, MaintenanceResult | None]:
+    def _find(self, device_id: int, unit: Any) -> tuple[Device | None, DeviceMaintenanceResult | None]:
         """The device by id, or the result to return instead.
 
         SH-4 saves by MAC. Several devices can share one randomized MAC (DI-02), and
@@ -210,29 +236,42 @@ class DeviceMaintenance:
                                     "so this one can't be changed by hand yet."])
         return device, None
 
-    def _result(self, outcome: SaveOutcome, acting_user_id: int, unit: Any) -> MaintenanceResult:
+    def _result(self, outcome: SaveOutcome, acting_user_id: int, unit: Any) -> DeviceMaintenanceResult:
         """SH-4's outcome as this service's result."""
         if outcome.status in (SaveStatus.CREATED, SaveStatus.UPDATED):
-            return MaintenanceResult(MaintenanceStatus.DONE, outcome.device, changed_by=acting_user_id,
-                                     changed_at=_database_now(unit))
+            # Read after SH-4 wrote its audit entry, on the same clock, so it is never earlier
+            # than that entry: sent back as loaded_at, it won't conflict with your own change.
+            return DeviceMaintenanceResult(DeviceMaintenanceStatus.DONE, outcome.device,
+                                           changed_by=acting_user_id, changed_at=self._clock())
         if outcome.status is SaveStatus.CONFLICT:
-            return MaintenanceResult(MaintenanceStatus.CONFLICT, reasons=outcome.reasons,
-                                     changed_by=outcome.changed_by, changed_at=outcome.changed_at)
-        return MaintenanceResult(MaintenanceStatus.REJECTED, reasons=outcome.reasons)
+            return DeviceMaintenanceResult(DeviceMaintenanceStatus.CONFLICT, reasons=outcome.reasons,
+                                           changed_by=outcome.changed_by, changed_at=outcome.changed_at)
+        return DeviceMaintenanceResult(DeviceMaintenanceStatus.REJECTED, reasons=outcome.reasons)
+
+    def _conflict_reason(self, conflict: EditConflictError, loaded_at: datetime, unit: Any) -> str:
+        """Worded exactly like SH-4's edit conflict, so both read the same: who, and when
+        (with the date if it wasn't the day the form was opened)."""
+        user = self._users.find(conflict.changed_by, unit) if self._users and conflict.changed_by else None
+        who = user.username if user is not None else "another user"
+        at = conflict.changed_at
+        when = f"{at:%H:%M}" if at.date() == loaded_at.date() else f"{at:%Y-%m-%d %H:%M}"
+        return f"This device was changed by {who} at {when} after you opened it."
 
 
-def _database_now(unit: Any) -> datetime:
-    """The database's current time to the microsecond. NOW() alone drops the fraction, and the
-    audit log keeps it (DATETIME(6)), so a form loaded in the same second as a save would
-    look older than that save and get a false CONFLICT."""
-    unit.execute("SELECT NOW(6) AS now")
-    return unit.fetchone()["now"]
+def _level_after(device: Device, edit: DeviceEdit) -> IdentificationLevel:
+    """The level of the device as it will be once the edit is applied. A blank name clears it."""
+    def pick(new: Any, current: Any) -> Any:
+        return current if new is None else new
+    return stored_level(pick(edit.device_type_id, device.device_type_id),
+                        pick(edit.vendor_id, device.vendor_id),
+                        pick(edit.device_name, device.device_name),
+                        device.confidence_score)
 
 
-def _rejected(reasons: list[str]) -> MaintenanceResult:
-    return MaintenanceResult(MaintenanceStatus.REJECTED, reasons=tuple(reasons))
+def _rejected(reasons: list[str]) -> DeviceMaintenanceResult:
+    return DeviceMaintenanceResult(DeviceMaintenanceStatus.REJECTED, reasons=tuple(reasons))
 
 
-def _not_found(device_id: int) -> MaintenanceResult:
-    return MaintenanceResult(MaintenanceStatus.NOT_FOUND, reasons=(
+def _not_found(device_id: int) -> DeviceMaintenanceResult:
+    return DeviceMaintenanceResult(DeviceMaintenanceStatus.NOT_FOUND, reasons=(
         f"There is no device with id {device_id}. It may have been deleted; reload the list.",))

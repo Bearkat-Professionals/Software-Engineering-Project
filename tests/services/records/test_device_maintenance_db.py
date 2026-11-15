@@ -7,13 +7,15 @@ from __future__ import annotations
 
 import unittest
 
+from backend.data_access.account_settings import UserStore
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.network_data import DeviceStore
 from backend.data_access.reference_data import ReferenceStore
 from backend.data_access.repository import Repository
 from backend.records import Device, DeviceType, User, Vendor
 from backend.records.enums import AuditAction
-from backend.services.records.device_maintenance import DeviceEdit, DeviceMaintenance, MaintenanceStatus
+from backend.services.records.device_maintenance import (DeviceEdit, DeviceMaintenance,
+                                                         DeviceMaintenanceStatus as MaintenanceStatus)
 from backend.shared_modules.save_device_record import DeviceRecordSaver
 from tests.data_access.test_repository import CLEANUP, connect_to_test_database
 
@@ -32,8 +34,10 @@ class DeviceMaintenanceDatabaseTests(unittest.TestCase):
         self.sam = users.create(User(username="sam-editor", password_hash="not-a-real-hash")).pk
         self.ada = users.create(User(username="ada-editor", password_hash="not-a-real-hash")).pk
         devices = DeviceStore(self.engine)
-        saver = DeviceRecordSaver(devices, ReferenceStore(self.engine, Vendor), ReferenceStore(self.engine, DeviceType))
-        self.service = DeviceMaintenance(self.engine, saver, devices)
+        names = UserStore(self.engine)
+        saver = DeviceRecordSaver(devices, ReferenceStore(self.engine, Vendor), ReferenceStore(self.engine, DeviceType),
+                                  names)
+        self.service = DeviceMaintenance(self.engine, saver, devices, names)
         self.audit = AuditTrail(self.engine)
 
     def clear(self) -> None:
@@ -79,19 +83,28 @@ class DeviceMaintenanceDatabaseTests(unittest.TestCase):
 
         self.assertEqual(late.status, MaintenanceStatus.CONFLICT)
         self.assertEqual(late.changed_by, self.sam)
+        self.assertIn("changed by sam-editor at", late.reasons[0])
         self.assertEqual(DeviceStore(self.engine).find(device_id).model, "Sam's")     # Ada's change not stored
 
     # ---- what only the real database can show -----------------------------------------
 
-    def test_the_database_clock_agrees_with_the_audit_clock(self) -> None:
-        """loaded_at comes from the database (NOW(6)) and the audit time from Python. If the
-        two clocks or time zones disagreed, a fresh form would conflict with itself, or a
-        stale one wouldn't."""
+    def test_loaded_at_is_never_older_than_the_last_change(self) -> None:
+        """loaded_at and the audit time come from the same clock, so a form opened after a
+        change is never older than that change (else it would conflict with itself)."""
         added = self.service.add(TEST_MAC, DeviceEdit(), self.sam)
         form = self.service.load(added.device.pk)
         latest = self.audit.latest(Device.TABLE, added.device.pk)
         self.assertGreaterEqual(form.loaded_at, latest.changed_at)
         self.assertLess((form.loaded_at - latest.changed_at).total_seconds(), 60)
+
+    def test_a_stale_delete_names_who_changed_it(self) -> None:
+        added = self.service.add(TEST_MAC, DeviceEdit(), self.sam)
+        adas_form = self.service.load(added.device.pk)
+        self.assertDone(self.service.edit(added.device.pk, DeviceEdit(model="New"), self.sam, adas_form.loaded_at))
+        late = self.service.delete(added.device.pk, self.ada, adas_form.loaded_at)
+        self.assertEqual(late.status, MaintenanceStatus.CONFLICT)
+        self.assertIn("changed by sam-editor at", late.reasons[0])
+        self.assertIsNotNone(DeviceStore(self.engine).find(added.device.pk))      # not deleted
 
     def test_adding_a_known_mac_names_the_existing_device(self) -> None:
         first = self.service.add(TEST_MAC, DeviceEdit(), self.sam)

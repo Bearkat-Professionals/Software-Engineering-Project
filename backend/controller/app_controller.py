@@ -3,7 +3,7 @@
 Gets everything it uses from the Services record, which backend/main.py builds,
 so tests can build one from fakes.
 
-    app = create_app(services, dev_user)
+    app = create_app(services, secret_key=read_secret_key())
 
 Errors are always JSON {"error": "..."}. Unexpected ones say only "see the server
 log": the details go to the log, never the response (SEC-08). Passwords and hashes
@@ -12,18 +12,23 @@ are never logged or returned (POL-03), so don't log a whole User: its repr has t
 from __future__ import annotations
 
 import logging
+import time
 from collections import Counter
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from backend.controller import api_routes
+from backend.controller import api_routes, auth, reference_routes
+from backend.controller.auth import requires
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import DeviceStore
-from backend.records import User
+from backend.services.access_control.access_control_service import AccessControlService
+from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_manager import ScanManager, ScanResult
 from backend.services.scan.scan_session import ScanSessionController
+from backend.services.records.reference_maintenance import ReferenceMaintenance
 
 logger = logging.getLogger(__name__)
 
@@ -36,28 +41,24 @@ class Services:
     scan_sessions: ScanSessionController
     devices: DeviceStore
     users: UserStore
+    access: AccessControlService
+    reference: ReferenceMaintenance | None = None
 
 
-def create_app(services: Services, dev_user: User) -> Flask:
+def create_app(services: Services, *, secret_key: str, https: bool = False,
+               clock: Callable[[], float] = time.time) -> Flask:
+    """https=True marks the session cookie Secure (HTTPS arrives in M7). clock is for tests."""
     app = Flask(__name__)
     app.json.sort_keys = False          # keep fields in the order they were written
     app.config["TRUSTED_HOSTS"] = ["127.0.0.1", "localhost"]   # refuse DNS-rebinding requests
 
-    @app.before_request
-    def identify_user() -> None:
-        """Decide who is calling and store it for the route (flask.g.user). It checks no
-        permissions: in M4 each route asks authorize() from access_control/permissions.py.
-
-        There is no login yet: every request acts as the development user, looked up
-        once at start-up. 2.1 replaces this in M4 with a session lookup, and routes
-        will then ask authorize() from access_control/permissions.py.
-        """
-        g.user = dev_user               # PLACEHOLDER (M4)
+    auth.install(app, services, secret_key=secret_key, https=https, clock=clock)   # sessions, sign-in (#90)
 
     @app.get("/api/health")
+    @requires(Permission.VIEW_DATA)
     def health():
         try:
-            services.users.find(dev_user.user_id)       # any query shows the database answers
+            services.users.find(g.user.user_id)         # any query shows the database answers
         except Exception:
             logger.exception("Health check: the database is unavailable")
             return jsonify(status="unavailable", database="unavailable"), 503
@@ -79,6 +80,7 @@ def create_app(services: Services, dev_user: User) -> Flask:
 def register_routes(app: Flask, services: Services) -> None:
     """Add the API routes. Each group lives in its own module with a register(app, services)."""
     api_routes.register(app, services)          # scans and devices (#51)
+    reference_routes.register(app, services)    # vendors, device types, signatures, OUI prefixes (#126)
 
 
 def on_scan_finished(result: ScanResult) -> None:

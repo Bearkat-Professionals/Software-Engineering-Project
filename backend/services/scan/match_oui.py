@@ -1,13 +1,15 @@
 """Match a host's MAC prefix (OUI) to a vendor (#38, spec 2.2.4.1).
 
-OUI evidence only. Signature matching (mDNS, SSDP, ...) comes in M3.
+The OUI side of 2.2.4.1; the signature side is match_signatures. Scans don't call this
+directly: the Identification Manager (identify) does, with the lookup it builds once
+per scan in IdentificationRules.
 
     rules = find_reference_rules(engine)          # once per scan (design 14.1)
     lookup = oui_lookup_from_rules(rules)         # pure
     match = match_oui(host, lookup)               # OuiMatch, or None
 
-load_oui_lookup(engine) does the first two steps in one call. Everything else
-here is pure: nothing touches the database or the network.
+load_oui_lookup(engine) does the first two steps in one call, for checks and tests.
+Everything else here is pure: nothing touches the database or the network.
 """
 from __future__ import annotations
 

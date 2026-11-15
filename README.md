@@ -86,13 +86,14 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 |---|---|---|
 | `test` | `unittest discover tests` | run every unit test (`-v` shows names, `-k sweep` runs only matching tests) |
 | `conn` | `backend.check_connection` | check the database settings in your `.env` |
-| `app` | `backend.main` | start the application (needs `DEV_USERNAME` in `.env`, see Running the app) |
+| `app` | `backend.main` | start the application (needs `SECRET_KEY` in `.env`, see Running the app) |
 | `admin` | `backend.services.access_control.create_admin` | create the first admin account on an empty database; asks for the password without showing it (`--database NAME` for another database than the test one) |
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2); `--workers` / `--timeout` try other sweep settings |
 | `scan` | `backend.services.scan.check_scan` | run a whole scan in the background as a user, watch its progress, then see the outcome and devices (#44) |
+| `ident` | `backend.services.scan.check_identification` | after a scan, list every device's vendor, type, score, level and flag, checked against its stored evidence (#69, test database; `--database NAME` for another) |
 | `speed` | `backend.services.scan.check_sweep_speed` | time a ping sweep at 1, 8, 32 and 64 workers and print a table for the PR (#81) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
 | `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
@@ -152,7 +153,7 @@ hosts, status = sweep_subnet(scope, settings=settings)
 A scan records its settings in `scan.configuration_used`. Saving results stays one host at a time on purpose: each save is a short database transaction, and threads would need a connection each for little gain.
 
 ## Running a scan (#44)
-A scan runs in the background: it opens a session, discovers hosts, saves them, then closes with an outcome (`success`, `partial` or `failed`) and any errors. Only one scan runs at a time.
+A scan runs in the background: it opens a session, discovers hosts, identifies and saves them, then closes with an outcome (`success`, `partial` or `failed`) and any errors. Only one scan runs at a time.
 
 ```
 .\dev scan 192.168.1.0/24 --user blaine                  # watch it, then see the devices
@@ -181,6 +182,30 @@ manager.start(scope, user_id)        # returns at once; the scan screen polls se
 ```
 `on_finished` gets the `ScanResult` after the outcome is saved, with `alerts` listing `scan_failed` and each new flagged device. The manager itself sends nothing.
 
+## Checking identification (#69)
+Every device a scan saves is identified from its evidence (2.2.4): the OUI matched from its MAC, plus any signature evidence stored by earlier scans. That gives its vendor, type, a 0-100 confidence score, a level and the flag (spec 7.1-7.3). After a scan, list what each device was identified as:
+
+```
+.\dev scan 192.168.1.0/24 --user blaine      # scan first
+.\dev ident                                  # every device in the test database
+.\dev ident --database nds                   # another database
+```
+
+It changes nothing in the database. The level isn't stored (spec 7.2 works it out from the evidence), so `ident` works it out again from each device's stored evidence and today's reference rules, exactly as the next scan would.
+
+| Column | Meaning |
+|---|---|
+| Score | 0-100 from the evidence; each evidence type counts once (OUI 20, mDNS 35, SSDP 35, NetBIOS/LLMNR 25, reverse DNS 20) |
+| Level | `identified` (type and name from a signature, score 50 or more), `partial` (vendor or type known), or `unidentified` |
+| Flagged | `yes` unless the device is identified, or trusted and seen before under the same MAC (spec 7.3) |
+| Check | `ok` when the next scan would change nothing: the stored score and flag match the evidence, and the type is one a scan keeps. Otherwise what it would change: the reference data changed since the device was last scanned (for example, a signature was retired) |
+
+
+Until the evidence collectors arrive (M6), scans find OUI evidence only: expect a score of 20 (`partial`) for a known vendor or 0 (`unidentified`), and every untrusted device flagged.
+
+A scan fills in a device's type, name and model only when they're empty ("unknown" for the type), so values a user set are kept, and a scan never resets a type to unknown (#104). Retiring a signature lowers the score and level on the next scan, but the type it gave stays until a user changes it.
+
+
 ## Setting up your .env file
 Make sure to create a .env file in your workspace. Git ignores this file so you are able to put your database credentials here securely.
 Paste the below into the file and replace with your information.
@@ -206,22 +231,22 @@ It asks for a username (letters, digits, `.` `_` `-`) and then the password twic
 
 It only works on a database with **no users**. Once any account exists, it changes nothing and says so: further accounts are added by an admin in the app, so every account has someone accountable for creating it.
 
-The admin you create here is a good choice for `DEV_USERNAME` below.
+Sign in to the app with this account (see Signing in under API).
 
 ## Running the app
 Add these to your .env:
 ```
-DEV_USERNAME=<a username that exists in the database>
-APP_PORT=5000               # optional, 5000 if left out
+SECRET_KEY=<64 random characters>   # required, at least 32; make one with: py -3.13 -c "import secrets; print(secrets.token_hex(32))"
+APP_PORT=5000                       # optional, 5000 if left out
 ```
 Then start MAMP and run this from the project root:
 ```
 .\dev app
 ```
 (or `py -3.13 -m backend.main`)
-Check it at http://127.0.0.1:5000/api/health. It listens on 127.0.0.1 only, so other machines can't reach it.
+Check it at http://127.0.0.1:5000/api/health after signing in (signed out, it returns 401). It listens on 127.0.0.1 only, so other machines can't reach it.
 
-**There is NO real login until M4.** Every request acts as the DEV_USERNAME user, with no sign-in. Permissions ARE checked against that user's role: a `viewer` can look but not start scans, so use an `editor` or `admin` account for DEV_USERNAME.
+The app refuses to start if `SECRET_KEY` is missing or shorter than 32 characters. Keep it secret: anyone with it could make a session cookie that signs them in. Changing it signs everyone out.
 
 The CRUD test server also uses port 5000. To run both, set `APP_PORT=5001` and use http://127.0.0.1:5001.
 
@@ -229,6 +254,17 @@ The scan screen is the React app in `frontend/app`. While that page is running, 
 
 ## API (#51)
 The JSON below is the contract with the screens: change it only together with them. Every error, whatever its status, is `{"error": "a sentence a person can read"}`, so a screen can show it as it is.
+
+### Signing in (#90)
+Every endpoint except `POST /api/login` needs a signed-in user: signed out gives **401**, a role without the permission gives **403**. Requests that change data (POST, PUT, PATCH, DELETE) must be JSON, or they get **415**.
+
+| Request | Body | Result |
+|---|---|---|
+| `POST /api/login` | `{"username": "sam", "password": "..."}` | 200 `{"user": {...}, "permissions": [...]}` and a session cookie; 401 for a wrong username or password |
+| `POST /api/logout` | `{}` (every POST must be JSON) | 204; the old cookie stops working |
+| `GET /api/me` | none | 200, the same shape as login |
+
+The cookie is HttpOnly and SameSite=Strict (Secure once HTTPS arrives). A session ends after 30 minutes without a request, or 8 hours after signing in. Sessions live in the server's memory, so restarting the app signs everyone out.
 
 ### POST /api/scans: start a scan
 Needs the `editor` or `admin` role. Send `Content-Type: application/json`:
@@ -281,6 +317,78 @@ Any role.
 - Sorted by `last_seen`, newest first.
 - `page` defaults to 1 and `per_page` to 50 (at most 200). A page past the end gives an empty `devices` list with the real `total`.
 - A `page` or `per_page` that isn't a whole number in range gets a 400 naming the bad value.
+
+### Reference data: vendors, device types, signatures and OUI prefixes (#126)
+`<kind>` is `vendors`, `device-types` or `signatures`; anything else is 404. Reading needs any role; changing needs `editor` or `admin` (a viewer gets 403, and the refusal is logged). Nothing is ever deleted: records are retired and can be reactivated (DI-06).
+
+| Request | Body | Success |
+|---|---|---|
+| `GET /api/reference/<kind>?q=apple&status=active&page=1&per_page=50` | none | 200, one page |
+| `GET /api/reference/<kind>/<id>` | none | 200, one record |
+| `POST /api/reference/<kind>` | the fields | 201, the record |
+| `PUT /api/reference/<kind>/<id>` | the fields to change, and `loaded_at` | 200, the record |
+| `POST /api/reference/<kind>/<id>/retire` | `{"loaded_at": "..."}` | 200, the record |
+| `POST /api/reference/<kind>/<id>/reactivate` | `{"loaded_at": "..."}` | 200, the record |
+| `POST /api/reference/vendors/<id>/prefixes` | `{"prefix": "f0-d1-a9"}` | 201, the prefix |
+| `PUT /api/reference/prefixes/<prefix>` | `{"vendor_id": 12, "loaded_at": "..."}` | 200, the prefix |
+
+**A list.** Retired records are included unless `status` says otherwise:
+```json
+{"records": [{"id": 3, "name": "Apple, Inc.", "status": "active"}],
+ "page": 1, "per_page": 50, "total": 14}
+```
+- `q` finds names (or a signature's pattern) containing the text, ignoring case; at most 100 characters.
+- `status` is `active`, `retired` or `both` (the default).
+- `page` defaults to 1 and `per_page` to 50 (at most 200), as for devices.
+- Sorted by name; signatures by evidence type, then pattern.
+
+A signature record has more fields, including its device type's name:
+```json
+{"id": 9, "evidence_type": "mdns", "pattern": "echo", "device_type_id": 4,
+ "device_type": "smart speaker", "resulting_device_name": "Amazon Echo",
+ "resulting_model": null, "status": "active"}
+```
+
+**One record**, with what uses it and the version you're looking at (`prefixes` only for vendors):
+```json
+{"record": {"id": 3, "name": "Apple, Inc.", "status": "active"},
+ "usage": {"device": 12},
+ "usage_text": "12 devices use this vendor.",
+ "prefixes": ["3C:07:54", "F0:D1:A9"],
+ "loaded_at": "2026-11-11T10:15:02"}
+```
+A device type's `usage` is `{"device": 12, "device_signature": 3}`; a signature's is `{"identification_evidence": 5}`. Show `usage_text` in the retire confirmation.
+
+**Adding and editing.** Vendors and device types: `{"name": "Acme"}`. Signatures:
+```json
+{"evidence_type": "mdns", "pattern": "echo", "device_type_id": 4,
+ "resulting_device_name": "Amazon Echo", "resulting_model": null}
+```
+- An edit sends only the fields that change, plus `loaded_at`. `null` clears a signature's resulting name or model.
+- A signature's evidence type is `mdns`, `ssdp`, `netbios_llmnr` or `reverse_dns` (not `oui`: prefixes belong to vendors). Its pattern is 3 to 255 characters and matches anywhere in the value, ignoring case. Its device type must be active.
+- Any other field is refused with a 400 naming the ones allowed.
+- **A record change replies with the same JSON as `GET /api/reference/<kind>/<id>`**, including a new `loaded_at` to use for the next change. Replace what the screen shows with the reply.
+- Changes take effect on the next scan; a running scan keeps the rules it started with.
+
+**OUI prefixes.** Add one to a vendor with `{"prefix": "f0-d1-a9"}`; any common spelling works, and it's stored as `F0:D1:A9`. Move one to another vendor with `PUT /api/reference/prefixes/F0:D1:A9` and `{"vendor_id": 12, "loaded_at": "..."}`, sending the vendor page's `loaded_at`. Prefixes can't be deleted; a wrong one is moved. Both reply:
+```json
+{"prefix": "F0:D1:A9", "vendor_id": 12, "loaded_at": "2026-11-11T10:16:40"}
+```
+Reload the vendor afterwards to show its new list of prefixes.
+
+**`loaded_at`** comes from `GET .../<id>` and is sent back unchanged with every edit, retire, reactivate and move. If someone else changed the record after that time, the change is refused with 409 and nothing is saved. It's required: missing, unreadable, or with a time zone (like a trailing `Z`) gives 400 "loaded_at is missing or unreadable. Reload the record and try again."
+
+| Refused because | Status | Body |
+|---|---|---|
+| Invalid values (every problem listed) | 400 | `{"error": "The signature can't be saved.", "reasons": ["The pattern is 2 characters long; it must be 3 to 255."]}` |
+| The built-in "Unknown" vendor or type | 403 | `{"error": "The built-in 'Unknown' device type can't be changed or retired: new devices use it until they are identified."}` |
+| Role can't edit reference data | 403 | `{"error": "Your role (viewer) can't edit reference data."}` |
+| No such record or prefix | 404 | `{"error": "There is no vendor with id 999. It may have been removed; reload the list."}` |
+| Name, pattern or prefix already exists | 409 | `{"error": "A vendor with this name already exists.", "existing_id": 88}` |
+| Changed by someone else since you loaded it | 409 | `{"error": "This vendor was changed by sam at 14:05 after you opened it. Reload to see their changes.", "changed_by": "sam", "changed_at": "2026-11-11T14:05:31"}` |
+
+A prefix refusal says "The OUI prefix can't be saved." A duplicate offers `existing_id` so the screen can link to the existing record (`null` when two people added it at the same moment). Names and patterns are stored exactly as typed, so show them as text, never as HTML.
+
 
 ## CRUD test page and server (development only)
 A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.

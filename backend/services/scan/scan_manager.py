@@ -7,9 +7,9 @@
     manager.wait()                                      # tests and the checkpoint script
 
 Phases run top to bottom, each passing its output to the next as data (design 2.2):
-    1. load the reference data once (3.2.1)
+    1. load the reference data once (3.2.1) and prepare it for identification (2.2.4)
     2. discover hosts (2.2.2): known hosts -> sweep -> resolve MACs -> filter -> mark randomized
-    3. save the results (2.2.5.2)
+    3. identify and save each host (2.2.4, then 2.2.5.2)
 Then the manager decides the outcome (design 8.4) and ALWAYS closes the session, even
 after a crash. It sends no alerts: the result lists the events, and on_finished hands
 it to the Application Controller after the outcome is saved (design 6.1).
@@ -34,7 +34,7 @@ from backend.records.scan import Scan
 from backend.services.scan.detect_randomized_mac import mark_randomized_macs
 from backend.services.scan.discovered_host import DiscoveredHost
 from backend.services.scan.filter_addresses import filter_addresses
-from backend.services.scan.match_oui import OuiLookup, oui_lookup_from_rules
+from backend.services.scan.identification_manager import IdentificationRules
 from backend.services.scan.read_known_hosts import read_known_hosts
 from backend.services.scan.record_scan_results import RecordSummary, record_scan_results
 from backend.services.scan.resolve_mac_addresses import resolve_mac_addresses
@@ -133,12 +133,12 @@ class ScanManager:
         summary: RecordSummary | None = None
         stop_reason: str | None = None
         try:
-            rules = self.load_rules()
+            rules = IdentificationRules.from_reference(self.load_rules())   # once per scan (design 14.1)
             found = self._discover(scan.target_scope)
             if not found.any_method_worked:
                 stop_reason = "no host discovery method worked: the ARP cache and ping were both unavailable"
             else:
-                summary = self._save(scan, found.hosts, oui_lookup_from_rules(rules))
+                summary = self._save(scan, found.hosts, rules)
                 outcome = self._decide(found, summary)
         except Exception as exc:
             logger.exception("scan %s stopped", scan.scan_id)
@@ -197,9 +197,9 @@ class ScanManager:
                     self.sessions.report_progress(ScanPhase.DISCOVERING_HOSTS, done, total)
         return counted
 
-    def _save(self, scan: Scan, hosts: list[DiscoveredHost], lookup: OuiLookup) -> RecordSummary:
+    def _save(self, scan: Scan, hosts: list[DiscoveredHost], rules: IdentificationRules) -> RecordSummary:
         seen_at = self.clock().replace(microsecond=0)       # DATETIME keeps whole seconds
-        summary = self.record_hosts(scan.scan_id, scan.user_id, hosts, lookup, seen_at,
+        summary = self.record_hosts(scan.scan_id, scan.user_id, hosts, rules, seen_at,
                                     on_host_done=partial(self.sessions.report_progress, ScanPhase.SAVING_RESULTS))
         for ip, reason in summary.failures:
             self.sessions.add_error(f"{ip}: {reason}")
@@ -238,8 +238,8 @@ def build_scan_manager(engine: DatabaseEngine, sessions: ScanSessionController, 
                        probe: Probe | None = None, read_arp: ArpReader = read_arp_cache,
                        on_finished: Callable[[ScanResult], None] | None = None) -> ScanManager:
     """A ScanManager on the real database. The one place that knows which stores it uses."""
-    saver = DeviceRecordSaver(DeviceStore(engine), ReferenceStore(engine, Vendor),
-                              ReferenceStore(engine, DeviceType))
-    record = partial(record_scan_results, engine=engine, saver=saver, scans=ScanStore(engine))
+    devices = DeviceStore(engine)
+    saver = DeviceRecordSaver(devices, ReferenceStore(engine, Vendor), ReferenceStore(engine, DeviceType))
+    record = partial(record_scan_results, engine=engine, saver=saver, devices=devices, scans=ScanStore(engine))
     return ScanManager(sessions, load_rules=partial(find_reference_rules, engine), record_hosts=record,
                        settings=settings, probe=probe, read_arp=read_arp, on_finished=on_finished)

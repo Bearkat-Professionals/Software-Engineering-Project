@@ -1,20 +1,21 @@
-"""Unit tests for 2.2.5.2 Record Observations and Evidence (#41). No database:
-SH-4 runs for real on the fake device and reference stores.
+"""Unit tests for 2.2.5.2 Record Observations and Evidence (#41) with identification (2.2.4).
+No database: SH-4 and identify run for real on the fake device, reference and scan stores.
 
-    python -m unittest discover tests
+    python -m unittest tests.services.scan.test_record_scan_results -v
 """
 from __future__ import annotations
 
 import unittest
-from backend.services.scan.record_scan_results import RecordSummary
 from contextlib import contextmanager
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
-from backend.records import Device, DeviceType, IdentificationEvidence, OuiPrefix, ScanObservation, Vendor
+from backend.data_access.reference_data import ReferenceRules
+from backend.records import Device, DeviceSignature, DeviceType, IdentificationEvidence, ScanObservation, Vendor
+from backend.records.enums import EvidenceType
 from backend.services.scan.discovered_host import DiscoveredHost
-from backend.services.scan.match_oui import build_oui_lookup
-from backend.services.scan.record_scan_results import record_scan_results
+from backend.services.scan.identification_manager import IdentificationRules
+from backend.services.scan.record_scan_results import RecordSummary, record_scan_results
 from backend.shared_modules.save_device_record import DeviceRecordSaver
 from tests.fakes.fake_device_store import FakeDeviceStore
 from tests.fakes.fake_reference_store import FakeReferenceStore
@@ -24,7 +25,12 @@ LATER = datetime(2026, 10, 29, 13, 0, 0)
 ROUTER = DiscoveredHost("10.0.0.1", "70:13:01:65:8E:F7")       # OUI 70:13:01 -> Vantiva
 LAPTOP = DiscoveredHost("10.0.0.20", "00:1B:44:11:3A:B7")      # OUI not in the lookup
 VANTIVA = Vendor(vendor_id=2, vendor_name="Vantiva - Connected Home")
-LOOKUP = build_oui_lookup([VANTIVA], [OuiPrefix(oui_prefix="70:13:01", vendor_id=2)])
+SPEAKER = DeviceType(device_type_id=3, category_name="smart speaker")
+ECHO = DeviceSignature(signature_id=10, device_type_id=SPEAKER.device_type_id, pattern_value="echo",
+                       evidence_type=EvidenceType.MDNS, resulting_device_name="Echo Dot",
+                       resulting_model="3rd gen")
+RULES = IdentificationRules.from_reference(ReferenceRules(
+    {VANTIVA.vendor_id: VANTIVA}, {"70:13:01": VANTIVA.vendor_id}, {SPEAKER.device_type_id: SPEAKER}, (ECHO,)))
 
 
 class FakeEngine:
@@ -33,14 +39,15 @@ class FakeEngine:
         self.units: list[str] = []
 
     @contextmanager
-    def unit_of_work(self):
+    def unit_of_work(self) -> Iterator[str]:
         self.units.append(f"unit-{len(self.units) + 1}")
         yield self.units[-1]
 
 
 class FakeScanStore:
-    """3.1.4's add_observation and add_evidence, in memory, with the real store's rules:
-    one observation per (scan, device), and evidence the device already has is not added again."""
+    """3.1.4 / 3.1.5 in memory, with the real store's rules: one observation per
+    (scan, device), evidence the device already has is not added again, and
+    evidence_for returns a device's evidence oldest first."""
     def __init__(self, fail_for_device: int | None = None) -> None:
         self.observations: dict[tuple[int, int], ScanObservation] = {}
         self.evidence: list[IdentificationEvidence] = []
@@ -52,13 +59,16 @@ class FakeScanStore:
         self.observations[(observation.scan_id, observation.device_id)] = observation
         return observation
 
-    def add_evidence(self, evidence: IdentificationEvidence, unit: Any = None):
+    def add_evidence(self, evidence: IdentificationEvidence, unit: Any = None) -> tuple[IdentificationEvidence, bool]:
         key = (evidence.device_id, evidence.evidence_type, evidence.raw_value, evidence.signature_id)
         for existing in self.evidence:
             if (existing.device_id, existing.evidence_type, existing.raw_value, existing.signature_id) == key:
                 return existing, False
         self.evidence.append(evidence)
         return evidence, True
+
+    def evidence_for(self, device_id: int, unit: Any = None) -> list[IdentificationEvidence]:
+        return [row for row in self.evidence if row.device_id == device_id]
 
 
 class RecordScanResultsTests(unittest.TestCase):
@@ -67,12 +77,20 @@ class RecordScanResultsTests(unittest.TestCase):
         self.scans = FakeScanStore()
         self.engine = FakeEngine()
 
-    def record(self, hosts, scan_id: int = 1, seen_at: datetime = FIRST,
+    def record(self, hosts: list[DiscoveredHost], scan_id: int = 1, seen_at: datetime = FIRST,
                on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
         saver = DeviceRecordSaver(self.devices, FakeReferenceStore(Vendor, [VANTIVA]),
-                                  FakeReferenceStore(DeviceType))
-        return record_scan_results(scan_id, 1, hosts, LOOKUP, seen_at, engine=self.engine, saver=saver,
-                                   scans=self.scans, on_host_done=on_host_done)
+                                  FakeReferenceStore(DeviceType, [SPEAKER]))
+        return record_scan_results(scan_id, 1, hosts, RULES, seen_at, engine=self.engine, saver=saver,
+                                   devices=self.devices, scans=self.scans, on_host_done=on_host_done)
+
+    def stored_echo_evidence(self, device_id: int) -> None:
+        """Evidence an earlier scan saved: the device answered mDNS as "kitchen-echo"."""
+        self.scans.evidence.append(IdentificationEvidence(
+            device_id=device_id, evidence_type=EvidenceType.MDNS, raw_value="kitchen-echo",
+            signature_id=ECHO.signature_id, weight=35))
+
+    # ---- saving ------------------------------------------------------------------------
 
     def test_new_and_existing_hosts(self) -> None:
         self.devices = FakeDeviceStore([Device(mac_address=LAPTOP.mac_address)])    # seen before
@@ -125,6 +143,46 @@ class RecordScanResultsTests(unittest.TestCase):
         self.assertEqual(sorted(self.scans.observations), [(1, 1), (1, 2), (2, 1), (2, 2)])
         self.assertEqual(len(self.scans.evidence), 1)
 
+    # ---- identification ----------------------------------------------------------------
+
+    def test_each_device_gets_its_score_and_flag_from_identification(self) -> None:
+        self.record([ROUTER, LAPTOP])
+        router = self.devices.find_by_mac(ROUTER.mac_address)
+        laptop = self.devices.find_by_mac(LAPTOP.mac_address)
+        self.assertEqual((router.confidence_score, router.flagged_status), (20, True))    # OUI only: partial
+        self.assertEqual((laptop.confidence_score, laptop.flagged_status), (0, True))     # nothing: unidentified
+
+    def test_stored_signature_evidence_identifies_the_device_on_a_rescan(self) -> None:
+        self.devices = FakeDeviceStore([Device(mac_address=ROUTER.mac_address)])
+        self.stored_echo_evidence(device_id=1)
+        self.record([ROUTER])
+        router = self.devices.find_by_mac(ROUTER.mac_address)
+        self.assertEqual((router.device_type_id, router.device_name, router.model),
+                         (SPEAKER.device_type_id, "Echo Dot", "3rd gen"))
+        self.assertEqual((router.confidence_score, router.flagged_status), (55, False))   # OUI 20 + mDNS 35
+
+    def test_a_name_a_user_typed_is_kept(self) -> None:
+        self.devices = FakeDeviceStore([Device(mac_address=ROUTER.mac_address, device_name="Front hall speaker")])
+        self.stored_echo_evidence(device_id=1)
+        self.record([ROUTER])
+        router = self.devices.find_by_mac(ROUTER.mac_address)
+        self.assertEqual(router.device_name, "Front hall speaker")      # not replaced by "Echo Dot"
+        self.assertEqual(router.model, "3rd gen")                       # the empty model is filled in
+
+    def test_a_type_a_user_chose_is_kept(self) -> None:
+        printer = 24                                                    # set by hand; nothing in the rules
+        self.devices = FakeDeviceStore([Device(mac_address=ROUTER.mac_address, device_type_id=printer)])
+        self.record([ROUTER])                                           # finds no type: OUI only
+        self.assertEqual(self.devices.find_by_mac(ROUTER.mac_address).device_type_id, printer)
+
+    def test_a_trusted_known_device_stays_unflagged(self) -> None:
+        self.devices = FakeDeviceStore([Device(mac_address=ROUTER.mac_address, trusted_status=True)])
+        summary = self.record([ROUTER])
+        self.assertFalse(self.devices.find_by_mac(ROUTER.mac_address).flagged_status)
+        self.assertEqual(summary.new_flagged_ids, [])
+
+    # ---- progress ----------------------------------------------------------------------
+
     def test_progress_counts_only_the_hosts_that_will_be_saved(self) -> None:
         calls: list[tuple[int, int]] = []
         no_mac = DiscoveredHost("10.0.0.5")
@@ -144,3 +202,7 @@ class RecordScanResultsTests(unittest.TestCase):
         calls: list[tuple[int, int]] = []
         self.record([], on_host_done=lambda d, t: calls.append((d, t)))
         self.assertEqual(calls, [(0, 0)])
+
+
+if __name__ == "__main__":
+    unittest.main()

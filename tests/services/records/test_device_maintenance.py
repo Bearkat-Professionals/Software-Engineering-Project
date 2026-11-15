@@ -10,11 +10,15 @@ from __future__ import annotations
 import unittest
 from datetime import timedelta
 
-from backend.records import Device, DeviceType, Vendor
+from backend.records import Device, DeviceType, User, Vendor
 from backend.records.enums import AuditAction, IdentificationLevel, NetworkStatus, RecordStatus
-from backend.services.records.device_maintenance import (MARKS, DeviceEdit, DeviceMaintenance, LoadedDevice,
-                                                         MaintenanceResult, MaintenanceStatus)
-from tests.fakes.fake_device_maintenance import FakeClock, FakeEngine, FakeMaintainedDevices, SpySaver
+from backend.services.records.device_maintenance import (MARKS, DeviceEdit, DeviceMaintenance,
+                                                         DeviceMaintenanceResult as MaintenanceResult,
+                                                         DeviceMaintenanceStatus as MaintenanceStatus,
+                                                         LoadedDevice)
+from backend.services.scan.assign_level import stored_level
+from tests.fakes.fake_device_maintenance import (FakeClock, FakeEngine, FakeMaintainedDevices, FakeUsers,
+                                                 SpySaver)
 from tests.fakes.fake_reference_store import FakeReferenceStore
 
 ADMIN, OTHER = 7, 8
@@ -22,6 +26,8 @@ ROUTER_MAC = "70:13:01:65:8E:F7"        # fixed (vendor-assigned)
 PHONE_MAC = "DA:A1:19:00:00:01"         # randomized
 APPLE, RETIRED_VENDOR = 9, 13
 ROUTER_TYPE = 5
+USERS = FakeUsers(User(user_id=ADMIN, username="sam", password_hash="x"),
+                  User(user_id=OTHER, username="ada", password_hash="x"))
 
 DONE = MaintenanceStatus.DONE
 REJECTED = MaintenanceStatus.REJECTED
@@ -34,14 +40,14 @@ class MaintenanceTestCase(unittest.TestCase):
 
     def use(self, *devices: Device) -> None:
         self.clock = FakeClock()
-        self.engine = FakeEngine(self.clock)
+        self.engine = FakeEngine()
         self.devices = FakeMaintainedDevices(devices, self.clock)
         vendors = FakeReferenceStore(Vendor, [Vendor(vendor_id=APPLE, vendor_name="Apple, Inc."),
                                               Vendor(vendor_id=RETIRED_VENDOR, vendor_name="Old Co",
                                                      status=RecordStatus.RETIRED)])
         types = FakeReferenceStore(DeviceType, [DeviceType(device_type_id=ROUTER_TYPE, category_name="Router")])
-        self.saver = SpySaver(self.devices, vendors, types)
-        self.service = DeviceMaintenance(self.engine, self.saver, self.devices)
+        self.saver = SpySaver(self.devices, vendors, types, USERS)
+        self.service = DeviceMaintenance(self.engine, self.saver, self.devices, USERS, clock=self.clock)
 
     def assertStatus(self, result: MaintenanceResult, status: MaintenanceStatus, *reason_parts: str) -> None:
         self.assertIsInstance(result, MaintenanceResult)
@@ -86,11 +92,13 @@ class AddTests(MaintenanceTestCase):
         self.assertStatus(result, DONE)
         self.assertTrue(result.device.trusted_status)
 
-    def test_add_uses_the_provisional_level_of_the_vendor_it_is_given(self) -> None:
+    def test_add_works_out_the_level_from_what_it_is_given(self) -> None:
         self.service.add("3C:07:54:00:00:09", DeviceEdit(vendor_id=APPLE), ADMIN)
         self.service.add("3C:07:54:00:00:0A", DeviceEdit(), ADMIN)
+        self.service.add("3C:07:54:00:00:0B", DeviceEdit(device_name="TV", device_type_id=ROUTER_TYPE), ADMIN)
         self.assertEqual([call.level for call in self.saver.calls],
-                         [IdentificationLevel.PARTIAL, IdentificationLevel.UNIDENTIFIED])
+                         [IdentificationLevel.PARTIAL, IdentificationLevel.UNIDENTIFIED,
+                          IdentificationLevel.PARTIAL])       # a name and type, but no evidence: score 0
 
     def test_a_known_fixed_mac_already_exists(self) -> None:
         result = self.service.add("70-13-01-65-8e-f7", DeviceEdit(device_name="Again"), ADMIN)
@@ -151,11 +159,18 @@ class EditTests(MaintenanceTestCase):
         result = self.service.edit(1, DeviceEdit(device_name="  "), ADMIN, None)
         self.assertIsNone(result.device.device_name)
 
-    def test_the_level_follows_the_vendor_after_the_edit(self) -> None:
+    def test_the_level_follows_the_device_after_the_edit(self) -> None:
         self.service.edit(1, DeviceEdit(model="X"), ADMIN, None)
         self.assertEqual(self.saver.calls[-1].level, IdentificationLevel.PARTIAL)          # keeps Apple
         self.service.edit(1, DeviceEdit(vendor_id=1), ADMIN, None)
         self.assertEqual(self.saver.calls[-1].level, IdentificationLevel.UNIDENTIFIED)     # back to unknown
+
+    def test_a_named_typed_device_with_enough_evidence_is_identified(self) -> None:
+        self.use(Device(device_id=1, mac_address=ROUTER_MAC, confidence_score=60))
+        self.service.edit(1, DeviceEdit(device_name="Den TV", device_type_id=ROUTER_TYPE), ADMIN, None)
+        self.assertEqual(self.saver.calls[-1].level, IdentificationLevel.IDENTIFIED)
+        self.service.edit(1, DeviceEdit(device_name="   "), ADMIN, None)                    # name cleared
+        self.assertEqual(self.saver.calls[-1].level, IdentificationLevel.PARTIAL)
 
     def test_not_found(self) -> None:
         result = self.service.edit(99, DeviceEdit(model="X"), ADMIN, None)
@@ -192,6 +207,25 @@ class EditTests(MaintenanceTestCase):
 
 # ---- marks -------------------------------------------------------------------------
 
+class LevelRuleTests(unittest.TestCase):
+    """stored_level: Blaine's rule, the same one assign_level uses."""
+
+    def test_the_rule(self) -> None:
+        cases = [
+            ((ROUTER_TYPE, APPLE, "TV", 50), IdentificationLevel.IDENTIFIED),
+            ((ROUTER_TYPE, APPLE, "TV", 49), IdentificationLevel.PARTIAL),       # under 50
+            ((ROUTER_TYPE, None, None, 90), IdentificationLevel.PARTIAL),        # no name
+            ((ROUTER_TYPE, None, "  ", 90), IdentificationLevel.PARTIAL),        # blank name
+            ((1, APPLE, "TV", 90), IdentificationLevel.PARTIAL),                 # unknown type, known vendor
+            ((None, None, "TV", 90), IdentificationLevel.UNIDENTIFIED),
+            ((1, 1, "TV", 90), IdentificationLevel.UNIDENTIFIED),
+            ((ROUTER_TYPE, 1, "TV", None), IdentificationLevel.PARTIAL),          # no score yet
+        ]
+        for args, level in cases:
+            with self.subTest(args=args):
+                self.assertIs(stored_level(*args), level)
+
+
 class MarkTests(MaintenanceTestCase):
     def test_each_mark_sets_the_right_fields(self) -> None:
         for mark, (trusted, flagged) in MARKS.items():
@@ -207,6 +241,18 @@ class MarkTests(MaintenanceTestCase):
 
     def test_the_table(self) -> None:                          # #PARENT
         self.assertEqual(MARKS, {"trusted": (True, False), "flagged": (False, True), "automatic": (False, False)})
+
+    def test_a_mark_uses_the_stored_device_for_the_level(self) -> None:
+        self.use(Device(device_id=1, mac_address=ROUTER_MAC, device_type_id=ROUTER_TYPE, device_name="TV",
+                        confidence_score=80))
+        result = self.service.set_mark(1, "automatic", ADMIN, None)
+        self.assertEqual(self.saver.calls[-1].level, IdentificationLevel.IDENTIFIED)
+        self.assertFalse(result.device.flagged_status)          # identified, so automatic means not flagged
+
+    def test_automatic_keeps_a_partial_device_flagged(self) -> None:      # the docstring's note
+        self.use(Device(device_id=1, mac_address=ROUTER_MAC, device_type_id=ROUTER_TYPE, device_name="TV",
+                        confidence_score=20))
+        self.assertTrue(self.service.set_mark(1, "automatic", ADMIN, None).device.flagged_status)
 
     def test_flagged_and_trusted_change_the_flag(self) -> None:
         self.assertTrue(self.service.set_mark(1, "flagged", ADMIN, None).device.flagged_status)
@@ -252,22 +298,57 @@ class DeleteTests(MaintenanceTestCase):
         later = self.clock() + timedelta(minutes=3)
         self.devices.changed_elsewhere(1, OTHER, later)
         result = self.service.delete(1, ADMIN, self.clock())
-        self.assertStatus(result, MaintenanceStatus.CONFLICT, later.strftime("%H:%M"), "wasn't deleted")
+        self.assertStatus(result, MaintenanceStatus.CONFLICT)
+        self.assertEqual(result.reasons, (f"This device was changed by ada at {later:%H:%M} after you opened it.",))
         self.assertEqual((result.changed_by, result.changed_at), (OTHER, later))
         self.assertIn(1, self.devices.rows)
         self.assertEqual(self.engine.rolled_back, 1)
+
+    def test_a_conflict_on_another_day_shows_the_date(self) -> None:
+        next_day = self.clock() + timedelta(days=1)
+        self.devices.changed_elsewhere(1, OTHER, next_day)
+        result = self.service.delete(1, ADMIN, self.clock())
+        self.assertIn(f"at {next_day:%Y-%m-%d %H:%M} after", result.reasons[0])
+
+    def test_delete_and_edit_conflicts_read_the_same(self) -> None:          # review
+        later = self.clock() + timedelta(minutes=3)
+        self.devices.changed_elsewhere(1, OTHER, later)
+        edit = self.service.edit(1, DeviceEdit(model="X"), ADMIN, self.clock())
+        delete = self.service.delete(1, ADMIN, self.clock())
+        self.assertEqual(edit.reasons, delete.reasons)
+
+    def test_without_users_it_says_another_user(self) -> None:
+        service = DeviceMaintenance(self.engine, self.saver, self.devices, clock=self.clock)
+        self.devices.changed_elsewhere(1, OTHER, self.clock() + timedelta(minutes=3))
+        self.assertIn("changed by another user at", service.delete(1, ADMIN, self.clock()).reasons[0])
 
 
 # ---- load ---------------------------------------------------------------------------
 
 class LoadTests(MaintenanceTestCase):
-    def test_the_device_and_the_database_time(self) -> None:
+    def test_the_device_and_the_time(self) -> None:
         loaded = self.service.load(1)
         self.assertIsInstance(loaded, LoadedDevice)
         self.assertTrue(loaded.found)
         self.assertEqual(loaded.device.mac_address, ROUTER_MAC)
         self.assertEqual(loaded.loaded_at, self.clock())
         self.assertOneUnitOfWork()
+
+    def test_the_time_is_read_before_the_device(self) -> None:              # review: REPEATABLE READ
+        events: list[str] = []
+        clock, find = self.clock, self.devices.find
+
+        def timed() -> object:
+            events.append("clock")
+            return clock()
+
+        def found(*args: object, **kwargs: object) -> object:
+            events.append("find")
+            return find(*args, **kwargs)
+
+        self.devices.find = found
+        DeviceMaintenance(self.engine, self.saver, self.devices, USERS, clock=timed).load(1)
+        self.assertEqual(events, ["clock", "find"])
 
     def test_missing(self) -> None:
         loaded = self.service.load(99)

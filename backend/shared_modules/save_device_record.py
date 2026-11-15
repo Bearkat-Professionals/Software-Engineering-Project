@@ -10,13 +10,15 @@ of work. A rejection is decided before anything is written.
     saver = DeviceRecordSaver(DeviceStore(engine), ReferenceStore(engine, Vendor),
                               ReferenceStore(engine, DeviceType))
     changes = DeviceChanges(mac_address="28:6F:B9:00:00:01", current_ip="192.168.1.20",
-                            seen_at=now, oui_vendor_id=7)
-    outcome = saver.save(changes, acting_user_id=1, level=provisional_level(7), unit=unit)
+                            seen_at=now, oui_vendor_id=7, confidence_score=20)
+    outcome = saver.save(changes, acting_user_id=1, level=identification.level, unit=unit)
     outcome.status      # SaveStatus.CREATED, UPDATED, REJECTED or CONFLICT
     outcome.reasons     # plain-English reasons when REJECTED or CONFLICT (OUT-04)
 
 An edit screen passes loaded_at (when it read the device): if someone changed the
 device after that, nothing is stored and the outcome is CONFLICT (CM-01).
+
+Scans pass the level from 2.2.4 (identify); the edit screens pass the device's current level.
 
 Text fields (hostname, device_name, model) are stored exactly as typed, so a
 screen that shows them must escape them (XSS). SH-4 only checks that they fit.
@@ -179,16 +181,6 @@ class DeviceRecordSaver:
         return reasons
 
 
-def provisional_level(vendor_id: int | None) -> IdentificationLevel:
-    """TEMPORARY, until 2.2.4.4 Assign Level (M3) works the level out from the evidence.
-
-    A device whose vendor is known from an OUI match is partially identified;
-    one without is unidentified. Either way it is flagged (spec 7.3, rule 1)."""
-    if vendor_id is not None and vendor_id != UNKNOWN_VENDOR_ID:
-        return IdentificationLevel.PARTIAL
-    return IdentificationLevel.UNIDENTIFIED
-
-
 def _rejected(reasons: list[str]) -> SaveOutcome:
     return SaveOutcome(SaveStatus.REJECTED, reasons=tuple(reasons))
 
@@ -252,4 +244,3 @@ def _apply(changes: DeviceChanges, device: Device) -> None:
         device.flag_set_by_user = False
     if changes.flag_set_by_user:
         device.trusted_status = False
-
