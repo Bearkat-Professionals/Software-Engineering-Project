@@ -2,7 +2,8 @@
 
     POST /api/scans            start a scan                  202, or 400 / 401 / 403 / 409
     GET  /api/scans/status     what the scanner is doing     200
-    GET  /api/devices          one page of the device list   200, or 400 for bad paging
+    GET  /api/devices          one page of the device list,  200, or 400 for bad paging or search
+                               filtered and sorted (2.4.1)
 
 The JSON shapes are the contract with the screens (see "API" in the README): change
 them only together with the screens. Every route is guarded by @requires (auth.py), makes
@@ -21,6 +22,7 @@ from backend.data_access.network_data.device_store import DEFAULT_PER_PAGE, MAX_
 from backend.controller.route_helpers import MAX_PAGE, whole_number
 from backend.records import User
 from backend.services.access_control.permissions import Permission
+from backend.services.reporting.search_devices import search_devices
 from backend.services.scan.scan_session import OpenRefusal, ScanState, ScanStatusReport
 
 if TYPE_CHECKING:       # for the type hint only: app_controller imports this module
@@ -65,7 +67,11 @@ def register(app: Flask, services: Services) -> None:
     def list_devices() -> ResponseReturnValue:
         page = whole_number("page", default=1, largest=MAX_PAGE)
         per_page = whole_number("per_page", default=DEFAULT_PER_PAGE, largest=MAX_PER_PAGE)
-        found = services.devices.list_page(page=page, per_page=per_page)
+        # The service checks every search value; with none given it is #51's list exactly
+        result = search_devices(services.devices, request.args, page=page, per_page=per_page)
+        if not result.ok:
+            return jsonify(error="The search can't be run.", reasons=list(result.reasons)), 400
+        found = result.page
         return jsonify(devices=[device_json(listing) for listing in found.devices],
                        page=found.page, per_page=found.per_page, total=found.total)
 

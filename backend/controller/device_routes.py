@@ -1,7 +1,9 @@
 """Device record API (2.3.1): the endpoints the device screens use to change devices, and
 the two lists the edit form's pickers need.
 
-    GET    /api/devices/<id>                    one device for its edit form, and loaded_at
+    GET    /api/devices/<id>                    one device for its edit form and detail screen:
+                                                loaded_at, inferred fields, score, conflicting evidence
+    GET    /api/devices/<id>/history            where and when it was seen, newest first (2.4.2)
     POST   /api/devices                         add a device by hand            201
     PUT    /api/devices/<id>                    edit name, type, vendor, model (sends loaded_at)
     PUT    /api/devices/<id>/mark               trusted / flagged / automatic (sends loaded_at)
@@ -11,7 +13,8 @@ the two lists the edit form's pickers need.
 
 The JSON shapes are the contract with the screens (see "API" in the README). Every route is
 guarded by @requires, makes ONE service call (a change then reads the device back for its
-reply) and returns JSON. No database code here (tier rules).
+reply; GET of one device asks Device Maintenance for loaded_at, then Device Detail) and
+returns JSON. No database code here (tier rules).
 """
 from __future__ import annotations
 
@@ -24,13 +27,17 @@ from flask.typing import ResponseReturnValue
 
 from backend.controller.api_routes import device_json
 from backend.controller.auth import requires
-from backend.controller.route_helpers import conflict_json, json_body, read_loaded_at, whole_number
+from backend.controller.route_helpers import MAX_PAGE, conflict_json, json_body, read_loaded_at, whole_number
 from backend.data_access.network_data import DeviceListing
 from backend.data_access.reference_data.reference_store import SEARCH_MAX_LIMIT
-from backend.records import Device
+from backend.records import Device, IdentificationEvidence
 from backend.services.access_control.permissions import Permission
 from backend.services.records.device_maintenance import (DeviceEdit, DeviceMaintenanceResult,
                                                          DeviceMaintenanceStatus, LoadedDevice)
+from backend.services.reporting import DeviceDetail, DeviceHistoryEntry, EvidenceDetail
+from backend.services.reporting.device_detail import DEFAULT_PER_PAGE as HISTORY_PER_PAGE
+from backend.services.reporting.device_detail import MAX_PER_PAGE as HISTORY_MAX_PER_PAGE
+from backend.services.scan.evidence import EvidenceItem
 
 if TYPE_CHECKING:       # for the type hint only: app_controller imports this module
     from backend.controller.app_controller import Services
@@ -63,10 +70,25 @@ def register(app: Flask, services: Services) -> None:
     @app.get("/api/devices/<int:device_id>")
     @requires_view
     def get_device(device_id: int) -> ResponseReturnValue:
-        loaded = services.device_maintenance.load(device_id)
+        loaded = services.device_maintenance.load(device_id)        # first: loaded_at is read before the device
         if not loaded.found:
             abort(404, description=_missing(device_id))
-        return jsonify(device=device_form_json(loaded), loaded_at=loaded.loaded_at.isoformat())
+        detail = services.device_detail.get_device_detail(device_id)
+        if detail is None:                                          # deleted just now, by someone else
+            abort(404, description=_missing(device_id))
+        return jsonify(device=device_form_json(loaded), loaded_at=loaded.loaded_at.isoformat(),
+                       **detail_json(detail))
+
+    @app.get("/api/devices/<int:device_id>/history")
+    @requires_view
+    def device_history(device_id: int) -> ResponseReturnValue:
+        page = whole_number("page", default=1, largest=MAX_PAGE)
+        per_page = whole_number("per_page", default=HISTORY_PER_PAGE, largest=HISTORY_MAX_PER_PAGE)
+        history = services.device_detail.get_device_history(device_id, page, per_page)
+        if history is None:
+            abort(404, description=_missing(device_id))
+        return jsonify(observations=[observation_json(entry) for entry in history.entries],
+                       page=history.page, per_page=history.per_page, total=history.total)
 
     @app.post("/api/devices")
     @requires_edit
@@ -154,6 +176,56 @@ def device_form_json(loaded: LoadedDevice) -> dict[str, Any]:
         first_seen=device.first_seen.isoformat() if device.first_seen is not None else None,
     )
     return body
+
+
+def detail_json(detail: DeviceDetail) -> dict[str, Any]:
+    """What the detail screen adds to the device: which fields the evidence inferred, how the
+    score is made up, and the evidence that lost a conflict (2.4.2)."""
+    kept = {EvidenceItem.from_record(item.evidence): item for item in detail.kept}
+    breakdown = detail.breakdown
+    return {
+        "inferred": sorted(detail.inferred),
+        "score": {
+            "stored": detail.device.confidence_score,
+            "calculated": breakdown.score,
+            "capped": breakdown.capped,
+            "outdated": detail.score_outdated,
+            "contributions": [{"evidence_type": contribution.evidence_type.value,
+                               "points": contribution.points,
+                               "evidence": [_evidence_json(kept[item], with_type=False)
+                                            for item in contribution.evidence]}
+                              for contribution in breakdown.contributions],
+        },
+        "conflicting": [_evidence_json(item) for item in detail.dropped],
+    }
+
+
+def _evidence_json(detail: EvidenceDetail, *, with_type: bool = True) -> dict[str, Any]:
+    """One piece of evidence. signature is null for evidence no signature matched (an OUI)."""
+    evidence: IdentificationEvidence = detail.evidence
+    body: dict[str, Any] = {"evidence_type": evidence.evidence_type.value} if with_type else {}
+    body.update(
+        raw_value=evidence.raw_value,
+        signature=None if evidence.signature_id is None else {
+            "signature_id": evidence.signature_id,
+            "device_name": detail.resulting_device_name,
+            "model": detail.resulting_model,
+        },
+        weight=evidence.weight,
+    )
+    return body
+
+
+def observation_json(entry: DeviceHistoryEntry) -> dict[str, Any]:
+    """One sighting for the history list."""
+    observation = entry.observation
+    return {
+        "scan_id": entry.scan_id,
+        "scan_started_at": entry.started_at.isoformat() if entry.started_at is not None else None,
+        "observed_at": observation.observed_at.isoformat() if observation.observed_at is not None else None,
+        "ip": observation.ip_address,
+        "status": getattr(observation.status, "value", observation.status),
+    }
 
 
 # ---- replies ---------------------------------------------------------------------------

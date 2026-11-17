@@ -318,12 +318,34 @@ Any role.
 - `page` defaults to 1 and `per_page` to 50 (at most 200). A page past the end gives an empty `devices` list with the real `total`.
 - A `page` or `per_page` that isn't a whole number in range gets a 400 naming the bad value.
 
+**Searching (2.4.1, #121).** Add any of these to narrow and sort the same list; the answer has the same shape. A parameter left out or blank means "any". With none, the list is exactly as above.
+
+| Parameter | Value |
+|---|---|
+| `type`, `vendor` | a device type or vendor id |
+| `status` | `online` or `offline` |
+| `flagged`, `trusted` | `true` or `false` |
+| `confidence_min`, `confidence_max` | 0 to 100 |
+| `seen_from`, `seen_to` | a date like `2026-11-07` (whole days) |
+| `q` | part of the name, hostname, IP or MAC (at most 100 characters) |
+| `sort` | `last_seen` (the default), `name`, `ip`, `confidence`, `vendor` or `type` |
+| `order` | `desc` (the default) or `asc` |
+
+Example: `GET /api/devices?vendor=12&flagged=true&sort=ip&order=asc`. If any value is wrong, nothing is searched and you get every problem at once:
+```json
+{"error": "The search can't be run.",
+ "reasons": ["seen_to must be a date like 2026-11-07, not '7th'.",
+             "confidence_min (90) must not be more than confidence_max (10)."]}
+```
+The reasons repeat what was typed, so a screen must escape them when it shows them.
+
 ### One device: read, add, edit, mark and delete (2.3.1)
 Reading needs any role; changing needs `editor` or `admin` (a viewer gets 403, and the refusal is logged). Every change goes through the same save path as scans (SH-4) and is audited.
 
 | Request | Body | Success |
 |---|---|---|
-| `GET /api/devices/<id>` | none | 200, the device and `loaded_at` |
+| `GET /api/devices/<id>` | none | 200, the device, `loaded_at`, and its detail (below) |
+| `GET /api/devices/<id>/history?page=1&per_page=50` | none | 200, where and when it was seen |
 | `POST /api/devices` | `mac`, and any of the fields below | 201, the device |
 | `PUT /api/devices/<id>` | the fields to change, and `loaded_at` | 200, the device |
 | `PUT /api/devices/<id>/mark` | `{"mark": "flagged", "loaded_at": "..."}` | 200, the device |
@@ -343,6 +365,34 @@ Reading needs any role; changing needs `editor` or `admin` (a viewer gets 403, a
 ```
 - `type` and `vendor` are names (retired ones still show); `device_type_id` and `vendor_id` are for the pickers.
 - `mark` is the user's choice: `trusted` (never flagged), `flagged` (stays flagged whatever scans find), or `automatic` (the flag follows the identification level, so a device that isn't fully identified stays flagged until someone trusts it).
+
+**The detail (2.4.2, #121)**: only `GET /api/devices/<id>` adds these next to `device` and `loaded_at` (a change's reply doesn't):
+```json
+{"inferred": ["device_type", "vendor"],
+ "score": {"stored": 55, "calculated": 80, "capped": false, "outdated": true,
+           "contributions": [
+             {"evidence_type": "mdns", "points": 35, "evidence": [
+                {"raw_value": "Office-Printer._ipp._tcp.local",
+                 "signature": {"signature_id": 54, "device_name": "Office printer", "model": "LaserJet 4000"},
+                 "weight": 35}]},
+             {"evidence_type": "oui", "points": 20, "evidence": [
+                {"raw_value": "F0:D1:A9", "signature": null, "weight": 20}]}]},
+ "conflicting": [
+   {"evidence_type": "ssdp", "raw_value": "urn:schemas-upnp-org:device:MediaRenderer:1",
+    "signature": {"signature_id": 56, "device_name": "Living room TV", "model": null}, "weight": 35}]}
+```
+- `inferred` lists the fields the evidence worked out (`device_type`, `vendor`, `device_name`, `model`); the rest were typed by a user or are unknown.
+- `score.stored` is the device's saved confidence; `calculated` is what today's evidence and weights give (capped at 100, `capped` says if it was). `outdated` is true when they differ.
+- `contributions` is the evidence that counts, one entry per evidence type. `conflicting` is the evidence that lost a conflict between device types, so it doesn't count.
+- `signature` is `null` for evidence no signature matched (an OUI prefix).
+
+**History**, newest scan first. `page` and `per_page` are checked as for the device list (50 by default, at most 200):
+```json
+{"observations": [{"scan_id": 114, "scan_started_at": "2026-11-17T00:32:50",
+                   "observed_at": "2026-11-17T09:00:06", "ip": "192.168.1.23", "status": "online"}],
+ "page": 1, "per_page": 20, "total": 2}
+```
+An unknown device id gives 404 for the device and its history: "There is no device with id 99. It may have been deleted; reload the list."
 - IP, hostname, first and last seen, network status and confidence come from scans and can't be edited here.
 
 **Adding.** Only `mac` is required:
