@@ -23,6 +23,9 @@ from backend.shared_modules.save_device_record import DeviceChanges, DeviceRecor
 from tests.data_access.test_repository import CLEANUP, connect_to_test_database
 
 TEST_MAC = "02:DE:AD:00:00:01"      # locally administered: never a real vendor's device
+RACE_MAC_A = "02:DE:AD:00:00:11"
+RACE_MAC_B = "02:DE:AD:00:00:12"
+RACE_MAC_C = "02:DE:AD:00:00:13"
 TEST_TYPE = "VG test scan type"
 
 
@@ -152,6 +155,76 @@ class DeviceMaintenanceDatabaseTests(unittest.TestCase):
         self.assertDone(edited)
         stored = self.devices.find(added.device.pk)
         self.assertEqual((stored.current_ip, stored.model), ("192.168.1.9", "TB-1"))
+
+    def test_edit_and_scan_of_different_devices_do_not_deadlock(self) -> None:
+        """The locking MAC lookup uses idx_device_mac instead of scanning rows C, B, A.
+
+        C is held by the scan transaction and B by the edit transaction before each
+        performs its MAC lookup. Without the index those descending table scans wait on
+        one another and MySQL rolls one transaction back as a deadlock.
+        """
+        a = self.service.add(RACE_MAC_A, DeviceEdit(), self.sam).device
+        b = self.service.add(RACE_MAC_B, DeviceEdit(), self.sam).device
+        c = self.service.add(RACE_MAC_C, DeviceEdit(), self.sam).device
+        form = self.service.load(b.pk)
+        edit_locked_b = threading.Event()
+        scan_locked_c = threading.Event()
+        failures: list[BaseException] = []
+        results: list[MaintenanceStatus | SaveStatus] = []
+
+        class PausedEditStore(DeviceStore):
+            def find(inner_self, device_id, unit=None, *, lock=False):
+                device = super().find(device_id, unit, lock=lock)
+                if lock and device_id == b.pk:
+                    edit_locked_b.set()
+                    if not scan_locked_c.wait(5):
+                        raise AssertionError("scan did not lock device C")
+                return device
+
+        edit_store = PausedEditStore(self.engine)
+        names = UserStore(self.engine)
+        edit_saver = DeviceRecordSaver(edit_store, self.vendors, self.types, names)
+        edit_service = DeviceMaintenance(self.engine, edit_saver, edit_store, names)
+        scan_store = DeviceStore(self.engine)
+        scan_saver = DeviceRecordSaver(scan_store, self.vendors, self.types, names)
+
+        def user_edits_b() -> None:
+            try:
+                result = edit_service.edit(b.pk, DeviceEdit(model="Edited B"), self.sam, form.loaded_at)
+                results.append(result.status)
+            except BaseException as exc:
+                failures.append(exc)
+
+        def scan_saves_a() -> None:
+            try:
+                if not edit_locked_b.wait(5):
+                    raise AssertionError("edit did not lock device B")
+                with self.engine.unit_of_work() as unit:
+                    self.assertIsNotNone(scan_store.find(c.pk, unit, lock=True))
+                    scan_locked_c.set()
+                    outcome = scan_saver.save(
+                        DeviceChanges(mac_address=RACE_MAC_A, current_ip="192.168.1.11",
+                                      seen_at=datetime.now()),
+                        self.ada, IdentificationLevel.UNIDENTIFIED, unit)
+                    results.append(outcome.status)
+            except BaseException as exc:
+                failures.append(exc)
+                scan_locked_c.set()
+
+        edit_thread = threading.Thread(target=user_edits_b)
+        scan_thread = threading.Thread(target=scan_saves_a)
+        edit_thread.start()
+        scan_thread.start()
+        edit_thread.join(timeout=10)
+        scan_thread.join(timeout=10)
+
+        self.assertFalse(edit_thread.is_alive(), "edit thread did not finish")
+        self.assertFalse(scan_thread.is_alive(), "scan thread did not finish")
+        if failures:
+            raise failures[0]
+        self.assertCountEqual(results, [MaintenanceStatus.DONE, SaveStatus.UPDATED])
+        self.assertEqual(self.devices.find(b.pk).model, "Edited B")
+        self.assertEqual(self.devices.find(a.pk).current_ip, "192.168.1.11")
 
     # ---- what only the real database can show -----------------------------------------
 

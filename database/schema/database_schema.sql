@@ -61,6 +61,7 @@ CREATE TABLE device (
     CHECK (confidence_score BETWEEN 0 AND 100),       #rule ensures the confidence score is always between 0 and 100
 
     INDEX idx_device_current_ip (current_ip),         #search by IP
+    INDEX idx_device_mac (mac_address, is_randomized_mac), #locking lookup by MAC without a table scan
     INDEX idx_device_last_seen (last_seen),           #filter by date range
 
     FOREIGN KEY (device_type_id)
