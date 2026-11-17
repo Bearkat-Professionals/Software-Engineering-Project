@@ -13,7 +13,9 @@ from typing import Any, Callable, Iterator
 from backend.data_access.reference_data import ReferenceRules
 from backend.records import Device, DeviceSignature, DeviceType, IdentificationEvidence, ScanObservation, Vendor
 from backend.records.enums import EvidenceType
+from backend.services.scan.collect_evidence import CollectedEvidence
 from backend.services.scan.discovered_host import DiscoveredHost
+from backend.services.scan.evidence import RawEvidence
 from backend.services.scan.identification_manager import IdentificationRules
 from backend.services.scan.record_scan_results import RecordSummary, record_scan_results
 from backend.shared_modules.save_device_record import DeviceRecordSaver
@@ -78,11 +80,13 @@ class RecordScanResultsTests(unittest.TestCase):
         self.engine = FakeEngine()
 
     def record(self, hosts: list[DiscoveredHost], scan_id: int = 1, seen_at: datetime = FIRST,
-               on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
+               on_host_done: Callable[[int, int], None] | None = None, **collected: Any) -> RecordSummary:
         saver = DeviceRecordSaver(self.devices, FakeReferenceStore(Vendor, [VANTIVA]),
                                   FakeReferenceStore(DeviceType, [SPEAKER]))
+        extra = {"collected": CollectedEvidence(collected.get("evidence", {}), collected.get("hostnames", {}), ())} \
+            if collected else {}
         return record_scan_results(scan_id, 1, hosts, RULES, seen_at, engine=self.engine, saver=saver,
-                                   devices=self.devices, scans=self.scans, on_host_done=on_host_done)
+                                   devices=self.devices, scans=self.scans, on_host_done=on_host_done, **extra)
 
     def stored_echo_evidence(self, device_id: int) -> None:
         """Evidence an earlier scan saved: the device answered mDNS as "kitchen-echo"."""
@@ -180,6 +184,39 @@ class RecordScanResultsTests(unittest.TestCase):
         summary = self.record([ROUTER])
         self.assertFalse(self.devices.find_by_mac(ROUTER.mac_address).flagged_status)
         self.assertEqual(summary.new_flagged_ids, [])
+
+    # ---- collected evidence and hostnames (2.2.3, #151) -----------------------------------
+
+    def test_collected_evidence_reaches_identification(self) -> None:
+        echo = RawEvidence(EvidenceType.MDNS, "service=_amzn-wplay._tcp; name=Kitchen Echo")    # matches "echo"
+        self.record([ROUTER, LAPTOP], evidence={ROUTER.ip_address: (echo,)})
+        router = self.devices.find_by_mac(ROUTER.mac_address)
+        self.assertEqual((router.device_type_id, router.device_name), (SPEAKER.device_type_id, "Echo Dot"))
+        self.assertEqual((router.confidence_score, router.flagged_status), (55, False))   # OUI 20 + mDNS 35
+        self.assertIn((EvidenceType.MDNS, echo.raw_value, ECHO.signature_id),
+                      [(e.evidence_type, e.raw_value, e.signature_id) for e in self.scans.evidence])
+        laptop = self.devices.find_by_mac(LAPTOP.mac_address)
+        self.assertEqual(laptop.confidence_score, 0)                    # its IP had nothing collected
+
+    def test_collected_evidence_isnt_duplicated_on_a_rescan(self) -> None:
+        echo = RawEvidence(EvidenceType.MDNS, "name=Kitchen Echo")
+        self.record([ROUTER], scan_id=1, evidence={ROUTER.ip_address: (echo,)})
+        self.record([ROUTER], scan_id=2, seen_at=LATER, evidence={ROUTER.ip_address: (echo,)})
+        self.assertEqual(len([e for e in self.scans.evidence if e.evidence_type is EvidenceType.MDNS]), 1)
+
+    def test_the_hostname_is_saved_and_on_the_observation(self) -> None:
+        self.record([ROUTER, LAPTOP], hostnames={LAPTOP.ip_address: "javier-laptop"})
+        self.assertEqual(self.devices.find_by_mac(LAPTOP.mac_address).hostname, "javier-laptop")
+        self.assertIsNone(self.devices.find_by_mac(ROUTER.mac_address).hostname)
+        observation = next(o for o in self.scans.observations.values() if o.ip_address == LAPTOP.ip_address)
+        self.assertEqual(observation.hostname, "javier-laptop")
+
+    def test_a_new_hostname_replaces_the_old_and_none_keeps_it(self) -> None:
+        self.record([LAPTOP], scan_id=1, hostnames={LAPTOP.ip_address: "old-name"})
+        self.record([LAPTOP], scan_id=2, seen_at=LATER, hostnames={LAPTOP.ip_address: "new-name"})
+        self.assertEqual(self.devices.find_by_mac(LAPTOP.mac_address).hostname, "new-name")   # scan-written
+        self.record([LAPTOP], scan_id=3, seen_at=LATER)                                       # found none
+        self.assertEqual(self.devices.find_by_mac(LAPTOP.mac_address).hostname, "new-name")
 
     # ---- progress ----------------------------------------------------------------------
 

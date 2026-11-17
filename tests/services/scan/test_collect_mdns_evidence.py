@@ -134,9 +134,9 @@ class CollectMdnsTests(unittest.TestCase):
     def test_a_browse_that_raises_is_unavailable_with_the_reason(self) -> None:
         cases = [
             (OSError(10048, "Only one usage of each socket address is permitted"),
-             "mDNS unavailable: couldn't listen on UDP port 5353 (Only one usage"),
-            (ImportError("No module named 'zeroconf'"), "mDNS unavailable: the zeroconf library isn't installed"),
-            (RuntimeError("zeroconf broke"), "mDNS unavailable: unexpected error; see the server log"),
+             "couldn't listen on UDP port 5353 (Only one usage"),
+            (ImportError("No module named 'zeroconf'"), "the zeroconf library isn't installed"),
+            (RuntimeError("zeroconf broke"), "unexpected error; see the server log"),
         ]
         for error, reason in cases:
             with self.subTest(error=type(error).__name__):

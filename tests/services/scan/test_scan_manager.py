@@ -16,11 +16,14 @@ from unittest import mock
 from backend.black_boxes.read_arp_cache import ArpEntry, ArpEntryType
 from backend.data_access.reference_data import ReferenceRules
 from backend.records import Vendor
-from backend.records.enums import AlertEventName, ScanOutcome, ScanStatus
+from backend.records.enums import AlertEventName, EvidenceType, ScanOutcome, ScanStatus
+from backend.services.scan.collect_evidence import NO_EVIDENCE, CollectedEvidence, CollectorResult
 from backend.services.scan.discovered_host import DiscoveredHost
+from backend.services.scan.evidence import RawEvidence
 from backend.services.scan.record_scan_results import RecordSummary
 from backend.services.scan.identification_manager import IdentificationRules
-from backend.services.scan.scan_manager import AlertCandidate, ScanManager, ScanResult
+from backend.services.scan.scan_manager import (EVIDENCE_COLLECTORS, AlertCandidate, ScanManager, ScanResult,
+                                                evidence_collectors)
 from backend.services.scan.scan_session import ScanPhase, ScanSessionController
 from backend.services.scan.scan_settings import ScanSettings
 from tests.fakes.fake_arp_cache import FakeArpCache
@@ -47,9 +50,10 @@ class FakeRecorder:
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, scan_id: int, user_id: int, hosts: list[DiscoveredHost], rules: IdentificationRules,
-                 seen_at: datetime, *, on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
+                 seen_at: datetime, *, on_host_done: Callable[[int, int], None] | None = None,
+                 collected: CollectedEvidence = NO_EVIDENCE) -> RecordSummary:
         self.calls.append({"scan_id": scan_id, "user_id": user_id, "hosts": list(hosts),
-                           "rules": rules, "seen_at": seen_at})
+                           "rules": rules, "seen_at": seen_at, "collected": collected})
         if self.crash is not None:
             raise self.crash
         to_save = [host for host in hosts if host.mac_address]
@@ -231,6 +235,99 @@ class BackgroundTests(ManagerTestCase):
         self.assertIn("Jason", refused.reason)
         self.assertTrue(manager.wait(timeout=0))                        # no thread was started
         self.assertEqual(self.network.probed, [])
+
+
+#2.2.3 the evidence phase (#151), with fake collectors
+
+ROUTER_SSDP = RawEvidence(EvidenceType.SSDP, "manufacturer=Vantiva; model=CGM4331")
+LAPTOP_MDNS = RawEvidence(EvidenceType.MDNS, "service=_workstation._tcp; name=javier-laptop")
+
+
+def fake_collector(method: str, evidence=None, hostnames=None, available=True, reason=None):
+    asked = []
+
+    def collector(hosts, wait_s):
+        asked.append((sorted(hosts), wait_s))
+        return CollectorResult(method, evidence or {}, hostnames or {}, available, reason)
+    collector.asked = asked
+    return collector
+
+
+class EvidencePhaseTests(ManagerTestCase):
+    def collectors(self, **overrides):
+        found = {"mdns": fake_collector("mdns", {LAPTOP_IP: [LAPTOP_MDNS]}, {LAPTOP_IP: "javier-laptop"}),
+                 "ssdp": fake_collector("ssdp", {ROUTER_IP: [ROUTER_SSDP]})}
+        found.update(overrides)
+        return found
+
+    def test_evidence_and_hostnames_reach_the_recorder(self) -> None:
+        collectors = self.collectors()
+        result = self.run_scan(collectors=collectors, settings=ScanSettings(evidence_wait_s=2))
+        self.assertEqual(result.outcome, ScanOutcome.SUCCESS)
+        [call] = self.recorder.calls
+        self.assertEqual(call["collected"].evidence, {ROUTER_IP: (ROUTER_SSDP,), LAPTOP_IP: (LAPTOP_MDNS,)})
+        self.assertEqual(call["collected"].hostnames, {LAPTOP_IP: "javier-laptop"})
+        self.assertEqual(collectors["mdns"].asked, [([ROUTER_IP, LAPTOP_IP], 2.0)])     # the hosts found, wait_s
+
+    def test_the_phase_is_reported_between_discovery_and_saving(self) -> None:
+        with mock.patch.object(self.sessions, "report_progress", wraps=self.sessions.report_progress) as seen:
+            self.run_scan(collectors=self.collectors())
+        calls = [c.args for c in seen.call_args_list]
+        phases = [phase for phase, _, _ in calls]
+        self.assertEqual(sorted(set(phases), key=phases.index),
+                         [ScanPhase.DISCOVERING_HOSTS, ScanPhase.COLLECTING_EVIDENCE,
+                          ScanPhase.SAVING_RESULTS, ScanPhase.CLOSING])
+        evidence = [(done, total) for phase, done, total in calls if phase is ScanPhase.COLLECTING_EVIDENCE]
+        self.assertEqual(evidence, [(0, 2), (1, 2), (2, 2)])                # one step per method
+
+    def test_an_unavailable_method_is_an_error_line_and_partial(self) -> None:
+        collectors = self.collectors(mdns=fake_collector("mdns", available=False,
+                                                         reason="couldn't listen on UDP port 5353 (in use)"))
+        result = self.run_scan(collectors=collectors)
+        self.assertEqual(result.outcome, ScanOutcome.PARTIAL)
+        self.assertEqual(result.errors, ("mdns unavailable: couldn't listen on UDP port 5353 (in use)",))
+        self.assertEqual(self.recorder.calls[0]["collected"].evidence, {ROUTER_IP: (ROUTER_SSDP,)})   # ssdp kept
+
+    def test_a_crashing_collector_is_unavailable_not_a_failed_scan(self) -> None:
+        def crashing(hosts, wait_s):
+            raise OSError(10048, "Only one usage of each socket address")
+        with self.assertLogs("backend.services.scan.collect_evidence", "WARNING"):
+            result = self.run_scan(collectors=self.collectors(mdns=crashing))
+        self.assertEqual(result.outcome, ScanOutcome.PARTIAL)
+        self.assertEqual(result.errors, ("mdns unavailable: OSError",))
+        self.assertEqual(result.summary.created, 2)                       # the scan still saved everything
+
+    def test_all_methods_off_means_no_phase_no_error_and_success(self) -> None:
+        collectors = self.collectors()
+        with mock.patch.object(self.sessions, "report_progress", wraps=self.sessions.report_progress) as seen:
+            result = self.run_scan(collectors=collectors, settings=ScanSettings(evidence_methods=()))
+        self.assertEqual((result.outcome, result.errors), (ScanOutcome.SUCCESS, ()))
+        self.assertNotIn(ScanPhase.COLLECTING_EVIDENCE, [c.args[0] for c in seen.call_args_list])
+        self.assertEqual(collectors["mdns"].asked, [])
+        self.assertIs(self.recorder.calls[0]["collected"], NO_EVIDENCE)
+
+    def test_only_the_methods_turned_on_run(self) -> None:
+        collectors = self.collectors()
+        self.run_scan(collectors=collectors, settings=ScanSettings(evidence_methods=("ssdp",)))
+        self.assertEqual(collectors["mdns"].asked, [])
+        self.assertEqual(len(collectors["ssdp"].asked), 1)
+
+    def test_a_method_turned_on_without_a_collector_is_skipped_not_unavailable(self) -> None:
+        result = self.run_scan(collectors={"ssdp": fake_collector("ssdp")})        # netbios etc. not built yet
+        self.assertEqual((result.outcome, result.errors), (ScanOutcome.SUCCESS, ()))
+
+    def test_no_hosts_found_asks_nothing(self) -> None:
+        collectors = self.collectors()
+        self.network = FakeNetwork(responding=set())
+        self.arp = FakeArpCache([])
+        self.run_scan(collectors=collectors, probe=self.network.probe, read_arp=self.arp.read_arp_cache)
+        self.assertEqual(collectors["mdns"].asked, [])
+
+    def test_the_real_collectors_follow_the_settings(self) -> None:
+        self.assertEqual(set(EVIDENCE_COLLECTORS), {"mdns", "ssdp"})
+        self.assertEqual(list(evidence_collectors(ScanSettings())), ["mdns", "ssdp"])
+        self.assertEqual(list(evidence_collectors(ScanSettings(evidence_methods=("ssdp", "netbios")))), ["ssdp"])
+        self.assertEqual(evidence_collectors(ScanSettings(evidence_methods=())), {})
 
 
 if __name__ == "__main__":
