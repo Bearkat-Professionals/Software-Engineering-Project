@@ -1,9 +1,11 @@
+// One shared message for success, warning, and error text across every page.
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
 const MessagesContext = createContext();
 
 export function MessageProvider({ children }) {
 
+    // One message at a time. A new one replaces the previous one.
     const [message, setMessage] = useState(null);
     const showMessage = useCallback((kind, text) => setMessage({ kind, text }), []);
     const clearMessage = useCallback(() => setMessage(null), []);
@@ -23,6 +25,7 @@ export function MessageProvider({ children }) {
 
 }
 
+// Pages call this to show or clear the banner. It only works under MessageProvider.
 export function useMessages() {
 
     const value = useContext(MessagesContext);
@@ -37,6 +40,7 @@ export function useMessages() {
 
 }
 
+// Errors interrupt a screen reader. Other messages are announced politely.
 export function MessageArea() {
 
     const { message } = useMessages();

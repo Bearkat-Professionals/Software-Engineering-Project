@@ -1,3 +1,5 @@
+// Column rules for the tester: choices, yes/no fields, and foreign keys.
+// Allowed values for columns that are a fixed set of choices.
 export const ENUMS = {
 
     vendor: { status: ["active", "retired"]},
@@ -13,6 +15,7 @@ export const ENUMS = {
 
 };
 
+// Columns stored as true or false. The form uses a checkbox for these.
 export const BOOLEANS = {
 
     device: ["is_randomized_mac", "trusted_status", "flagged_status"],
@@ -20,6 +23,7 @@ export const BOOLEANS = {
 
 };
 
+// A foreign key points at another table. label is the column shown in the picker.
 export const FOREIGN_KEYS = {
 
     oui_prefix: { vendor_id: { table: "vendor", label: "vendor_name"} },
@@ -53,6 +57,7 @@ export const FOREIGN_KEYS = {
 
 };
 
+// These foreign keys may be left empty. The picker offers "default / none".
 export const OPTIONAL_FK = {
 
     device: ["device_type_id", "vendor_id"],

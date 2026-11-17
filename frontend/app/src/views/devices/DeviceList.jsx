@@ -1,3 +1,4 @@
+// Paged device list. The page and page size stay in the URL, and the list reloads when a scan finishes.
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../../components/api";
@@ -7,6 +8,7 @@ import { useScanStatus } from "../scans/useScanStatus";
 
 const PAGE_SIZES = [25, 50, 100];
 
+// A missing or invalid page in the URL is treated as page 1.
 function readPage(params) {
 
     const parsed = Number(params.get("page"));
@@ -14,6 +16,7 @@ function readPage(params) {
 
 }
 
+// Only the three offered sizes are accepted. Anything else falls back to 50.
 function readPerPage(params) {
 
     const parsed = Number(params.get("per_page"));
@@ -31,7 +34,9 @@ export default function DeviceList() {
     const [reloads, setReloads] = useState(0);
     const requestKey = `${page}-${perPage}`;
     const [loadedKey, setLoadedKey] = useState("");
+    // Loading is derived from the request, so the effect does not set it directly.
     const loading = loadedKey !== requestKey;
+    // Watch scans quietly. This page should not repeat the scan screen's outcome banner.
     const { status } = useScanStatus({ interval: 5000, announceOutcome: false, keepWatching: true});
     const wasRunning = useRef(false);
 
@@ -45,6 +50,7 @@ export default function DeviceList() {
 
             const last = Math.max(1, Math.ceil(data.total / perPage));
 
+            // A page past the end is rewritten to the last real page.
             if (data.total > 0 && page > last) {
 
                 setParams({ page: String(last), per_page: String(perPage) });
@@ -78,6 +84,7 @@ export default function DeviceList() {
 
         if (status == null) return;
 
+        // A scan that was running and has now stopped means the rows may have changed.
         if (wasRunning.current && status.running === false) {
 
             setReloads((n) => n + 1);
@@ -89,6 +96,7 @@ export default function DeviceList() {
 
     }, [status, showMessage]);
 
+    // Page and page size live in the URL so reload and Back keep them.
     function goTo(nextPage, nextPerPage = perPage) {
 
         setParams({ page: String(nextPage), per_page: String(nextPerPage) });
@@ -150,6 +158,7 @@ export default function DeviceList() {
 
                 <tbody>
 
+                  {/* A flagged device is highlighted. Its name is text, never HTML. */}
                   {rows.map((device) => (
 
                     <tr key={device.device_id} className={device.flagged ? "suspicious" : undefined}>

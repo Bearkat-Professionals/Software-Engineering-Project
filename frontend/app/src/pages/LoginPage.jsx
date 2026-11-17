@@ -1,3 +1,4 @@
+// Sign-in form. A failed attempt keeps the username and shows the server's message.
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
@@ -16,6 +17,7 @@ export default function LoginPage() {
 
     useEffect(() => {
 
+        // The API adds ended=1 when a session times out on another page.
         if (ended) showMessage("error", "Your session ended. Sign in again to continue.");
     
     }, [ended, showMessage]);
@@ -23,12 +25,14 @@ export default function LoginPage() {
     async function onSubmit(event) {
 
         event.preventDefault();
+        // Drop the previous error so a successful sign-in does not keep it on screen.
         clearMessage();
         setWaiting(true);
 
         try {
 
             await login(username, password);
+            // Follow next only when it is a path on this site, not an outside address.
             const next = params.get("next");
             const dest = next && next.startsWith("/") && !next.startsWith("//") ? next: "/scans";
 

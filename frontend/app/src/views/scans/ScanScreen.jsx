@@ -1,3 +1,4 @@
+// Starts a scan and shows its progress. Viewers can see the page but cannot start a scan.
 import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../../components/api";
@@ -13,8 +14,10 @@ export default function ScanScreen() {
     const { status, follow } = useScanStatus();
     const [scopeDraft, setScopeDraft] = useState(null);
     const running = status?.running === true;
+    // Keep the typed scope. Otherwise show the scope of the last finished scan.
     const scope = scopeDraft ?? status?.last_scan?.scope ?? "";
 
+    // Ask the server to start a scan, then watch its status.
     async function onStart(event) {
 
         event.preventDefault();
@@ -34,6 +37,7 @@ export default function ScanScreen() {
 
         } catch (err) {
 
+            // 409 means a scan is already running. Show it instead of treating that as a failure.
             if (err.status === 409) {
 
                 showMessage("warning", err.message);
@@ -71,6 +75,7 @@ export default function ScanScreen() {
 
                 </label>
 
+                {/* Viewers can read the page. Only an editor or admin can start a scan. */}
                 {can("START_SCAN") && (
 
                     <button type="submit" disabled={running}>Start Scan</button>
@@ -79,6 +84,7 @@ export default function ScanScreen() {
 
             </form>
 
+            {/* Live progress while the scan is still running. */}
             {running && (
 
                 <section>

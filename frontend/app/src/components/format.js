@@ -1,3 +1,5 @@
+// Display text for a device name, confidence score, and last-seen time.
+// A device with no stored name is shown as Unknown.
 export function displayName(device) {
 
     if (device.name == null || String(device.name).trim() === "") return "Unknown";
@@ -5,6 +7,7 @@ export function displayName(device) {
 
 }
 
+// The score is a whole number. An empty score stays blank.
 export function formatConfidence(score) {
 
     if (score == null) return "";
@@ -12,6 +15,7 @@ export function formatConfidence(score) {
 
 }
 
+// The server sends a local time with no time zone. Show it in the browser's locale.
 export function formatLastSeen(iso) {
 
     if (!iso) return "";
