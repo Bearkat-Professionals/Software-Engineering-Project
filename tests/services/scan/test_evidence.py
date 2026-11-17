@@ -6,8 +6,8 @@ import unittest
 
 from backend.records import IdentificationEvidence
 from backend.records.enums import EvidenceType
-from backend.services.scan.evidence import (EVIDENCE_WEIGHTS, IDENTIFIED_MIN_SCORE, MAX_SCORE, EvidenceItem,
-                                            weight_for, count_points)
+from backend.services.scan.evidence import (EVIDENCE_WEIGHTS, FIELD_MAX, IDENTIFIED_MIN_SCORE, MAX_SCORE,
+                                            EvidenceItem, clean_field, count_points, weight_for)
 
 
 class EvidenceWeightTests(unittest.TestCase):
@@ -76,6 +76,25 @@ class CountPointsTests(unittest.TestCase):
 
     def test_works_on_any_iterable(self) -> None:
         self.assertEqual(count_points(self.item(self.MDNS, name) for name in ("a", "b")), weight_for(self.MDNS))
+
+
+class CleanFieldTests(unittest.TestCase):
+    """Text from devices (#147): safe to store and show, whatever was sent."""
+
+    def test_control_characters_and_whitespace_become_one_space(self) -> None:
+        self.assertEqual(clean_field("  Living\r\nRoom\x00\x07 TV\x9b "), "Living Room TV")
+
+    def test_nothing_left_is_none(self) -> None:
+        for value in ["", "   ", "\t\r\n", "\x00\x1f", None, 42]:
+            with self.subTest(value=value):
+                self.assertIsNone(clean_field(value))
+
+    def test_cut_to_the_limit(self) -> None:
+        self.assertEqual(len(clean_field("x" * 1000)), FIELD_MAX)
+        self.assertEqual(clean_field("abc def", limit=4), "abc")       # no space left dangling
+
+    def test_ordinary_text_is_kept(self) -> None:
+        self.assertEqual(clean_field("Café Bar; Model=X"), "Café Bar; Model=X")
 
 
 if __name__ == "__main__":

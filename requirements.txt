@@ -2,4 +2,5 @@ mysql-connector-python>=8.0
 python-dotenv>=1.0
 flask>=3.1
 argon2-cffi==25.1.0
-zeroconf== 0.154.0
+defusedxml==0.7.1
+zeroconf==0.154.0
