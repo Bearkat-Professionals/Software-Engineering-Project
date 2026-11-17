@@ -16,6 +16,7 @@ Matches the real store where SH-4 depends on it:
 from __future__ import annotations
 
 from copy import deepcopy
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Iterable
@@ -45,7 +46,7 @@ class FakeDeviceStore:
             self._insert(deepcopy(device))
 
     def find_by_mac(self, mac_address: str, is_randomized_mac: bool = False,
-                    unit: Any = None) -> Device | None:
+                    unit: Any = None, *, lock: bool = False) -> Device | None:
         self.units_seen.append(unit)
         found = self._find(mac_address, is_randomized_mac)
         return deepcopy(found) if found is not None else None
@@ -71,6 +72,11 @@ class FakeDeviceStore:
 
         self.audit.append(AuditEntry(changed_by, action, device.pk, unit))
         return deepcopy(self.rows[device.pk])   # "read back", like the real store
+
+    @contextmanager
+    def unit_of_work(self):
+        """Give SH-4 a non-None fake transaction when a test omits one."""
+        yield self
 
     # ---- helpers -----------------------------------------------------------------
 

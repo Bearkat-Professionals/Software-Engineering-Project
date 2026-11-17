@@ -78,6 +78,23 @@ class AuditTrail:
             row = cursor.fetchone()
         return AuditLog.from_row(row) if row else None
 
+    def since(self, record_type: str, record_id: int, after: datetime,
+              unit: Any = None) -> list[AuditLog]:
+        """Entries for one record newer than ``after``, oldest first.
+
+        The version guard needs every intervening change, not only the latest
+        one: a later scan-only update must not hide an earlier user edit.
+        ``idx_audit_record`` covers the record keys and timestamp used here.
+        """
+        columns = ", ".join(f"`{c}`" for c in AuditLog.column_names())
+        sql = (f"SELECT {columns} FROM `audit_log` "
+               "WHERE `record_type` = %s AND `record_id` = %s AND `changed_at` > %s "
+               "ORDER BY `changed_at`, `audit_log_id`")
+        with self._cursor(unit) as cursor:
+            cursor.execute(sql, (record_type, record_id, after))
+            rows = cursor.fetchall()
+        return [AuditLog.from_row(row) for row in rows]
+
     # ------ helpers -----------------------------------------------------------
 
     @contextmanager

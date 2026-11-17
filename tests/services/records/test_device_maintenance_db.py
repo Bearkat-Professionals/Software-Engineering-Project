@@ -5,7 +5,10 @@ on the TEST database (same one-time setup as test_repository.py). Skipped withou
 """
 from __future__ import annotations
 
+import threading
+import time
 import unittest
+from datetime import datetime
 
 from backend.data_access.account_settings import UserStore
 from backend.data_access.audit_trail.audit_trail import AuditTrail
@@ -13,13 +16,14 @@ from backend.data_access.network_data import DeviceStore
 from backend.data_access.reference_data import ReferenceStore
 from backend.data_access.repository import Repository
 from backend.records import Device, DeviceType, User, Vendor
-from backend.records.enums import AuditAction
+from backend.records.enums import AuditAction, IdentificationLevel
 from backend.services.records.device_maintenance import (DeviceEdit, DeviceMaintenance,
                                                          DeviceMaintenanceStatus as MaintenanceStatus)
-from backend.shared_modules.save_device_record import DeviceRecordSaver
+from backend.shared_modules.save_device_record import DeviceChanges, DeviceRecordSaver, SaveStatus
 from tests.data_access.test_repository import CLEANUP, connect_to_test_database
 
 TEST_MAC = "02:DE:AD:00:00:01"      # locally administered: never a real vendor's device
+TEST_TYPE = "VG test scan type"
 
 
 class DeviceMaintenanceDatabaseTests(unittest.TestCase):
@@ -33,17 +37,19 @@ class DeviceMaintenanceDatabaseTests(unittest.TestCase):
         users = Repository(self.engine, User)
         self.sam = users.create(User(username="sam-editor", password_hash="not-a-real-hash")).pk
         self.ada = users.create(User(username="ada-editor", password_hash="not-a-real-hash")).pk
-        devices = DeviceStore(self.engine)
+        self.devices = DeviceStore(self.engine)
+        self.vendors = ReferenceStore(self.engine, Vendor)
+        self.types = ReferenceStore(self.engine, DeviceType)
         names = UserStore(self.engine)
-        saver = DeviceRecordSaver(devices, ReferenceStore(self.engine, Vendor), ReferenceStore(self.engine, DeviceType),
-                                  names)
-        self.service = DeviceMaintenance(self.engine, saver, devices, names)
+        self.saver = DeviceRecordSaver(self.devices, self.vendors, self.types, names)
+        self.service = DeviceMaintenance(self.engine, self.saver, self.devices, names)
         self.audit = AuditTrail(self.engine)
 
     def clear(self) -> None:
         with self.engine.unit_of_work() as cursor:
             for sql in CLEANUP:
                 cursor.execute(sql)
+            cursor.execute("DELETE FROM device_type WHERE category_name = %s", (TEST_TYPE,))
 
     def assertDone(self, result) -> None:
         self.assertEqual(result.status, MaintenanceStatus.DONE, result.reasons)
@@ -85,6 +91,67 @@ class DeviceMaintenanceDatabaseTests(unittest.TestCase):
         self.assertEqual(late.changed_by, self.sam)
         self.assertIn("changed by sam-editor at", late.reasons[0])
         self.assertEqual(DeviceStore(self.engine).find(device_id).model, "Sam's")     # Ada's change not stored
+
+    def test_scan_only_change_does_not_conflict_with_an_open_edit(self) -> None:
+        added = self.service.add(TEST_MAC, DeviceEdit(), self.sam, ip="192.168.1.5")
+        form = self.service.load(added.device.pk)
+
+        scanned = self.saver.save(
+            DeviceChanges(mac_address=TEST_MAC, current_ip="192.168.1.9", seen_at=datetime.now()),
+            self.ada, IdentificationLevel.UNIDENTIFIED)
+        self.assertEqual(scanned.status, SaveStatus.UPDATED)
+
+        edited = self.service.edit(added.device.pk, DeviceEdit(model="TB-1"), self.sam, form.loaded_at)
+        self.assertDone(edited)
+        stored = self.devices.find(added.device.pk)
+        self.assertEqual((stored.current_ip, stored.model), ("192.168.1.9", "TB-1"))
+
+    def test_scan_that_fills_the_unknown_type_is_a_conflict(self) -> None:
+        device_type = self.types.store(DeviceType(category_name=TEST_TYPE), self.sam)
+        added = self.service.add(TEST_MAC, DeviceEdit(), self.sam)
+        form = self.service.load(added.device.pk)
+
+        scanned = self.saver.save(DeviceChanges(mac_address=TEST_MAC, device_type_id=device_type.pk),
+                                  self.ada, IdentificationLevel.PARTIAL)
+        self.assertEqual(scanned.status, SaveStatus.UPDATED)
+
+        edited = self.service.edit(added.device.pk, DeviceEdit(model="TB-1"), self.sam, form.loaded_at)
+        self.assertEqual(edited.status, MaintenanceStatus.CONFLICT)
+        self.assertEqual(edited.changed_by, self.ada)
+        self.assertIn("changed by ada-editor at", edited.reasons[0])
+
+    def test_scan_and_user_save_keep_both_changes(self) -> None:
+        added = self.service.add(TEST_MAC, DeviceEdit(), self.sam, ip="192.168.1.5")
+        form = self.service.load(added.device.pk)
+        scan_saved = threading.Event()
+        failures: list[BaseException] = []
+
+        def slow_scan() -> None:
+            try:
+                with self.engine.unit_of_work() as unit:
+                    outcome = self.saver.save(
+                        DeviceChanges(mac_address=TEST_MAC, current_ip="192.168.1.9",
+                                      seen_at=datetime.now()),
+                        self.ada, IdentificationLevel.UNIDENTIFIED, unit)
+                    if outcome.status is not SaveStatus.UPDATED:
+                        raise AssertionError(outcome)
+                    scan_saved.set()
+                    time.sleep(0.3)                    # keep the row lock until the edit is waiting
+            except BaseException as exc:               # surface thread failures in the test
+                failures.append(exc)
+                scan_saved.set()
+
+        worker = threading.Thread(target=slow_scan)
+        worker.start()
+        scan_saved.wait()
+        edited = self.service.edit(added.device.pk, DeviceEdit(model="TB-1"), self.sam, form.loaded_at)
+        worker.join()
+
+        if failures:
+            raise failures[0]
+        self.assertDone(edited)
+        stored = self.devices.find(added.device.pk)
+        self.assertEqual((stored.current_ip, stored.model), ("192.168.1.9", "TB-1"))
 
     # ---- what only the real database can show -----------------------------------------
 

@@ -119,9 +119,9 @@ class UserFinder(Protocol):
 class DeviceRecords(Protocol):
     """The parts of 3.1 DeviceStore this uses."""
 
-    def find(self, device_id: int, unit: Any = None) -> Device | None: ...
+    def find(self, device_id: int, unit: Any = None, *, lock: bool = False) -> Device | None: ...
     def find_by_mac(self, mac_address: str, is_randomized_mac: bool = False,
-                    unit: Any = None) -> Device | None: ...
+                    unit: Any = None, *, lock: bool = False) -> Device | None: ...
     def delete(self, device_id: int, changed_by: int, unit: Any = None,
                *, loaded_at: datetime | None = None) -> dict[str, int]: ...
     def find_listing(self, device_id: int, unit: Any = None) -> DeviceListing | None: ...
@@ -173,7 +173,7 @@ class DeviceMaintenance:
         if edit.empty:
             return _rejected(["Nothing to change. Send a name, type, vendor or model."])
         with self._engine.unit_of_work() as unit:
-            device, refused = self._find(device_id, unit)
+            device, refused = self._find(device_id, unit, lock=True)
             if refused is not None:
                 return refused
             changes = DeviceChanges(mac_address=device.mac_address,
@@ -190,7 +190,7 @@ class DeviceMaintenance:
             return _rejected([f"'{mark}' is not a mark. Use one of: {', '.join(MARKS)}."])
         trusted, flagged = MARKS[mark]
         with self._engine.unit_of_work() as unit:
-            device, refused = self._find(device_id, unit)
+            device, refused = self._find(device_id, unit, lock=True)
             if refused is not None:
                 return refused
             changes = DeviceChanges(mac_address=device.mac_address,
@@ -242,16 +242,17 @@ class DeviceMaintenance:
             return None
         return self._devices.find_by_mac(checked.value, is_randomized_mac(checked.value), unit)
 
-    def _find(self, device_id: int, unit: Any) -> tuple[Device | None, DeviceMaintenanceResult | None]:
+    def _find(self, device_id: int, unit: Any, *,
+              lock: bool = False) -> tuple[Device | None, DeviceMaintenanceResult | None]:
         """The device by id, or the result to return instead.
 
         SH-4 saves by MAC. Several devices can share one randomized MAC (DI-02), and
         SH-4 would then change the newest one, which may not be this one. Refuse that
         rather than change the wrong device."""
-        device = self._devices.find(device_id, unit)
+        device = self._devices.find(device_id, unit, lock=lock)
         if device is None:
             return None, _not_found(device_id)
-        by_mac = self._devices.find_by_mac(device.mac_address, device.is_randomized_mac, unit)
+        by_mac = self._devices.find_by_mac(device.mac_address, device.is_randomized_mac, unit, lock=lock)
         if by_mac is None or by_mac.pk != device.pk:
             return None, _rejected([f"Another device shares this randomized MAC ({device.mac_address}), "
                                     "so this one can't be changed by hand yet."])

@@ -8,6 +8,8 @@ ones), so this test removes only the rows it made: names starting "RM test".
 """
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 
 from backend.data_access.audit_trail.audit_trail import AuditTrail
@@ -132,6 +134,37 @@ class ReferenceMaintenanceDatabaseTests(unittest.TestCase):
         self.assertEqual(late.status, MaintenanceStatus.CONFLICT)     # the second one is told
         self.assertEqual(late.changed_by, self.user)
         self.assertEqual(ReferenceStore(self.engine, Vendor).find(added.record.pk).status, RecordStatus.ACTIVE)
+
+    def test_an_edit_cannot_undo_a_concurrent_retire(self) -> None:
+        added = self.service.add(ReferenceKind.VENDOR, {"vendor_name": "RM test race"}, self.user)
+        opened = self.service.load(ReferenceKind.VENDOR, added.record.pk)
+        store = ReferenceStore(self.engine, Vendor)
+        retire_saved = threading.Event()
+        failures: list[BaseException] = []
+
+        def slow_retire() -> None:
+            try:
+                with self.engine.unit_of_work() as unit:
+                    store.retire(added.record.pk, self.user, unit)
+                    retire_saved.set()
+                    time.sleep(0.3)                    # the edit must wait for this row lock
+            except BaseException as exc:
+                failures.append(exc)
+                retire_saved.set()
+
+        worker = threading.Thread(target=slow_retire)
+        worker.start()
+        retire_saved.wait()
+        edited = self.service.edit(ReferenceKind.VENDOR, added.record.pk,
+                                   {"vendor_name": "RM test race renamed"}, self.user,
+                                   opened.loaded_at)
+        worker.join()
+
+        if failures:
+            raise failures[0]
+        self.assertEqual(edited.status, MaintenanceStatus.CONFLICT)
+        stored = store.find(added.record.pk)
+        self.assertEqual((stored.vendor_name, stored.status), ("RM test race", RecordStatus.RETIRED))
 
 if __name__ == "__main__":
     unittest.main()

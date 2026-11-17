@@ -96,7 +96,9 @@ class DeviceFinderStorer(Protocol):
     """The two parts of 3.1 Network Data that SH-4 uses. DeviceStore is one; tests pass a fake."""
 
     def find_by_mac(self, mac_address: str, is_randomized_mac: bool = False,
-                    unit: Any = None) -> Device | None: ...
+                    unit: Any = None, *, lock: bool = False) -> Device | None: ...
+
+    def unit_of_work(self) -> Any: ...
 
     def store(self, device: Device, changed_by: int, unit: Any = None,
               *, loaded_at: datetime | None = None) -> Device: ...
@@ -128,12 +130,16 @@ class DeviceRecordSaver:
     def save(self, changes: DeviceChanges, acting_user_id: int, level: IdentificationLevel,
              unit: Any = None, loaded_at: datetime | None = None) -> SaveOutcome:
         """Create or update the device with this MAC. Nothing is stored when anything is invalid."""
+        if unit is None:
+            with self._devices.unit_of_work() as own_unit:
+                return self.save(changes, acting_user_id, level, own_unit, loaded_at)
+
         reasons, changes = _check(changes)
         if reasons:
             return _rejected(reasons)
 
         randomized = is_randomized_mac(changes.mac_address)     # from the MAC, never the caller (DI-02)
-        stored = self._devices.find_by_mac(changes.mac_address, randomized, unit)
+        stored = self._devices.find_by_mac(changes.mac_address, randomized, unit, lock=True)
         is_new = stored is None
         device = stored if stored is not None else Device(mac_address=changes.mac_address,
                                                           is_randomized_mac=randomized)

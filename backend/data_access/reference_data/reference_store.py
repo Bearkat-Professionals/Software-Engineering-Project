@@ -108,15 +108,22 @@ class ReferenceStore(Generic[T]):
         self._records = Repository(engine, entity_type)
         self._audit = AuditTrail(engine)
 
-    def find(self, pk: int, unit: Any = None) -> T | None:
-        return self._records.get(pk, unit)
+    def find(self, pk: int, unit: Any = None, *, lock: bool = False) -> T | None:
+        """Find one reference record, optionally locking it through the caller's unit."""
+        if lock and unit is None:
+            raise ValueError("a unit of work is required to lock a reference record")
+        sql = f"SELECT {self._columns()} FROM `{self._type.TABLE}` WHERE `{self._type.PK}` = %s"
+        if lock:
+            sql += " FOR UPDATE"
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(sql, (pk,))
+            row = cursor.fetchone()
+        return self._type.from_row(row) if row else None
 
     def find_for_update(self, pk: int, unit: Any) -> T | None:
         """Read the record and lock its row until the caller's unit of work ends, so nobody
         else can change it in between (a read-then-write that can't undo another change)."""
-        with _unit_of_work(self._engine, unit) as cursor:
-            self._lock(pk, cursor)
-            return self._records.get(pk, cursor)
+        return self.find(pk, unit, lock=True)
 
     def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE,
                   *, text: str | None = None,

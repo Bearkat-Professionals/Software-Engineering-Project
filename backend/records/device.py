@@ -16,6 +16,16 @@ class Device(Entity):
     # DEVICE.device_type_id and DEVICE.vendor_id are NOT NULL and defaults to the "unknown" type (DI-03),
     # so a device with no type yet is saved without that column.
     OMIT_IF_NONE: ClassVar[tuple] = ("device_type_id", "vendor_id")
+    # Fields a person can change from the device edit screen. Audit entries that
+    # only change scan-maintained fields must not make an open form conflict.
+    USER_FIELDS: ClassVar[tuple[str, ...]] = (
+        "device_name",
+        "device_type_id",
+        "vendor_id",
+        "model",
+        "trusted_status",
+        "flag_set_by_user",
+    )
 
     device_id: int | None = None
     mac_address: str                       # identity (DI-01), not the IP
