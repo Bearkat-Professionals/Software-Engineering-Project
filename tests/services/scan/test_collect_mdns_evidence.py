@@ -95,7 +95,7 @@ class MdnsEvidenceTests(unittest.TestCase):
 
     def test_hostname_from_server(self) -> None:
         cases = {"Living-Room.local.": "Living-Room", "printer.LOCAL": "printer", "plain-name": "plain-name",
-                  None: None, ".local.": None, "bad\x00name.local.": "bad name", "\x00\x01.local.": None}
+                 None: None, ".local.": None, "bad\x00name.local.": "bad name", "\x00\x01.local.": None}
         for server, hostname in cases.items():
             with self.subTest(server=server):
                 result = mdns_evidence([service("_ipp._tcp", "P", server=server)], HOSTS)
@@ -122,13 +122,14 @@ class MdnsEvidenceTests(unittest.TestCase):
 
 class CollectMdnsTests(unittest.TestCase):
     def test_returns_the_evidence(self) -> None:
-        result = collect_mdns(HOSTS, 3, browse=lambda wait_s: [service("_ipp._tcp", "P")])
+        result = collect_mdns(HOSTS, 3, browse=lambda wait_s, interface_ip: [service("_ipp._tcp", "P")])
         self.assertEqual(raw(result.evidence[TV]), ["service=_ipp._tcp; name=P"])
 
-    def test_passes_wait_s_on(self) -> None:
+    def test_passes_wait_s_and_the_hosts_adapter_on(self) -> None:
         asked = []
-        collect_mdns(HOSTS, 2.5, browse=lambda wait_s: asked.append(wait_s) or [])
-        self.assertEqual(asked, [2.5])
+        collect_mdns(HOSTS, 2.5, browse=lambda wait_s, interface_ip: asked.append((wait_s, interface_ip)) or [],
+                     local_address=lambda hosts: "192.168.1.212")
+        self.assertEqual(asked, [(2.5, "192.168.1.212")])
 
     def test_a_browse_that_raises_is_unavailable_with_the_reason(self) -> None:
         cases = [
@@ -139,7 +140,7 @@ class CollectMdnsTests(unittest.TestCase):
         ]
         for error, reason in cases:
             with self.subTest(error=type(error).__name__):
-                def browse(wait_s: float) -> list[MdnsService]:
+                def browse(wait_s: float, interface_ip: str | None) -> list[MdnsService]:
                     raise error
                 with self.assertLogs(LOG, "WARNING") as logs:
                     result = collect_mdns(HOSTS, 3, browse=browse)
@@ -155,7 +156,6 @@ class CollectMdnsTests(unittest.TestCase):
 
 
 #browse_mdns, against a fake zeroconf
-
 class FakeClock:
     def __init__(self) -> None:
         self.now = 1000.0
@@ -167,7 +167,6 @@ class FakeClock:
         assert seconds >= 0, seconds
         self.now += seconds
 
-
 class FakeZeroconfModule:
     """Just enough of zeroconf: find() returns types, the browser announces instances,
     get_service_info() answers from a table and costs `info_cost` seconds of fake time."""
@@ -176,6 +175,7 @@ class FakeZeroconfModule:
                  fail_on_info: bool = False) -> None:
         self.calls: list[tuple] = []
         self.closed = self.cancelled = False
+        self.created_with: list[dict] = []
         outer = self
 
         class ServiceStateChange(enum.Enum):
@@ -183,6 +183,9 @@ class FakeZeroconfModule:
             Removed = 2
 
         class Zeroconf:
+            def __init__(self, **kwargs):
+                outer.created_with.append(kwargs)
+
             def get_service_info(self, type_, name, timeout):
                 outer.calls.append(("info", type_, name, timeout))
                 if fail_on_info:
@@ -214,7 +217,6 @@ class FakeZeroconfModule:
         self.module = types.SimpleNamespace(Zeroconf=Zeroconf, ZeroconfServiceTypes=ZeroconfServiceTypes,
                                             ServiceBrowser=ServiceBrowser, ServiceStateChange=ServiceStateChange)
 
-
 class FakeInfo:
     def __init__(self, server: str, addresses: list[str], properties: dict) -> None:
         self.server = server
@@ -223,7 +225,6 @@ class FakeInfo:
 
     def parsed_addresses(self) -> list[str]:
         return self._addresses
-
 
 class BrowseMdnsTests(unittest.TestCase):
     def browse(self, wait_s: float = 3.0, **kwargs) -> tuple[list[MdnsService], FakeZeroconfModule, float]:
@@ -293,10 +294,18 @@ class BrowseMdnsTests(unittest.TestCase):
             browse_mdns(3.0, clock=clock, sleep=clock.sleep)
         self.assertTrue(fake.closed and fake.cancelled)
 
+    def test_listens_only_on_the_given_adapter(self) -> None:
+        for interface_ip, expected in [("192.168.1.212", {"interfaces": ["192.168.1.212"]}), (None, {})]:
+            with self.subTest(interface_ip=interface_ip):
+                clock = FakeClock()
+                fake = FakeZeroconfModule(clock, [], [], {})
+                with mock.patch.dict(sys.modules, {"zeroconf": fake.module}):
+                    browse_mdns(1.0, interface_ip, clock=clock, sleep=clock.sleep)
+                self.assertEqual(fake.created_with, [expected])
+
     def test_without_zeroconf_installed_it_raises_import_error(self) -> None:
         with mock.patch.dict(sys.modules, {"zeroconf": None}), self.assertRaises(ImportError):
             browse_mdns(1.0)
-
 
 if __name__ == "__main__":
     unittest.main()

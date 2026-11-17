@@ -9,7 +9,9 @@ becomes one piece of evidence, and the device's .local name becomes its hostname
         # [RawEvidence(MDNS, "service=_googlecast._tcp; name=Living Room TV; model=Chromecast Ultra")]
     result.hostnames["192.168.1.20"]      # "Living-Room-TV"
 
-Uses the zeroconf library: plain UDP on port 5353, no admin rights (SEC-04, NFR-04).
+Uses the zeroconf library: plain UDP on port 5353, no admin rights (SEC-04, NFR-04). 
+It listens only on this computer's adapter for the hosts' network: with a VPN adapter
+installed, Windows otherwise sends the multicast out of the VPN and nobody answers (#150).
 On Windows the first run may show a Firewall prompt for Python (README, subtask 4).
 Only parsed fields are kept, never whole records (data rule), and only for the hosts
 Host Discovery found: answers from any other address are dropped.
@@ -22,7 +24,7 @@ import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
-
+from backend.services.scan.collect_ssdp_evidence import local_address_for
 from backend.records.enums import EvidenceType
 from backend.services.scan.collect_evidence import CollectorResult
 from backend.services.scan.evidence import RawEvidence, clean_field
@@ -49,9 +51,11 @@ class MdnsService:
     properties: dict[bytes, bytes | None] = field(default_factory=dict)
 
 #the only part that touches the network
-def browse_mdns(wait_s: float, *, clock: Callable[[], float] = time.monotonic,
+def browse_mdns(wait_s: float, interface_ip: str | None = None, *,
+                clock: Callable[[], float] = time.monotonic,
                 sleep: Callable[[float], None] = time.sleep) -> list[MdnsService]:
-    """Every mDNS service on the network, finished by wait_s. Raises OSError when port 5353
+    """Every mDNS service on the network, finished by wait_s. With interface_ip, only that
+    adapter is used; without it, zeroconf uses all of them. Raises OSError when port 5353
     can't be joined and ImportError when zeroconf isn't installed: collect_mdns turns those
     into "unavailable". clock and sleep are for tests."""
     from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf, ZeroconfServiceTypes
@@ -69,7 +73,7 @@ def browse_mdns(wait_s: float, *, clock: Callable[[], float] = time.monotonic,
                 seen.add((service_type, name))
                 found.append((service_type, name))
 
-    zc = Zeroconf()
+    zc = Zeroconf(interfaces=[interface_ip]) if interface_ip else Zeroconf()
     browser = None
     try:
         # 1. Which service types are on the network. find()'s timeout is in SECONDS.
@@ -127,13 +131,14 @@ def mdns_evidence(services: Iterable[MdnsService], hosts: Sequence[str]) -> Coll
 
 
 def collect_mdns(hosts: Sequence[str], wait_s: float,
-                 browse: Callable[[float], list[MdnsService]] = browse_mdns) -> CollectorResult:
+                 browse: Callable[[float, str | None], list[MdnsService]] = browse_mdns,
+                 local_address: Callable[[Sequence[str]], str | None] = local_address_for) -> CollectorResult:
     """The Collector for mDNS. If it can't run at all, the result says so and why, and the
     scan carries on without it (NFR-06)."""
     if not hosts:
         return CollectorResult(METHOD, {}, {})          
     try:
-        services = browse(wait_s)
+        services = browse(wait_s, local_address(hosts))
     except ImportError:
         logger.warning("mDNS evidence skipped: the zeroconf library isn't installed", exc_info=True)
         return _unavailable("the zeroconf library isn't installed")
