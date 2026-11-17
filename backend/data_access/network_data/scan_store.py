@@ -11,6 +11,8 @@ per device it sees, and the identification evidence behind each device.
                                               raw_value="F0:D1:A9", weight=20))
     scans.finish(scan.pk, ScanOutcome.SUCCESS)
     scans.history(datetime(2026, 10, 1), datetime(2026, 11, 1))   # scans with their observations
+    scans.finished(page=1, per_page=20)              # finished scans, newest first (2.4.3)
+    scans.compare_rows(from_id=4, to_id=9)           # both scans' observations, with device names
 
 
 Scans, observations and evidence are not written to the audit log: they are
@@ -31,12 +33,45 @@ from backend.records.enums import ScanOutcome, ScanStatus
 
 SCAN_OPEN_LOCK = "network_scanner.scan_open"
 SCAN_OPEN_WAIT_S = 5
+DEFAULT_PER_PAGE = 20
+MAX_PER_PAGE = 200
+# A scan that can be compared (#153): it ran to the end, fully or with some methods missing
+COMPARABLE_OUTCOMES = (ScanOutcome.SUCCESS, ScanOutcome.PARTIAL)
 
 @dataclass(frozen=True)
 class ScanWithObservations:
     """One scan from the history and every device it saw."""
     scan: Scan
     observations: list[ScanObservation]
+
+@dataclass(frozen=True)
+class FinishedScan:
+    """One row of the finished-scan list: the scan, who started it, and how many devices it saw."""
+    scan: Scan
+    username: str
+    observation_count: int
+
+@dataclass(frozen=True)
+class ScanPage:
+    """One page of finished scans, and how many there are in total."""
+    scans: list[FinishedScan]
+    page: int
+    per_page: int
+    total: int
+
+@dataclass(frozen=True)
+class ComparedObservation:
+    """One device seen in one of the two compared scans, with the names a report shows."""
+    scan_id: int
+    device_id: int
+    ip_address: str | None
+    hostname: str | None
+    device_name: str | None
+    mac_address: str
+    is_randomized_mac: bool
+    first_seen: datetime | None
+    vendor_name: str
+    device_type_name: str
 
 class ScanNotRunningError(Exception):
     """The scan has already finished, so it can't be finished again."""
@@ -57,8 +92,7 @@ class ScanStore:
         running = self._scans.list(unit, status=ScanStatus.RUNNING)
         return running[-1] if running else None
 
-    # ---- 3.1.4 Store Scan ----------------------------------------------------------
-
+    #3.1.4 Store Scan
     def start(self, scan: Scan, unit: Any = None) -> Scan:
         """Save a new scan as running. started_at defaults to now."""
         if scan.pk is not None:
@@ -112,8 +146,7 @@ class ScanStore:
             self._scans.update(scan, cursor)
             return self._scans.get(scan_id, cursor)
 
-    # ---- 3.1.4 Store Observations ----------------------------------------------------
-
+    #3.1.4 Store Observations
     def add_observation(self, observation: ScanObservation, unit: Any = None) -> ScanObservation:
         """Record that this scan saw this device. A scan records each device once:
         seeing it again in the same scan updates that observation."""
@@ -148,7 +181,7 @@ class ScanStore:
             self._evidence.create(evidence, cursor)
         return evidence, True
 
-        # ---- 3.1.5 Retrieve Scan History --------------------------------------------------
+        #3.1.5 Retrieve Scan History
 
     def latest(self, unit: Any = None) -> Scan | None:
         """The most recently started scan, running or finished; None before the first scan."""
@@ -179,6 +212,40 @@ class ScanStore:
                     found[observation.scan_id].append(observation)
         return [ScanWithObservations(scan, found[scan.pk]) for scan in scans]
 
+    #2.4.3 Change Report: the reads
+
+    def finished(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE, unit: Any = None) -> ScanPage:
+        """One page of the scans that can be compared (completed, success or partial),
+        newest first, each with its starter's username and its observation count."""
+        if page < 1 or not 1 <= per_page <= MAX_PER_PAGE:
+            raise ValueError(f"page must be 1 or more and per_page 1 to {MAX_PER_PAGE}")
+        where = "WHERE s.`status` = %s AND s.`outcome` IN (%s, %s) "
+        params = (ScanStatus.COMPLETED.value, *(outcome.value for outcome in COMPARABLE_OUTCOMES))
+        sql = (f"SELECT {_columns(Scan, 's')}, u.`username`, "
+               "(SELECT COUNT(*) FROM `scan_observation` o WHERE o.`scan_id` = s.`scan_id`) AS observation_count "
+               "FROM `scan` s JOIN `app_user` u ON u.`user_id` = s.`user_id` "
+               f"{where}"
+               "ORDER BY s.`started_at` DESC, s.`scan_id` DESC LIMIT %s OFFSET %s")
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(f"SELECT COUNT(*) AS n FROM `scan` s {where}", params)
+            total = cursor.fetchone()["n"]
+            cursor.execute(sql, (*params, per_page, (page - 1) * per_page))
+            rows = cursor.fetchall()
+        scans = [FinishedScan(Scan.from_row(row), row["username"], int(row["observation_count"])) for row in rows]
+        return ScanPage(scans, page, per_page, total)
+
+    def compare_rows(self, from_id: int, to_id: int, unit: Any = None) -> list[ComparedObservation]:
+        """Every observation of both scans in one query, each with its device's names,
+        MAC, randomized flag and first_seen. Uses the scan_id and device_id indexes."""
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(COMPARE_SQL, (from_id, to_id))
+            rows = cursor.fetchall()
+        return [ComparedObservation(
+            scan_id=row["scan_id"], device_id=row["device_id"], ip_address=row["ip_address"],
+            hostname=row["hostname"], device_name=row["device_name"], mac_address=row["mac_address"],
+            is_randomized_mac=bool(row["is_randomized_mac"]), first_seen=row["first_seen"],
+            vendor_name=row["vendor_name"], device_type_name=row["category_name"]) for row in rows]
+
     def device_history(self, device_id: int, start: datetime | None = None,
                        end: datetime | None = None, unit: Any = None) -> list[ScanObservation]:
         """Every observation of one device, newest scan first, optionally only
@@ -203,6 +270,20 @@ class ScanStore:
     def evidence_for(self, device_id: int, unit: Any = None) -> list[IdentificationEvidence]:
         """The evidence behind a device's identification, oldest first."""
         return self._evidence.list(unit, device_id=device_id)
+
+# Both scans' observations, joined to the device and its vendor and type names (2.4.3).
+# Data rule: scan_observation is found by its scan_id index, device by its primary key.
+COMPARE_SQL = (
+    "SELECT o.`scan_id`, o.`device_id`, o.`ip_address`, o.`hostname`, "
+    "d.`device_name`, d.`mac_address`, d.`is_randomized_mac`, d.`first_seen`, "
+    "v.`vendor_name`, t.`category_name` "
+    "FROM `scan_observation` o "
+    "JOIN `device` d ON d.`device_id` = o.`device_id` "
+    "JOIN `vendor` v ON v.`vendor_id` = d.`vendor_id` "
+    "JOIN `device_type` t ON t.`device_type_id` = d.`device_type_id` "
+    "WHERE o.`scan_id` IN (%s, %s) "
+    "ORDER BY o.`observation_id`"
+)
 
 def _columns(entity_type: type, alias: str) -> str:
     """alias.`column` for every column of the entity, for a SELECT list."""
