@@ -1,8 +1,11 @@
+// Polls scan status while a scan is running and reports the outcome once.
 import { useEffect, useState } from "react";
 import { api } from "../../components/api";
 import { useMessages } from "../../components/Messages";
 import { outcomeMessage } from "./statusText";
 
+// interval is how often to ask. announceOutcome shows the finished banner.
+// keepWatching stays on after the scan ends, which the device list uses.
 export function useScanStatus({
 
   interval = 2000,
@@ -33,6 +36,7 @@ export function useScanStatus({
 
           if (ignore) return;
 
+          // The server is back. Remove the "can't reach the server" banner.
           if (unreachableShown) {
 
             clearMessage();
@@ -65,6 +69,7 @@ export function useScanStatus({
 
           if (ignore) return;
 
+          // Show the connection error once, then retry more slowly.
           if (err.unreachable) {
 
             if (!unreachableShown) {
@@ -101,6 +106,7 @@ export function useScanStatus({
 
     status,
     
+    // Call this after starting a scan so polling begins again.
     follow() {
 
       setWatching(true);

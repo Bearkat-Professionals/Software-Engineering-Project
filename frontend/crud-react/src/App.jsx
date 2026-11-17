@@ -1,12 +1,16 @@
+// Lists, adds, edits, and deletes rows in every test table.
 import { useEffect, useRef, useState } from "react";
 import { api, apiPage } from "./api";
 import ForeignKeyPicker from "./ForeignKeyPicker";
 import { BOOLEANS, ENUMS, FOREIGN_KEYS, OPTIONAL_FK } from "./fields";
 import "./App.css";
 
+// Each list request asks for this many rows.
 const PAGE_SIZE = 50;
+// These tables are listed first because later tables refer to them.
 const PREFERRED = ["vendor", "device_type", "device"];
 
+// Put the preferred tables first and keep the rest in the server's order.
 function orderedNames(tables) {
   const names = Object.keys(tables);
   return [
@@ -15,6 +19,7 @@ function orderedNames(tables) {
   ];
 }
 
+// Starting values for an add form. The primary key is assigned by the database.
 function blankValues(tableName, table) {
   const values = {};
   for (const column of table.columns) {
@@ -28,6 +33,7 @@ function blankValues(tableName, table) {
   return values;
 }
 
+// Copy one row into the form so it can be edited.
 function valuesFromRow(tableName, table, row) {
   const values = blankValues(tableName, table);
   for (const column of Object.keys(values)) {
@@ -39,6 +45,7 @@ function valuesFromRow(tableName, table, row) {
   return values;
 }
 
+// Pages are numbered from zero. offset is how many rows to skip.
 function pagePath(tableName, page) {
   const params = new URLSearchParams({
     limit: String(PAGE_SIZE),
@@ -56,12 +63,14 @@ export default function App() {
   const [formValues, setFormValues] = useState({});
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  // Refs remember the table and page even after a slow request returns.
   const tableNameRef = useRef("");
   const pageRef = useRef(0);
 
   const table = tables[tableName];
 
   useEffect(() => {
+    // Load every table's columns, then open vendor when it exists.
     api("/api/tables")
       .then((data) => {
         const initialTable = data.vendor ? "vendor" : Object.keys(data)[0];
@@ -77,6 +86,7 @@ export default function App() {
   useEffect(() => {
     if (!tableName || !tables[tableName]) return;
     let ignore = false;
+    // Reload the visible page whenever the table or page changes.
     apiPage(pagePath(tableName, page))
       .then(({ rows, total }) => {
         if (!ignore) setLoaded({ table: tableName, page, rows, total });
@@ -89,6 +99,7 @@ export default function App() {
     };
   }, [page, tableName, tables]);
 
+  // Switching tables leaves the edit form and returns to the first page.
   function onTableChange(event) {
     const name = event.target.value;
     tableNameRef.current = name;
@@ -110,6 +121,7 @@ export default function App() {
     setFormValues((current) => ({ ...current, [column]: value }));
   }
 
+  // Booleans stay true or false. Empty text and empty ids are sent as null.
   function bodyFromForm() {
     const body = {};
     for (const column of table.columns) {
@@ -123,6 +135,7 @@ export default function App() {
     return body;
   }
 
+  // Ignore the result if the user has already moved to another table or page.
   async function reloadRows(name = tableName, pageNumber = page) {
     const { rows, total } = await apiPage(pagePath(name, pageNumber));
     if (tableNameRef.current !== name || pageRef.current !== pageNumber) return;
@@ -133,6 +146,7 @@ export default function App() {
     setLoaded({ table: name, page: pageNumber, rows, total });
   }
 
+  // No editing id means add. An editing id replaces that whole row.
   async function onSubmit(event) {
     event.preventDefault();
     const name = tableName;
@@ -163,6 +177,7 @@ export default function App() {
     }
   }
 
+  // Load the current row before filling the form, so the edit is not based on the list copy.
   async function onEdit(id) {
     const name = tableName;
     try {
@@ -176,6 +191,7 @@ export default function App() {
     }
   }
 
+  // Ask before deleting. A foreign key may still refuse the delete.
   async function onDelete(id) {
     if (!window.confirm("Delete " + tableName + " " + id + "?")) return;
     const name = tableName;
@@ -198,6 +214,7 @@ export default function App() {
     }
   }
 
+  // Leave edit mode and clear the form back to an add form.
   function cancelEdit() {
     setEditingId(null);
     setFormValues(blankValues(tableName, table));
@@ -242,6 +259,7 @@ export default function App() {
           const fk = (FOREIGN_KEYS[tableName] || {})[column];
           const isBool = (BOOLEANS[tableName] || []).includes(column);
 
+          // A column is a checkbox, a fixed choice, a related row, or plain text.
           if (isBool) {
             return (
               <label key={column}>
@@ -338,6 +356,7 @@ export default function App() {
                 <tr key={row[table.primary_key]}>
                   {table.columns.map((column) => {
                     const value = row[column];
+                    // Show each cell as text. Objects are written out so they stay readable.
                     const text = value == null ? "" : typeof value === "object" ? JSON.stringify(value) : String(value);
                     return <td key={column}>{text}</td>;
                   })}

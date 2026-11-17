@@ -1,3 +1,4 @@
+// Labels for a scan's phase, progress, and outcome.
 const PHASE_TEXT = {
 
     discovering_hosts: "Finding devices",
@@ -6,6 +7,7 @@ const PHASE_TEXT = {
 
 };
 
+// A missing phase means the scan has been accepted but has not reported a phase yet.
 export function phaseText(phase) {
 
     if (phase == null) return "Starting";
@@ -14,6 +16,7 @@ export function phaseText(phase) {
 
 }
 
+// Blank until the server knows how many addresses it will check.
 export function progressText(done, total) {
 
     if (done == null || total == null) return "";
@@ -22,6 +25,7 @@ export function progressText(done, total) {
 
 }
 
+// The banner kind matches the scan outcome. Partial and failed include the server's reasons.
 export function outcomeMessage(lastScan) {
 
     const reasons = (lastScan.errors ?? []).join(" ");
