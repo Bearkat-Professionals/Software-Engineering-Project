@@ -1,10 +1,11 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthProvider";
+import ChangePasswordForm from "./ChangePasswordForm";
 
 
 export default function Layout() {
 
-  const {user, logout } = useAuth();
+  const { user, logout, can } = useAuth();
   const navigate = useNavigate();
 
   async function onSignOut() {
@@ -27,16 +28,19 @@ export default function Layout() {
 
               <NavLink to="/scans">Scan</NavLink>
               <NavLink to="/devices">Devices</NavLink>
+              {can("MANAGE_USERS") && <NavLink to="/users">Users</NavLink>}
 
             </nav>
 
-            <p>
+            <div className="account-controls">
 
-              {user.username} ({user.role})
+              <span>{user.username} ({user.role})</span>
+
+              <ChangePasswordForm />
 
               <button type="button" onClick={onSignOut}>Sign out</button>
               
-            </p>
+            </div>
 
           </header>
 

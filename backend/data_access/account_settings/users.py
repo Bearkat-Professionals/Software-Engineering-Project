@@ -16,17 +16,22 @@ as {"password_changed": true} instead (AT-15).
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import replace
 from typing import Any, Generator
 
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.database_engine import DatabaseEngine
 from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import User
-from backend.records.enums import AuditAction
+from backend.records.enums import AccountStatus, AuditAction, UserRole
 
 
 class FirstUserExistsError(Exception):
     """create_first_user() was called but the system already has users."""
+
+
+class LastActiveAdminError(Exception):
+    """A change would leave the application without an active administrator."""
 
 
 class UserStore:
@@ -44,6 +49,10 @@ class UserStore:
         """Login looks users up by name; the schema makes usernames unique."""
         matches = self._users.list(unit, username=username)
         return matches[0] if matches else None
+
+    def list(self, unit: Any = None) -> list[User]:
+        """Every account in stable id order for the admin Users screen."""
+        return self._users.list(unit)
 
     # ---- 3.3.2 Store User --------------------------------------------------------
 
@@ -66,6 +75,43 @@ class UserStore:
                 extra = {"password_changed": True} if old.password_hash != user.password_hash else None
                 self._audit.record(changed_by, AuditAction.UPDATE, old, user, cursor, extra=extra)
         return user
+
+    def apply_account_change(self, user_id: int, changed_by: int, *,
+                             role: UserRole | None = None,
+                             account_status: AccountStatus | None = None,
+                             password_hash: str | None = None) -> User:
+        """Apply one admin account change to a freshly loaded row.
+
+        All account-management changes share a database lock. The active-admin
+        count and the update therefore happen as one serialized transaction, so
+        two requests cannot both observe another active admin and remove the last
+        two at the same time.
+        """
+        with self._engine.named_lock("katscan_manage_users", timeout_s=5) as cursor:
+            current = self.find(user_id, cursor)
+            if current is None:
+                raise RecordNotFoundError(f"app_user {user_id} does not exist")
+
+            changed = replace(
+                current,
+                role=role if role is not None else current.role,
+                account_status=(account_status if account_status is not None
+                                else current.account_status),
+                password_hash=password_hash if password_hash is not None else current.password_hash,
+            )
+            removes_active_admin = (
+                current.role == UserRole.ADMIN
+                and current.account_status == AccountStatus.ACTIVE
+                and (changed.role != UserRole.ADMIN
+                     or changed.account_status != AccountStatus.ACTIVE)
+            )
+            if removes_active_admin:
+                active_admins = self._users.count(
+                    cursor, role=UserRole.ADMIN, account_status=AccountStatus.ACTIVE)
+                if active_admins <= 1:
+                    raise LastActiveAdminError("the last active admin cannot be changed")
+
+            return self.store(changed, changed_by=changed_by, unit=cursor)
 
     def create_first_user(self, user: User, unit: Any = None) -> User:
         """Create the very first account, which records itself as its creator.

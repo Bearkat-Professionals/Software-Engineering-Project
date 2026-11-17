@@ -10,12 +10,13 @@ from datetime import datetime
 
 from backend.data_access.account_settings import (AlertHistoryStore, AlertSettingStore,
                                                   FirstUserExistsError,
+                                                  LastActiveAdminError,
                                                   UnknownAlertEventError, UserStore)
 from backend.data_access.audit_trail.audit_trail import AuditTrail
 from backend.data_access.database_engine import IntegrityConstraintError
 from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import AlertHistory, AlertSetting, Device, Scan, User
-from backend.records.enums import AlertEventName, AuditAction, UserRole
+from backend.records.enums import AccountStatus, AlertEventName, AuditAction, UserRole
 # Only the helpers are imported, not RepositoryTests, so those tests don't run twice
 from tests.data_access.test_repository import CLEANUP, connect_to_test_database
 
@@ -122,6 +123,31 @@ class UserStoreTests(AccountSettingsTestCase):
         with self.assertRaises(ValueError):
             self.users.store(User(username="sam", password_hash=""), changed_by=self.admin.user_id)
         self.assertIsNone(self.users.find_by_username("sam"))
+
+    def test_list_returns_every_account_without_changing_the_order(self):
+        sam = self.users.store(User(username="sam", password_hash=HASH), changed_by=self.admin.user_id)
+        self.assertEqual([user.user_id for user in self.users.list()], [self.admin.user_id, sam.user_id])
+
+    def test_account_change_is_atomic_audited_and_protects_the_last_admin(self):
+        sam = self.users.store(User(username="sam", password_hash=HASH), changed_by=self.admin.user_id)
+        changed = self.users.apply_account_change(
+            sam.user_id, self.admin.user_id, role=UserRole.EDITOR,
+            account_status=AccountStatus.DISABLED)
+        self.assertEqual((changed.role, changed.account_status),
+                         (UserRole.EDITOR, AccountStatus.DISABLED))
+        self.assertEqual(self.audit.latest("app_user", sam.user_id).user_id, self.admin.user_id)
+
+        with self.assertRaises(LastActiveAdminError):
+            self.users.apply_account_change(
+                self.admin.user_id, sam.user_id, role=UserRole.VIEWER)
+        self.assertEqual(self.users.find(self.admin.user_id).role, UserRole.ADMIN)
+
+        other_admin = self.users.store(
+            User(username="other-admin", password_hash=HASH, role=UserRole.ADMIN),
+            changed_by=self.admin.user_id)
+        demoted = self.users.apply_account_change(
+            other_admin.user_id, self.admin.user_id, role=UserRole.EDITOR)
+        self.assertEqual(demoted.role, UserRole.EDITOR)
 
 
 # ---- 3.3.3 and 3.3.4 alert settings ------------------------------------------

@@ -9,12 +9,14 @@ from __future__ import annotations
 from dataclasses import replace
 
 from backend.records import User
-from backend.records.enums import AccountStatus
-from backend.services.access_control.access_control_service import (DISABLED_LOGIN, WRONG_LOGIN,
-                                                                     LoginResult)
+from backend.records.enums import AccountStatus, UserRole
+from backend.services.access_control.access_control_service import (ACCOUNT_NOT_FOUND,
+                                                                     DISABLED_LOGIN, WRONG_LOGIN,
+                                                                     AccountResult, LoginResult)
 
 PASSWORD = "correct horse battery staple"
 SECRET_KEY = "k" * 64                   # long enough for check_secret_key
+DUMMY_HASH = "$argon2id$fake-controller-test-hash"
 
 
 class FakeUsers:
@@ -41,6 +43,7 @@ class FakeAccess:
 
     def __init__(self, users: FakeUsers) -> None:
         self.users = users
+        self.changes: list[tuple[str, int, int]] = []
 
     def authenticate(self, username: str, password: str) -> LoginResult:
         user = self.users.find_by_username(username)
@@ -49,6 +52,54 @@ class FakeAccess:
         if user.account_status != AccountStatus.ACTIVE:
             return LoginResult(None, DISABLED_LOGIN)
         return LoginResult(user)
+
+    def list_users(self) -> list[User]:
+        return [self.users.users[user_id] for user_id in sorted(self.users.users)]
+
+    def create_user(self, username: str, password: str, role: str,
+                    created_by: int) -> AccountResult:
+        if not username or not password or role not in {item.value for item in UserRole}:
+            return AccountResult(None, ("The account values are invalid.",))
+        user = User(user_id=max(self.users.users, default=0) + 1, username=username,
+                    password_hash=DUMMY_HASH, role=UserRole(role))
+        self.users.users[user.user_id] = user
+        self.changes.append(("create", user.user_id, created_by))
+        return AccountResult(user)
+
+    def set_role(self, user_id: int, role: str, changed_by: int) -> AccountResult:
+        user = self.users.find(user_id)
+        if user is None:
+            return AccountResult(None, (ACCOUNT_NOT_FOUND,))
+        user = replace(user, role=UserRole(role))
+        self.users.users[user_id] = user
+        self.changes.append(("role", user_id, changed_by))
+        return AccountResult(user)
+
+    def set_status(self, user_id: int, status: str, changed_by: int) -> AccountResult:
+        user = self.users.find(user_id)
+        if user is None:
+            return AccountResult(None, (ACCOUNT_NOT_FOUND,))
+        user = replace(user, account_status=AccountStatus(status))
+        self.users.users[user_id] = user
+        self.changes.append(("status", user_id, changed_by))
+        return AccountResult(user)
+
+    def reset_password(self, user_id: int, password: str, changed_by: int) -> AccountResult:
+        user = self.users.find(user_id)
+        if user is None:
+            return AccountResult(None, (ACCOUNT_NOT_FOUND,))
+        user = replace(user, password_hash=DUMMY_HASH)
+        self.users.users[user_id] = user
+        self.changes.append(("password", user_id, changed_by))
+        return AccountResult(user)
+
+    def change_password(self, user: User, current_password: str,
+                        new_password: str) -> AccountResult:
+        if current_password != PASSWORD or not new_password:
+            return AccountResult(None, ("The current password is incorrect.",))
+        self.users.users[user.user_id] = replace(user, password_hash=DUMMY_HASH)
+        self.changes.append(("own_password", user.user_id, user.user_id))
+        return AccountResult(self.users.users[user.user_id])
 
 
 class FakeClock:

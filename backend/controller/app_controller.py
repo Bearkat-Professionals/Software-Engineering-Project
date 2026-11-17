@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from backend.controller import api_routes, auth, reference_routes, device_routes
+from backend.controller import api_routes, auth, device_routes, reference_routes, user_routes
 from backend.controller.auth import requires
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import DeviceStore
@@ -84,6 +84,7 @@ def register_routes(app: Flask, services: Services) -> None:
     api_routes.register(app, services)          # scans and the device list (#51)
     reference_routes.register(app, services)    # vendors, device types, signatures, OUI prefixes (#126)
     device_routes.register(app, services)       # one device: read, add, edit, mark, delete; the pickers (2.3.1)
+    user_routes.register(app, services)         # account administration and change-password (#92)
 
 
 def on_scan_finished(result: ScanResult) -> None:

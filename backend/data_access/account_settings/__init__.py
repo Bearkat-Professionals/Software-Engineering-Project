@@ -5,6 +5,8 @@
 from backend.data_access.account_settings.alert_history import AlertHistoryStore
 from backend.data_access.account_settings.alert_settings import (AlertSettingStore,
                                                                  UnknownAlertEventError)
-from backend.data_access.account_settings.users import FirstUserExistsError, UserStore
+from backend.data_access.account_settings.users import (FirstUserExistsError,
+                                                        LastActiveAdminError,
+                                                        UserStore)
 
 __all__ = ["AlertHistoryStore", "AlertSettingStore", "FirstUserExistsError", "UnknownAlertEventError", "UserStore"]
