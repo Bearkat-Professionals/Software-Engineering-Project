@@ -330,6 +330,42 @@ class ReferenceDataTests(unittest.TestCase):
                          ["smart speaker", "unknown"])
         self.assertEqual([s.pattern_value for s in rules.signatures], ["echo"])   # pager's signature dropped
 
+    # ---- pickers for the device edit form: list_active and search ------------------------
+
+    def test_list_active_leaves_out_retired_records_and_sorts_by_name(self):
+        self.types.store(DeviceType(category_name="printer"), self.admin)
+        self.types.store(DeviceType(category_name="Camera"), self.admin)
+        pager = self.types.store(DeviceType(category_name="pager"), self.admin)
+        self.types.retire(pager.pk, self.admin)
+        names = [device_type.category_name.casefold() for device_type in self.types.list_active()]
+        self.assertEqual(names, ["camera", "printer", "unknown"])              # ignoring case, like the column
+
+    def test_search_puts_names_that_start_with_the_text_first(self):
+        for name in ("Snapple Ltd", "Apple, Inc.", "Pineapple Labs", "Appleton Systems"):
+            self.vendors.store(Vendor(vendor_name=name), self.admin)
+        found = [vendor.vendor_name for vendor in self.vendors.search("app", 10)]
+        self.assertEqual(found, ["Apple, Inc.", "Appleton Systems", "Pineapple Labs", "Snapple Ltd"])
+        self.assertEqual([vendor.vendor_name for vendor in self.vendors.search("  APP ", 2)],
+                         ["Apple, Inc.", "Appleton Systems"])                   # trimmed, any case, at most 2
+
+    def test_search_leaves_out_retired_vendors(self):
+        old = self.vendors.store(Vendor(vendor_name="Apple Old"), self.admin)
+        self.vendors.store(Vendor(vendor_name="Apple New"), self.admin)
+        self.vendors.retire(old.pk, self.admin)
+        self.assertEqual([vendor.vendor_name for vendor in self.vendors.search("apple")], ["Apple New"])
+
+    def test_search_treats_wildcards_as_literal_text(self):
+        for name in ("100% Networks", "Net_Gear", "NetXGear"):
+            self.vendors.store(Vendor(vendor_name=name), self.admin)
+        self.assertEqual([vendor.vendor_name for vendor in self.vendors.search("%")], ["100% Networks"])
+        self.assertEqual([vendor.vendor_name for vendor in self.vendors.search("t_g")], ["Net_Gear"])
+
+    def test_search_rejects_blank_text_and_bad_limits(self):
+        for text, limit in (("", 20), ("   ", 20), (None, 20), ("app", 0), ("app", 51), ("app", True), ("app", "5")):
+            with self.subTest(text=text, limit=limit):
+                with self.assertRaises(ValueError):
+                    self.vendors.search(text, limit)
+
 
 if __name__ == "__main__":
     unittest.main()

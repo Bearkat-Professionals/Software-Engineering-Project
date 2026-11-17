@@ -20,6 +20,7 @@ from backend.records import User
 from backend.records.enums import UserRole
 from backend.services.access_control.access_control_service import WRONG_LOGIN
 from backend.services.scan.scan_session import ScanState, ScanStatusReport
+from tests.controller.test_device_routes import FakeDeviceMaintenance, FakePickers
 from tests.controller.test_api_routes import FakeDevices, FakeScanManager, FakeSessions
 from tests.fakes.fake_accounts import PASSWORD, SECRET_KEY, FakeAccess, FakeClock, FakeUsers
 
@@ -41,7 +42,8 @@ class AuthTestCase(unittest.TestCase):
     def make_app(self, https: bool = False) -> Flask:
         services = Services(scan_manager=self.manager,
                             scan_sessions=FakeSessions(ScanStatusReport(state=ScanState.NONE)),
-                            devices=FakeDevices(), users=self.users, access=FakeAccess(self.users))
+                            devices=FakeDevices(), users=self.users, access=FakeAccess(self.users),
+                            reference=FakePickers(), device_maintenance=FakeDeviceMaintenance())
         return create_app(services, secret_key=SECRET_KEY, https=https, clock=self.clock)
 
     def sign_in(self, user: User, client: FlaskClient | None = None):

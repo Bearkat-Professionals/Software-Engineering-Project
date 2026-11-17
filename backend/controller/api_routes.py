@@ -18,6 +18,7 @@ from flask.typing import ResponseReturnValue
 from backend.controller.auth import requires
 from backend.data_access.network_data import DeviceListing
 from backend.data_access.network_data.device_store import DEFAULT_PER_PAGE, MAX_PER_PAGE
+from backend.controller.route_helpers import MAX_PAGE, whole_number
 from backend.records import User
 from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_session import OpenRefusal, ScanState, ScanStatusReport
@@ -27,7 +28,6 @@ if TYPE_CHECKING:       # for the type hint only: app_controller imports this mo
 
 STATUS_URL = "/api/scans/status"
 SCOPE_EXAMPLE = 'Send JSON like {"scope": "192.168.1.0/24"}.'
-MAX_PAGE = 1_000_000            # keeps OFFSET far inside what MySQL accepts
 
 # Why a scan wasn't started -> the HTTP status the screen gets
 REFUSAL_STATUS: dict[OpenRefusal, int] = {
@@ -63,8 +63,8 @@ def register(app: Flask, services: Services) -> None:
     @app.get("/api/devices")
     @requires(Permission.VIEW_DATA)
     def list_devices() -> ResponseReturnValue:
-        page = _whole_number("page", default=1, largest=MAX_PAGE)
-        per_page = _whole_number("per_page", default=DEFAULT_PER_PAGE, largest=MAX_PER_PAGE)
+        page = whole_number("page", default=1, largest=MAX_PAGE)
+        per_page = whole_number("per_page", default=DEFAULT_PER_PAGE, largest=MAX_PER_PAGE)
         found = services.devices.list_page(page=page, per_page=per_page)
         return jsonify(devices=[device_json(listing) for listing in found.devices],
                        page=found.page, per_page=found.per_page, total=found.total)
@@ -118,16 +118,3 @@ def device_json(listing: DeviceListing) -> dict[str, Any]:
         "trusted": device.trusted_status,
         "last_seen": device.last_seen.isoformat() if device.last_seen is not None else None,
     }
-
-
-# ---- helpers ---------------------------------------------------------------------------
-
-def _whole_number(name: str, *, default: int, largest: int) -> int:
-    """A query value like ?page=2 as a number from 1 to largest; stops with 400 if it isn't."""
-    text = request.args.get(name)
-    if text is None:
-        return default
-    cleaned = text.strip()
-    if not cleaned.isdecimal() or not 1 <= int(cleaned) <= largest:
-        abort(400, description=f"{name} must be a whole number from 1 to {largest}, not '{text}'.")
-    return int(cleaned)

@@ -177,6 +177,8 @@ class ReferenceRecords(Protocol):
     def usage(self, pk: int, unit: Any = None) -> dict[str, int]: ...
     def list_page(self, page: int = 1, per_page: int = 50, *, text: str | None = None,
                   status: RecordStatus | str | None = None, unit: Any = None) -> Any: ...
+    def list_active(self, unit: Any = None) -> list[Any]: ...
+    def search(self, text: str, limit: int = 20, unit: Any = None) -> list[Any]: ...
 
 class PrefixRecords(Protocol):
     """OuiPrefixStore(engine) is one."""
@@ -289,6 +291,18 @@ class ReferenceMaintenance:
             elif kind is ReferenceKind.SIGNATURE:
                 type_name = self._type_names((record.device_type_id,), unit).get(record.device_type_id)
         return ReferenceDetail(record, counts, usage_sentence(kind, counts), loaded_at, prefixes, type_name)
+
+    def active_device_types(self) -> list[DeviceType]:
+        """Every active device type by name, for the device edit form's type picker."""
+        with self._unit_of_work() as unit:
+            return self._stores[ReferenceKind.DEVICE_TYPE].list_active(unit)
+
+    def search_vendors(self, text: str, limit: int) -> list[Vendor]:
+        """Active vendors whose name contains the text, those starting with it first, for
+        the device edit form's vendor search. Raises ValueError for blank text or a bad
+        limit; the route checks both first."""
+        with self._unit_of_work() as unit:
+            return self._stores[ReferenceKind.VENDOR].search(text, limit, unit)
 
 #OUI prefixes 
 

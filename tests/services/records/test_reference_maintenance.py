@@ -563,6 +563,29 @@ class ReadTests(MaintenanceTestCase):
         self.assertStatus(result, MaintenanceStatus.CONFLICT)
         self.assertEqual(result.changed_by, OTHER_ADMIN)
 
+    def test_active_device_types_by_name_without_retired_ones(self) -> None:
+        types = self.service.active_device_types()
+        self.assertEqual([device_type.category_name for device_type in types], ["Phone", "Unknown"])   # not Pager
+        self.assertNothingStored()
+        self.assertOneUnitOfWork()
+
+    def test_vendor_search_puts_names_starting_with_the_text_first(self) -> None:
+        self.vendors.rows[7] = Vendor(vendor_id=7, vendor_name="Snapple")
+        self.vendors.rows[8] = Vendor(vendor_id=8, vendor_name="Appco", status=RecordStatus.RETIRED)
+        found = self.service.search_vendors("APP", 20)
+        self.assertEqual([vendor.vendor_name for vendor in found], ["Apple", "Snapple"])   # Appco is retired
+        self.assertOneUnitOfWork()
+
+    def test_vendor_search_keeps_to_the_limit(self) -> None:
+        found = self.service.search_vendors("a", 2)
+        self.assertEqual([vendor.vendor_name for vendor in found], ["Acme", "Apple"])
+
+    def test_vendor_search_refuses_blank_text_and_bad_limits(self) -> None:
+        for text, limit in (("", 20), ("  ", 20), ("app", 0), ("app", 51)):
+            with self.subTest(text=text, limit=limit):
+                with self.assertRaises(ValueError):
+                    self.service.search_vendors(text, limit)
+
 
 class SetupTests(unittest.TestCase):
     def test_every_kind_needs_a_store(self) -> None:

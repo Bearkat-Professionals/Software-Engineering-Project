@@ -20,6 +20,7 @@ from backend.services.scan.assign_level import stored_level
 from tests.fakes.fake_device_maintenance import (FakeClock, FakeEngine, FakeMaintainedDevices, FakeUsers,
                                                  SpySaver)
 from tests.fakes.fake_reference_store import FakeReferenceStore
+from backend.data_access.database_engine import IntegrityConstraintError
 
 ADMIN, OTHER = 7, 8
 ROUTER_MAC = "70:13:01:65:8E:F7"        # fixed (vendor-assigned)
@@ -42,6 +43,8 @@ class MaintenanceTestCase(unittest.TestCase):
         self.clock = FakeClock()
         self.engine = FakeEngine()
         self.devices = FakeMaintainedDevices(devices, self.clock)
+        self.devices.vendor_names = {APPLE: "Apple, Inc.", RETIRED_VENDOR: "Old Co"}
+        self.devices.type_names = {ROUTER_TYPE: "Router"}
         vendors = FakeReferenceStore(Vendor, [Vendor(vendor_id=APPLE, vendor_name="Apple, Inc."),
                                               Vendor(vendor_id=RETIRED_VENDOR, vendor_name="Old Co",
                                                      status=RecordStatus.RETIRED)])
@@ -130,6 +133,18 @@ class AddTests(MaintenanceTestCase):
         result = self.service.add("3C:07:54:00:00:09", DeviceEdit(vendor_id=RETIRED_VENDOR), ADMIN)
         self.assertStatus(result, REJECTED, "retired")
         self.assertNothingStored()
+
+    def test_two_people_adding_the_same_mac_at_once(self) -> None:          # review of #144
+        self.devices.added_meanwhile = Device(device_id=5, mac_address="3C:07:54:00:00:09")
+        result = self.service.add("3c:07:54:00:00:09", DeviceEdit(device_name="Den TV"), ADMIN)
+        self.assertStatus(result, MaintenanceStatus.ALREADY_EXISTS, "3C:07:54:00:00:09 was just added by someone else")
+        self.assertEqual(result.existing_device_id, 5)
+        self.assertEqual(self.engine.rolled_back, 1)                         # our insert left nothing behind
+
+    def test_another_integrity_error_is_not_called_a_duplicate(self) -> None:
+        self.devices.integrity_error_next = True
+        with self.assertRaises(IntegrityConstraintError):
+            self.service.add("3C:07:54:00:00:09", DeviceEdit(), ADMIN)
 
 
 # ---- edit ------------------------------------------------------------------------
@@ -326,17 +341,18 @@ class DeleteTests(MaintenanceTestCase):
 # ---- load ---------------------------------------------------------------------------
 
 class LoadTests(MaintenanceTestCase):
-    def test_the_device_and_the_time(self) -> None:
+    def test_the_device_with_its_names_and_the_time(self) -> None:
         loaded = self.service.load(1)
         self.assertIsInstance(loaded, LoadedDevice)
         self.assertTrue(loaded.found)
         self.assertEqual(loaded.device.mac_address, ROUTER_MAC)
+        self.assertEqual((loaded.vendor_name, loaded.device_type_name), ("Apple, Inc.", "Unknown"))
         self.assertEqual(loaded.loaded_at, self.clock())
         self.assertOneUnitOfWork()
 
     def test_the_time_is_read_before_the_device(self) -> None:              # review: REPEATABLE READ
         events: list[str] = []
-        clock, find = self.clock, self.devices.find
+        clock, find_listing = self.clock, self.devices.find_listing
 
         def timed() -> object:
             events.append("clock")
@@ -344,9 +360,9 @@ class LoadTests(MaintenanceTestCase):
 
         def found(*args: object, **kwargs: object) -> object:
             events.append("find")
-            return find(*args, **kwargs)
+            return find_listing(*args, **kwargs)
 
-        self.devices.find = found
+        self.devices.find_listing = found
         DeviceMaintenance(self.engine, self.saver, self.devices, USERS, clock=timed).load(1)
         self.assertEqual(events, ["clock", "find"])
 

@@ -47,6 +47,7 @@ ORDER_FIELDS = {
     DeviceSignature: ("evidence_type", "pattern_value"),
 }
 MAX_PER_PAGE = 200
+SEARCH_MAX_LIMIT = 50
 
 class FakeClock:
     """datetime.now stand-in that moves only when told to."""
@@ -185,6 +186,32 @@ class FakeMaintenanceStore(FakeReferenceStore, _Audited):
         found = sorted((row for row in self.rows.values() if matches(row)), key=order)
         start = (page - 1) * per_page
         return ReferencePage([deepcopy(row) for row in found[start:start + per_page]], page, per_page, len(found))
+
+    def list_active(self, unit: Any = None) -> list[Any]:
+        """ReferenceStore.list_active in memory: active records in list order."""
+        self._seen(unit)
+        return [deepcopy(row) for row in sorted(self.rows.values(), key=self._sort_key) if row.is_active]
+
+    def search(self, text: str, limit: int = 20, unit: Any = None) -> list[Any]:
+        """ReferenceStore.search in memory: active, contains the text ignoring case, the
+        names that start with it first, at most `limit`. The same refusals."""
+        self._seen(unit)
+        if not isinstance(text, str) or not text.strip():
+            raise ValueError("text must be a non-blank string")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= SEARCH_MAX_LIMIT:
+            raise ValueError(f"limit must be 1 to {SEARCH_MAX_LIMIT}")
+        needle = text.strip().casefold()
+
+        def name(row: Any) -> str:
+            return getattr(row, TEXT_FIELD[self.record_type]).casefold()
+
+        found = [row for row in self.rows.values() if row.is_active and needle in name(row)]
+        found.sort(key=lambda row: (not name(row).startswith(needle), *self._sort_key(row)))
+        return [deepcopy(row) for row in found[:limit]]
+
+    def _sort_key(self, row: Any) -> tuple:
+        """The database's order: by name ignoring case (signatures by evidence type, then pattern), then id."""
+        return (*(_fold(getattr(row, name)) for name in ORDER_FIELDS[self.record_type]), row.pk)
 
     def _set_status(self, pk: int, changed_by: int, unit: Any, loaded_at: datetime | None, *, retire: bool) -> Any:
         self._seen(unit)
