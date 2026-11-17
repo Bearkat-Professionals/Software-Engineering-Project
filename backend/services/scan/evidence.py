@@ -21,6 +21,7 @@ The ONE place for these numbers, as agreed in #63. Everything else imports them.
     items = [EvidenceItem.from_record(e) for e in scans.evidence_for(device.pk)]
 """
 from __future__ import annotations
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -42,9 +43,25 @@ IDENTIFIED_MIN_SCORE = 50
 UNKNOWN_TYPE_ID = 1
 UNKNOWN_VENDOR_ID = 1
 
+FIELD_MAX = 255                                     # longest text kept from one collected field
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 def weight_for(evidence_type: EvidenceType) -> int:
     return EVIDENCE_WEIGHTS[evidence_type]
+
+
+def clean_field(value: str | None, limit: int = FIELD_MAX) -> str | None:
+    """Text a device sent us, made safe to store and show (#147): control characters
+    become spaces, runs of whitespace become one space, the ends are trimmed and the
+    result is cut to `limit` characters. None when nothing is left.
+
+        clean_field("  Living\\r\\nRoom\\x00 TV ")     # -> "Living Room TV"
+        clean_field("\\t ")                          # -> None
+    """
+    if not isinstance(value, str):
+        return None
+    text = " ".join(_CONTROL_CHARACTERS.sub(" ", value).split())
+    return text[:limit].rstrip() or None
 
 
 def count_points(items: Iterable[EvidenceItem]) -> int:
