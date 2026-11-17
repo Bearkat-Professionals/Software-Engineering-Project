@@ -14,6 +14,7 @@ from typing import Any
 from backend.data_access.network_data import (DeviceSearch, DeviceStore, EditConflictError,
                                               ScanNotRunningError, ScanStore)
 from backend.data_access.network_data.device_store import _search_where
+from backend.data_access.network_data.scan_store import COMPARE_SQL
 from backend.data_access.reference_data import ReferenceStore
 from backend.data_access.repository import RecordNotFoundError, Repository
 from backend.records import AuditLog, Device, DeviceType, IdentificationEvidence, Scan, ScanObservation, User, Vendor
@@ -500,6 +501,73 @@ class ScanStoreTests(NetworkDataTestCase):
         self.assertEqual(len(self.scans.evidence_for(tv)), 1)
         self.assertEqual(self.scans.evidence_for(phone), [])
 
+class ChangeReportReadTests(NetworkDataTestCase):
+    """2.4.3: the two reads behind the Change Report."""
+
+    def finished_scan(self, started_at, outcome=ScanOutcome.SUCCESS, user_id=None, seen=()):
+        scan = self.scans.start(Scan(user_id=user_id or self.admin, target_scope="192.168.1.0/24",
+                                     started_at=started_at))
+        for device_id, ip, hostname in seen:
+            self.scans.add_observation(ScanObservation(scan_id=scan.pk, device_id=device_id,
+                                                       ip_address=ip, hostname=hostname))
+        return self.scans.finish(scan.pk, outcome) if outcome else scan
+
+    def test_finished_lists_only_comparable_scans_newest_first(self):
+        tv = self.device("F0:D1:A9:00:00:01").pk
+        phone = self.device("F0:D1:A9:00:00:02").pk
+        first = self.finished_scan(datetime(2026, 11, 1), seen=((tv, "192.168.1.5", None), (phone, "192.168.1.6", None)))
+        second = self.finished_scan(datetime(2026, 11, 2), ScanOutcome.PARTIAL, user_id=self.other,
+                                    seen=((tv, "192.168.1.5", None),))
+        self.finished_scan(datetime(2026, 11, 3), ScanOutcome.FAILED)            # failed: left out
+        self.finished_scan(datetime(2026, 11, 4), outcome=None)                  # still running: left out
+
+        page = self.scans.finished()
+        self.assertEqual(page.total, 2)
+        self.assertEqual([row.scan.pk for row in page.scans], [second.pk, first.pk])
+        self.assertEqual([row.username for row in page.scans], ["other", "admin"])
+        self.assertEqual([row.observation_count for row in page.scans], [1, 2])
+        self.assertEqual(page.scans[0].scan.outcome, ScanOutcome.PARTIAL)
+        self.assertNotIn("not-a-real-hash", repr(page))                         # no other user columns
+
+        self.assertEqual([row.scan.pk for row in self.scans.finished(page=2, per_page=1).scans], [first.pk])
+        for bad in (dict(page=0), dict(per_page=0), dict(per_page=201)):
+            with self.subTest(bad):
+                with self.assertRaises(ValueError):
+                    self.scans.finished(**bad)
+
+    def test_compare_rows_brings_both_scans_with_the_device_names(self):
+        acme = ReferenceStore(self.engine, Vendor).store(Vendor(vendor_name="Acme"), self.admin)
+        printer = ReferenceStore(self.engine, DeviceType).store(DeviceType(category_name="printer"), self.admin)
+        office = self.device("28:6F:B9:00:00:01", device_name="Office printer", vendor_id=acme.pk,
+                             device_type_id=printer.pk, first_seen=datetime(2026, 10, 1, 8)).pk
+        phone = self.device("DA:00:00:00:00:02", is_randomized_mac=True).pk
+        other = self.device("F0:D1:A9:00:00:03").pk
+        monday = self.finished_scan(datetime(2026, 11, 16), seen=((office, "192.168.1.5", "printer"),))
+        tuesday = self.finished_scan(datetime(2026, 11, 17), seen=((office, "192.168.1.9", "printer"),
+                                                                    (phone, "192.168.1.20", None)))
+        self.finished_scan(datetime(2026, 11, 18), seen=((other, "192.168.1.30", None),))   # not asked for
+
+        rows = self.scans.compare_rows(monday.pk, tuesday.pk)
+        self.assertEqual(sorted((row.scan_id, row.device_id, row.ip_address, row.hostname) for row in rows),
+                         sorted([(monday.pk, office, "192.168.1.5", "printer"),
+                                 (tuesday.pk, office, "192.168.1.9", "printer"),
+                                 (tuesday.pk, phone, "192.168.1.20", None)]))
+        named = next(row for row in rows if row.device_id == office)
+        self.assertEqual((named.device_name, named.vendor_name, named.device_type_name, named.mac_address),
+                         ("Office printer", "Acme", "printer", "28:6F:B9:00:00:01"))
+        self.assertEqual(named.first_seen, datetime(2026, 10, 1, 8))
+        randomized = next(row for row in rows if row.device_id == phone)
+        self.assertIs(randomized.is_randomized_mac, True)
+        self.assertEqual(randomized.vendor_name.casefold(), "unknown")
+
+    def test_compare_rows_can_use_the_indexes(self):
+        """Data rule: scan_observation by scan_id or device_id, device by its key, never a full scan only."""
+        with self.engine.unit_of_work() as cursor:
+            cursor.execute("EXPLAIN " + COMPARE_SQL, (1, 2))
+            plan = {row["table"]: row for row in cursor.fetchall()}
+        for table in ("o", "d"):
+            with self.subTest(table=table):
+                self.assertIsNotNone(plan[table]["possible_keys"], plan[table])
 
 if __name__ == "__main__":
     unittest.main()
