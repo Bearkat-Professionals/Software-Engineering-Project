@@ -5,6 +5,7 @@ Same TEST database setup as test_repository.py; skipped if it is not available.
     python -m unittest discover tests -v
 """
 import unittest
+import time
 from dataclasses import replace
 
 from backend.data_access.audit_trail.audit_trail import AuditTrail
@@ -109,6 +110,22 @@ class AuditTrailTests(unittest.TestCase):
                 self.audit.record(self.user.user_id, AuditAction.UPDATE, old, changed, unit)
         self.assertEqual(self.audit.latest("vendor", vendor.vendor_id).new_value["vendor_name"], "Acme Inc")
         self.assertEqual(len(self.audit.history("vendor", vendor.vendor_id)), 3)
+
+    def test_since_returns_only_newer_entries_oldest_first(self):
+        vendor = self._create_vendor("Acme Networks")
+        opened_at = self.audit.latest("vendor", vendor.pk).changed_at
+        time.sleep(0.01)
+        for name in ("Acme Corp", "Acme Inc"):
+            with self.engine.unit_of_work() as unit:
+                old = self.vendors.get(vendor.pk, unit)
+                changed = replace(old, vendor_name=name)
+                self.vendors.update(changed, unit)
+                self.audit.record(self.user.pk, AuditAction.UPDATE, old, changed, unit)
+
+        entries = self.audit.since("vendor", vendor.pk, opened_at)
+        self.assertEqual([entry.new_value["vendor_name"] for entry in entries],
+                         ["Acme Corp", "Acme Inc"])
+        self.assertEqual(self.audit.since("vendor", 999_999, opened_at), [])
 
     def test_by_user_only_returns_that_users_entries(self):
         other_user = self.users.create(User(username="someone_else", password_hash="not-a-real-hash"))

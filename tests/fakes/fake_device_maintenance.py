@@ -79,7 +79,7 @@ class FakeMaintainedDevices(FakeDeviceStore):
         self.added_meanwhile: Device | None = None            # another user's insert that wins the race
         self.integrity_error_next = False                     # the next insert fails for another reason
 
-    def find(self, device_id: int, unit: Any = None) -> Device | None:
+    def find(self, device_id: int, unit: Any = None, *, lock: bool = False) -> Device | None:
         self.units_seen.append(unit)
         found = self.rows.get(device_id)
         return deepcopy(found) if found is not None else None

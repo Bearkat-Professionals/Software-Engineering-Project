@@ -141,16 +141,44 @@ class DeviceStore:
 
     # ---- 3.1.2 Find Devices ------------------------------------------------------
 
-    def find(self, device_id: int, unit: Any = None) -> Device | None:
-        return self._devices.get(device_id, unit)
+    def unit_of_work(self) -> Any:
+        """A transaction for SH-4 when its caller did not already provide one."""
+        return self._engine.unit_of_work()
+
+    def find(self, device_id: int, unit: Any = None, *, lock: bool = False) -> Device | None:
+        """Find one device, optionally locking it through the caller's unit."""
+        if lock and unit is None:
+            raise ValueError("a unit of work is required to lock a device")
+        columns = ", ".join(f"`{name}`" for name in Device.column_names())
+        sql = f"SELECT {columns} FROM `device` WHERE `device_id` = %s"
+        if lock:
+            sql += " FOR UPDATE"
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(sql, (device_id,))
+            row = cursor.fetchone()
+        return Device.from_row(row) if row else None
 
     def find_by_mac(self, mac_address: str, is_randomized_mac: bool = False,
-                    unit: Any = None) -> Device | None:
+                    unit: Any = None, *, lock: bool = False) -> Device | None:
         """The device with this MAC. Fixed and randomized MACs are looked up
         separately, so the two are never confused (DI-02). If several rows share
-        one randomized MAC, the newest is returned."""
-        matches = self._devices.list(unit, mac_address=mac_address, is_randomized_mac=is_randomized_mac)
-        return matches[-1] if matches else None
+        one randomized MAC, the newest is returned.
+
+        ``lock=True`` reads with ``FOR UPDATE`` and therefore requires the
+        caller's unit of work. The lock then remains held through the save.
+        """
+        if lock and unit is None:
+            raise ValueError("a unit of work is required to lock a device")
+        columns = ", ".join(f"`{name}`" for name in Device.column_names())
+        sql = (f"SELECT {columns} FROM `device` "
+               "WHERE `mac_address` = %s AND `is_randomized_mac` = %s "
+               "ORDER BY `device_id` DESC LIMIT 1")
+        if lock:
+            sql += " FOR UPDATE"
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(sql, (mac_address, is_randomized_mac))
+            row = cursor.fetchone()
+        return Device.from_row(row) if row else None
 
     def find_listing(self, device_id: int, unit: Any = None) -> DeviceListing | None:
         """One device with its vendor and type NAMES, exactly as the device list shows it
@@ -206,7 +234,7 @@ class DeviceStore:
         that. Scans leave it out; the edit page (M5) passes it."""
         with _unit_of_work(self._engine, unit) as cursor:
             if device.pk is None:
-                same = self.find_by_mac(device.mac_address, device.is_randomized_mac, cursor)
+                same = self.find_by_mac(device.mac_address, device.is_randomized_mac, cursor, lock=True)
                 if same is not None:
                     device.device_id = same.pk                # known MAC: update, never duplicate
 
@@ -259,9 +287,10 @@ class DeviceStore:
         cursor.fetchall()
 
     def _check_unchanged_since(self, device_id: int, loaded_at: datetime, cursor: Any) -> None:
-        latest = self._audit.latest(Device.TABLE, device_id, cursor)
-        if latest is not None and latest.changed_at > loaded_at:
-            raise EditConflictError(device_id, latest)
+        conflicts = [entry for entry in self._audit.since(Device.TABLE, device_id, loaded_at, cursor)
+                     if entry.action is AuditAction.DELETE or _changes_user_field(entry)]
+        if conflicts:
+            raise EditConflictError(device_id, conflicts[-1])
 
     @staticmethod
     def _count_children(device_id: int, cursor: Any) -> dict[str, int]:
@@ -304,6 +333,13 @@ def _search_where(search: DeviceSearch) -> tuple[str, list[Any]]:
 def _escape_like(value: str) -> str:
     """Make \\, % and _ match themselves in a LIKE pattern."""
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _changes_user_field(entry: AuditLog) -> bool:
+    """True when an audit snapshot changed something a person can edit."""
+    before = entry.old_value or {}
+    after = entry.new_value or {}
+    return any(before.get(name) != after.get(name) for name in Device.USER_FIELDS)
 
 @contextmanager
 def _unit_of_work(engine: DatabaseEngine, unit: Any) -> Generator[Any, None, None]:

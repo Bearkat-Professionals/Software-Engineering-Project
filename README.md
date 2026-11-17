@@ -560,7 +560,7 @@ Step 1: Start MAMP and make sure MySQL is green
 
 Step 2: Open a terminal in the project root folder
 
-Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql`, and for PR #103, `database/migrations/002_flag_set_by_user.sql` (without it, saving any device fails with "Unknown column 'flag_set_by_user'"). Run each against both:
+Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql`; for PR #103, run `database/migrations/002_flag_set_by_user.sql` (without it, saving any device fails with "Unknown column 'flag_set_by_user'"); and for PR #162, run `database/migrations/003_device_mac_index.sql` (without it, concurrent scan and edit saves can deadlock). Run each against both:
 
 - `network_device_scanner` (the real development database)
 - `network_device_scanner_test` (or the database named by `TEST_DB_NAME`)
