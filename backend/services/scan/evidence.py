@@ -21,6 +21,7 @@ The ONE place for these numbers, as agreed in #63. Everything else imports them.
     items = [EvidenceItem.from_record(e) for e in scans.evidence_for(device.pk)]
 """
 from __future__ import annotations
+
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
