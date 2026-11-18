@@ -59,3 +59,79 @@ def parse_arp_output(text: str) -> list[ArpEntry]:
                     entry_type=entry_type,
                 ))
     return entries
+
+#Linux
+LINUX_DYNAMIC_STATES = frozenset({"REACHABLE", "STALE", "DELAY", "PROBE"})
+LINUX_STATIC_STATES = frozenset({"PERMANENT", "NOARP"})
+
+ADDRESS_LINE = re.compile(rf"^\d+:\s+(\S+)\s+inet\s+({IP})/\d+")
+
+PROC_FLAG_PERMANENT = 0x4
+ZERO_MAC = "00:00:00:00:00:00"
+_MAC_ONLY = re.compile(rf"^{MAC}$")
+_IP_ONLY = re.compile(rf"^{IP}$")
+
+def parse_linux_addresses(text: str) -> dict[str, str]:
+    """Each device's IPv4 address, from `ip -4 -o addr show`: {"wlp2s0": "192.168.1.50"}.
+    The first address of a device wins; "eth0@if5" (containers) is read as "eth0"."""
+    addresses: dict[str, str] = {}
+    for line in text.splitlines():
+        found = ADDRESS_LINE.match(line.strip())
+        if found:
+            device, ip = found.groups()
+            addresses.setdefault(device.split("@")[0], ip)
+    return addresses
+
+def parse_linux_neigh(text: str, addresses: dict[str, str]) -> list[ArpEntry]:
+    """Entries from `ip -4 neigh show`, matched by shape:
+
+        192.168.1.1 dev wlp2s0 lladdr 70:13:01:65:8e:f7 REACHABLE
+        192.168.1.30 dev wlp2s0 lladdr 28:6f:b9:00:00:01 router DELAY
+        192.168.1.9 dev wlp2s0  FAILED                        (skipped: no MAC)
+
+    The state is the last word. interface_ip is the device's own address, or "".
+    """
+    entries: list[ArpEntry] = []
+    for line in text.splitlines():
+        words = line.split()
+        if len(words) < 4 or not _IP_ONLY.match(words[0]) or words[1] != "dev":
+            continue
+        device, state = words[2], words[-1]
+        mac = words[words.index("lladdr") + 1] if "lladdr" in words[3:-1] else None
+        if mac is None or not _MAC_ONLY.match(mac):
+            continue
+        if state in LINUX_DYNAMIC_STATES:
+            entry_type = ArpEntryType.DYNAMIC
+        elif state in LINUX_STATIC_STATES:
+            entry_type = ArpEntryType.STATIC
+        else:
+            continue
+        entries.append(ArpEntry(ip_address=words[0], mac_address=normalize_mac(mac),
+                                interface_ip=addresses.get(device, ""), entry_type=entry_type))
+    return entries
+
+
+def parse_proc_net_arp(text: str, addresses: dict[str, str]) -> list[ArpEntry]:
+    """Entries from /proc/net/arp (the header line is skipped by shape):
+
+        IP address       HW type     Flags       HW address            Mask     Device
+        192.168.1.1      0x1         0x2         70:13:01:65:8e:f7     *        wlp2s0
+
+    Flags 0x0 or the all-zero MAC is an incomplete entry, skipped; flag 0x4 is permanent.
+    """
+    entries: list[ArpEntry] = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 6 or not _IP_ONLY.match(fields[0]) or not _MAC_ONLY.match(fields[3]):
+            continue
+        try:
+            flags = int(fields[2], 16)
+        except ValueError:
+            continue
+        mac = normalize_mac(fields[3])
+        if flags == 0 or mac == ZERO_MAC:
+            continue
+        entry_type = ArpEntryType.STATIC if flags & PROC_FLAG_PERMANENT else ArpEntryType.DYNAMIC
+        entries.append(ArpEntry(ip_address=fields[0], mac_address=mac,
+                                interface_ip=addresses.get(fields[5], ""), entry_type=entry_type))
+    return entries

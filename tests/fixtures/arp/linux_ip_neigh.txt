@@ -1,0 +1,9 @@
+192.168.1.1 dev wlp2s0 lladdr 02:13:01:65:8e:f7 REACHABLE
+192.168.1.20 dev wlp2s0 lladdr 02:a7:37:12:34:56 STALE
+192.168.1.9 dev wlp2s0  FAILED
+192.168.1.30 dev wlp2s0 lladdr 02:6f:b9:00:00:01 router DELAY
+192.168.1.40 dev wlp2s0 lladdr 02:00:00:00:00:40 PROBE
+192.168.1.41 dev wlp2s0  INCOMPLETE
+192.168.1.50 dev wlp2s0 lladdr 02:00:00:00:00:50 PERMANENT
+172.17.0.2 dev docker0 lladdr 02:42:ac:11:00:02 STALE
+10.8.0.1 dev tun0 lladdr 02:00:00:00:0a:01 NOARP
