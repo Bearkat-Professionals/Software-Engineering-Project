@@ -12,6 +12,7 @@ failing never stops the others (SEC-14).
                                   saver=saver, devices=DeviceStore(engine), scans=ScanStore(engine))
     summary.new_flagged_ids     # for 2.2.5.3 Detect Alert Events ("new unidentified device", spec 7.5)
     record_scan_results(..., on_host_done=lambda done, total: print(f"{done} of {total}"))
+    record_scan_results(..., collected=collect_evidence(ips, collectors, wait_s))   # 2.2.3's findings
 
 A scan only fills a device's type, name and model while they are empty ("unknown" for
 the type), so a value a user set is never replaced, and a scan never resets a type to
@@ -25,6 +26,7 @@ from typing import Any, Callable, Iterable, Protocol
 
 from backend.records import Device, IdentificationEvidence, ScanObservation
 from backend.records.enums import NetworkStatus
+from backend.services.scan.collect_evidence import NO_EVIDENCE, CollectedEvidence
 from backend.services.scan.detect_randomized_mac import is_randomized_mac
 from backend.services.scan.discovered_host import DiscoveredHost
 from backend.services.scan.evidence import UNKNOWN_TYPE_ID, UNKNOWN_VENDOR_ID, EvidenceItem, RawEvidence
@@ -32,7 +34,7 @@ from backend.services.scan.identification_manager import IdentificationResult, I
 from backend.shared_modules.save_device_record import DeviceChanges, DeviceRecordSaver, SaveOutcome, SaveStatus
 from backend.shared_modules.validate_input import validate_mac
 
-# No evidence collectors yet (2.2.3, M6): real scans identify from the OUI and stored evidence.
+# Nothing collected for a host: identify from its OUI and stored evidence only (check_identification).
 NO_COLLECTED_EVIDENCE: tuple[RawEvidence, ...] = ()
 
 
@@ -69,8 +71,12 @@ class RecordSummary:
 def record_scan_results(scan_id: int, user_id: int, hosts: Iterable[DiscoveredHost],
                         rules: IdentificationRules, seen_at: datetime, *, engine: UnitOfWorkSource,
                         saver: DeviceRecordSaver, devices: DeviceFinder, scans: ObservationEvidenceStore,
-                        on_host_done: Callable[[int, int], None] | None = None) -> RecordSummary:
+                        on_host_done: Callable[[int, int], None] | None = None,
+                        collected: CollectedEvidence = NO_EVIDENCE) -> RecordSummary:
     """Identify and save every host; one host failing never stops the others (SEC-14).
+
+    collected is what 2.2.3 found: each host's evidence goes to identify() and its
+    hostname to SH-4, both looked up by the host's IP.
 
     on_host_done(done, total), if given, is called with (0, total) first, then after
     each host, saved or not, so the Scan Manager can report progress (#48).
@@ -84,7 +90,8 @@ def record_scan_results(scan_id: int, user_id: int, hosts: Iterable[DiscoveredHo
     for done, host in enumerate(to_save, start=1):
         try:
             with engine.unit_of_work() as unit:
-                outcome = _record_host(scan_id, user_id, host, rules, seen_at, saver, devices, scans, unit)
+                outcome = _record_host(scan_id, user_id, host, rules, seen_at, saver, devices, scans, unit,
+                                       collected)
         except Exception as exc:            # SEC-14: this host's unit was rolled back; carry on
             summary.failures.append((host.ip_address, f"{type(exc).__name__}: {exc}"))
         else:
@@ -122,18 +129,20 @@ def _one_per_mac(hosts: Iterable[DiscoveredHost], summary: RecordSummary) -> lis
 
 def _record_host(scan_id: int, user_id: int, host: DiscoveredHost, rules: IdentificationRules,
                  seen_at: datetime, saver: DeviceRecordSaver, devices: DeviceFinder,
-                 scans: ObservationEvidenceStore, unit: Any) -> SaveOutcome:
+                 scans: ObservationEvidenceStore, unit: Any,
+                 collected: CollectedEvidence = NO_EVIDENCE) -> SaveOutcome:
     """Identify and save one host's device, observation and evidence, all in the caller's unit."""
     known = _find_device(host, devices, unit)
     stored = [EvidenceItem.from_record(row) for row in scans.evidence_for(known.pk, unit)] if known else []
-    result = identify(host, NO_COLLECTED_EVIDENCE, stored, rules,
+    result = identify(host, collected.evidence.get(host.ip_address, NO_COLLECTED_EVIDENCE), stored, rules,
                       trusted=bool(known and known.trusted_status), is_new_device=known is None)
 
-    outcome = saver.save(_changes(host, seen_at, result, known), user_id, result.identification.level, unit)
+    changes = _changes(host, seen_at, result, known, collected.hostnames.get(host.ip_address))
+    outcome = saver.save(changes, user_id, result.identification.level, unit)
     if outcome.status is SaveStatus.REJECTED:
         return outcome                      # nothing was written
 
-    device = outcome.device
+    device = outcome.device                 # the observation's hostname is the saved device's
     scans.add_observation(ScanObservation(scan_id=scan_id, device_id=device.pk,
                                           ip_address=host.ip_address, hostname=device.hostname,
                                           status=NetworkStatus.ONLINE, observed_at=seen_at), unit)
@@ -163,12 +172,13 @@ def scan_type(found_type_id: int, stored: Device | None) -> int | None:
 
 
 def _changes(host: DiscoveredHost, seen_at: datetime, result: IdentificationResult,
-             known: Device | None) -> DeviceChanges:
-    """What SH-4 saves. Type, name and model only fill empty fields, so a user's values are kept."""
+             known: Device | None, hostname: str | None = None) -> DeviceChanges:
+    """What SH-4 saves. Type, name and model only fill empty fields, so a user's values are kept.
+    The hostname is scan-written (#147): each scan that finds one updates it, and a scan
+    that finds none (None) keeps the stored one."""
     found = result.identification
-    # hostname stays None: no Host Discovery step finds one yet
     return DeviceChanges(
-        mac_address=host.mac_address, current_ip=host.ip_address, seen_at=seen_at,
+        mac_address=host.mac_address, current_ip=host.ip_address, seen_at=seen_at, hostname=hostname,
         oui_vendor_id=found.vendor_id if found.vendor_id != UNKNOWN_VENDOR_ID else None,
         device_type_id=scan_type(found.device_type_id, known),
         confidence_score=found.breakdown.score,

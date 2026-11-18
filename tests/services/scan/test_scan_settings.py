@@ -12,8 +12,9 @@ from typing import Any
 from unittest import mock
 
 from backend.black_boxes.timed_network_request import DEFAULT_WORKERS, MAX_WORKERS
-from backend.services.scan.scan_settings import (DEFAULT_PROBE_TIMEOUT_S, MAX_PROBE_TIMEOUT_S, TIMEOUT_KEY, DISCOVERY_METHODS,
-                                                  WORKERS_KEY, ScanSettings)
+from backend.services.scan.scan_settings import (DEFAULT_EVIDENCE_WAIT_S, DEFAULT_PROBE_TIMEOUT_S, DISCOVERY_METHODS,
+                                                  EVIDENCE_METHODS, EVIDENCE_METHODS_KEY, EVIDENCE_WAIT_KEY,
+                                                  MAX_PROBE_TIMEOUT_S, TIMEOUT_KEY, WORKERS_KEY, ScanSettings)
 
 
 class ScanSettingsValueTests(unittest.TestCase):
@@ -56,7 +57,9 @@ class ScanSettingsValueTests(unittest.TestCase):
 
     def test_configuration_survives_json(self) -> None:
         configuration = ScanSettings(probe_workers=64, probe_timeout_s=0.5).to_configuration()
-        self.assertEqual(configuration, {"probe_workers": 64, "probe_timeout_s": 0.5, "discovery_methods": ["arp", "ping"]})  #just added discover methods, javier
+        self.assertEqual(configuration, {"probe_workers": 64, "probe_timeout_s": 0.5, "discovery_methods": ["arp", "ping"],
+                                         "evidence_methods": ["mdns", "ssdp", "netbios", "reverse_dns"],
+                                         "evidence_wait_s": 5.0})
 
         self.assertEqual(json.loads(json.dumps(configuration)), configuration)
 
@@ -91,6 +94,66 @@ class DiscoveryMethodTests(unittest.TestCase):
     def test_configuration_lists_the_methods(self) -> None:
         configuration = ScanSettings(discovery_methods=("ping",)).to_configuration()
         self.assertEqual(configuration["discovery_methods"], ["ping"])
+
+class EvidenceSettingTests(unittest.TestCase):
+    """SCAN_EVIDENCE_METHODS and SCAN_EVIDENCE_WAIT_S (#151)."""
+
+    def test_defaults_are_every_method_and_5_seconds(self) -> None:
+        settings = ScanSettings()
+        self.assertEqual(EVIDENCE_METHODS, ("mdns", "ssdp", "netbios", "reverse_dns"))
+        self.assertEqual((settings.evidence_methods, settings.evidence_wait_s), (EVIDENCE_METHODS, 5.0))
+        self.assertEqual(DEFAULT_EVIDENCE_WAIT_S, 5.0)
+
+    def test_empty_turns_the_phase_off(self) -> None:
+        self.assertEqual(ScanSettings(evidence_methods=()).evidence_methods, ())
+        self.assertEqual(ScanSettings(evidence_methods=[]).evidence_methods, ())
+
+    def test_a_list_becomes_a_tuple_without_repeats(self) -> None:
+        self.assertEqual(ScanSettings(evidence_methods=["ssdp", "mdns", "ssdp"]).evidence_methods, ("ssdp", "mdns"))
+
+    def test_an_unknown_method_is_refused_with_the_allowed_list(self) -> None:
+        for methods in (("bluetooth",), ("mdns", "MDNS"), ("llmnr",)):
+            with self.subTest(methods=methods):
+                with self.assertRaisesRegex(ValueError, "any of mdns, ssdp, netbios, reverse_dns"):
+                    ScanSettings(evidence_methods=methods)
+        with self.assertRaisesRegex(ValueError, "must be a list"):
+            ScanSettings(evidence_methods="mdns")
+
+    def test_the_wait_is_1_to_10_seconds(self) -> None:
+        for wait in (1, 2.5, 10):
+            with self.subTest(wait=wait):
+                self.assertEqual(ScanSettings(evidence_wait_s=wait).evidence_wait_s, float(wait))
+        for wait in (0, 0.99, 10.01, 11, -1, float("nan"), True, "3", None):
+            with self.subTest(wait=wait):
+                with self.assertRaisesRegex(ValueError, "Evidence wait must be from 1 to 10"):
+                    ScanSettings(evidence_wait_s=wait)
+
+    def test_from_env(self) -> None:
+        cases = [
+            ({}, EVIDENCE_METHODS, 5.0),                                         # missing: the defaults
+            ({EVIDENCE_METHODS_KEY: ""}, (), 5.0),                               # empty: off
+            ({EVIDENCE_METHODS_KEY: "  "}, (), 5.0),
+            ({EVIDENCE_METHODS_KEY: " SSDP, mdns ,"}, ("ssdp", "mdns"), 5.0),     # spaces, case, a trailing comma
+            ({EVIDENCE_WAIT_KEY: " 4 "}, EVIDENCE_METHODS, 4.0),
+            ({EVIDENCE_WAIT_KEY: ""}, EVIDENCE_METHODS, 5.0),                   # blank wait: the default
+        ]
+        for environ, methods, wait in cases:
+            with self.subTest(environ=environ):
+                settings = ScanSettings.from_env(environ)
+                self.assertEqual((settings.evidence_methods, settings.evidence_wait_s), (methods, wait))
+
+    def test_bad_values_in_env_name_their_key(self) -> None:
+        cases = [({EVIDENCE_METHODS_KEY: "mdns,bluetooth"}, EVIDENCE_METHODS_KEY),
+                 ({EVIDENCE_WAIT_KEY: "0"}, EVIDENCE_WAIT_KEY),
+                 ({EVIDENCE_WAIT_KEY: "11"}, EVIDENCE_WAIT_KEY),
+                 ({EVIDENCE_WAIT_KEY: "soon"}, EVIDENCE_WAIT_KEY)]
+        for environ, key in cases:
+            with self.subTest(environ=environ):
+                with self.assertRaisesRegex(ValueError, f"^{key} in .env"):
+                    ScanSettings.from_env(environ)
+        with self.assertRaisesRegex(ValueError, "mdns, ssdp, netbios, reverse_dns"):   # the allowed list
+            ScanSettings.from_env({EVIDENCE_METHODS_KEY: "bluetooth"})
+
 
 class ScanSettingsFromEnvTests(unittest.TestCase):
     def test_missing_or_blank_keys_keep_the_defaults(self) -> None:

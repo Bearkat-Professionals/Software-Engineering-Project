@@ -75,6 +75,7 @@ class OpenResult:
 
 class ScanPhase(str, Enum):
     DISCOVERING_HOSTS = "discovering_hosts"
+    COLLECTING_EVIDENCE = "collecting_evidence"     # 2.2.3: done/total counts the methods (#151)
     SAVING_RESULTS = "saving_results"
     CLOSING = "closing"
 
