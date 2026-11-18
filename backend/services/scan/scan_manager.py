@@ -9,7 +9,8 @@
 Phases run top to bottom, each passing its output to the next as data (design 2.2):
     1. load the reference data once (3.2.1) and prepare it for identification (2.2.4)
     2. discover hosts (2.2.2): known hosts -> sweep -> resolve MACs -> filter -> mark randomized
-    3. identify and save each host (2.2.4, then 2.2.5.2)
+    3. collect evidence from the hosts (2.2.3), when any evidence method is turned on
+    4. identify and save each host with its evidence and hostname (2.2.4, then 2.2.5.2)
 Then the manager decides the outcome (design 8.4) and ALWAYS closes the session, even
 after a crash. It sends no alerts: the result lists the events, and on_finished hands
 it to the Application Controller after the outcome is saved (design 6.1).
@@ -18,7 +19,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
@@ -31,6 +32,9 @@ from backend.data_access.reference_data import ReferenceRules, ReferenceStore, f
 from backend.records import DeviceType, Vendor
 from backend.records.enums import AlertEventName, ScanOutcome
 from backend.records.scan import Scan
+from backend.services.scan.collect_evidence import NO_EVIDENCE, CollectedEvidence, Collector, collect_evidence
+from backend.services.scan.collect_mdns_evidence import collect_mdns
+from backend.services.scan.collect_ssdp_evidence import collect_ssdp
 from backend.services.scan.detect_randomized_mac import mark_randomized_macs
 from backend.services.scan.discovered_host import DiscoveredHost
 from backend.services.scan.filter_addresses import filter_addresses
@@ -49,6 +53,11 @@ ArpReader = Callable[[], "list[ArpEntry] | None"]
 RecordHosts = Callable[..., RecordSummary]      # record_scan_results with engine, saver and scans filled in
 
 OK, UNAVAILABLE, OFF = "ok", "unavailable", "off"
+
+# Every evidence collector that exists so far, by its setting name (2.2.3). Name evidence
+# (netbios, reverse_dns, #148) is added here when it's merged; until then those two
+# settings are accepted and skipped, so they never make a scan partial.
+EVIDENCE_COLLECTORS: dict[str, Collector] = {"mdns": collect_mdns, "ssdp": collect_ssdp}
 
 
 @dataclass(frozen=True)
@@ -88,7 +97,8 @@ class ScanManager:
     def __init__(self, sessions: ScanSessionController, *, load_rules: Callable[[], ReferenceRules],
                  record_hosts: RecordHosts, settings: ScanSettings, probe: Probe | None = None,
                  read_arp: ArpReader = read_arp_cache, clock: Callable[[], datetime] = datetime.now,
-                 on_finished: Callable[[ScanResult], None] | None = None) -> None:
+                 on_finished: Callable[[ScanResult], None] | None = None,
+                 collectors: Mapping[str, Collector] | None = None) -> None:
         self.sessions = sessions
         self.load_rules = load_rules
         self.record_hosts = record_hosts
@@ -97,6 +107,7 @@ class ScanManager:
         self.read_arp = read_arp
         self.clock = clock
         self.on_finished = on_finished
+        self.collectors = dict(collectors or {})    # by method name; only those in the settings run
         self._thread: threading.Thread | None = None
 
     # ---- starting ----------------------------------------------------------------
@@ -138,8 +149,9 @@ class ScanManager:
             if not found.any_method_worked:
                 stop_reason = "no host discovery method worked: the ARP cache and ping were both unavailable"
             else:
-                summary = self._save(scan, found.hosts, rules)
-                outcome = self._decide(found, summary)
+                collected = self._collect(found.hosts)
+                summary = self._save(scan, found.hosts, rules, collected)
+                outcome = self._decide(found, summary, collected)
         except Exception as exc:
             logger.exception("scan %s stopped", scan.scan_id)
             stop_reason = f"scan stopped: {type(exc).__name__}: {exc}"
@@ -197,18 +209,37 @@ class ScanManager:
                     self.sessions.report_progress(ScanPhase.DISCOVERING_HOSTS, done, total)
         return counted
 
-    def _save(self, scan: Scan, hosts: list[DiscoveredHost], rules: IdentificationRules) -> RecordSummary:
+    def _collect(self, hosts: list[DiscoveredHost]) -> CollectedEvidence:
+        """2.2.3: the evidence methods that are turned on, all at once, for the hosts found.
+        Each method that couldn't run becomes one line in the scan's errors."""
+        methods = [method for method in self.settings.evidence_methods if method in self.collectors]
+        if not methods or not hosts:
+            return NO_EVIDENCE                  # turned off (or nothing to ask): no phase, no error
+        self.sessions.report_progress(ScanPhase.COLLECTING_EVIDENCE, 0, len(methods))
+        collected = collect_evidence([host.ip_address for host in hosts],
+                                     {method: self.collectors[method] for method in methods},
+                                     self.settings.evidence_wait_s,
+                                     on_done=partial(self.sessions.report_progress, ScanPhase.COLLECTING_EVIDENCE))
+        for method, reason in collected.unavailable:
+            self.sessions.add_error(f"{method} unavailable: {reason}")
+        return collected
+
+    def _save(self, scan: Scan, hosts: list[DiscoveredHost], rules: IdentificationRules,
+              collected: CollectedEvidence = NO_EVIDENCE) -> RecordSummary:
         seen_at = self.clock().replace(microsecond=0)       # DATETIME keeps whole seconds
         summary = self.record_hosts(scan.scan_id, scan.user_id, hosts, rules, seen_at,
-                                    on_host_done=partial(self.sessions.report_progress, ScanPhase.SAVING_RESULTS))
+                                    on_host_done=partial(self.sessions.report_progress, ScanPhase.SAVING_RESULTS),
+                                    collected=collected)
         for ip, reason in summary.failures:
             self.sessions.add_error(f"{ip}: {reason}")
         return summary
 
     @staticmethod
-    def _decide(found: _Discovery, summary: RecordSummary) -> ScanOutcome:
-        """partial when a method was unavailable or a host couldn't be saved (design 8.4)."""
-        if UNAVAILABLE in (found.arp_status, found.ping_status) or summary.failures:
+    def _decide(found: _Discovery, summary: RecordSummary,
+                collected: CollectedEvidence = NO_EVIDENCE) -> ScanOutcome:
+        """partial when a discovery or evidence method was unavailable, or a host couldn't
+        be saved (design 8.4). A method turned off in the settings isn't unavailable."""
+        if UNAVAILABLE in (found.arp_status, found.ping_status) or summary.failures or collected.unavailable:
             return ScanOutcome.PARTIAL
         return ScanOutcome.SUCCESS
 
@@ -237,9 +268,21 @@ def _alerts(outcome: ScanOutcome, summary: RecordSummary | None) -> tuple[AlertC
 def build_scan_manager(engine: DatabaseEngine, sessions: ScanSessionController, settings: ScanSettings, *,
                        probe: Probe | None = None, read_arp: ArpReader = read_arp_cache,
                        on_finished: Callable[[ScanResult], None] | None = None) -> ScanManager:
-    """A ScanManager on the real database. The one place that knows which stores it uses."""
+    """A ScanManager on the real database and network. The one place that knows which
+    stores and evidence collectors it uses."""
     devices = DeviceStore(engine)
     saver = DeviceRecordSaver(devices, ReferenceStore(engine, Vendor), ReferenceStore(engine, DeviceType))
     record = partial(record_scan_results, engine=engine, saver=saver, devices=devices, scans=ScanStore(engine))
     return ScanManager(sessions, load_rules=partial(find_reference_rules, engine), record_hosts=record,
-                       settings=settings, probe=probe, read_arp=read_arp, on_finished=on_finished)
+                       settings=settings, probe=probe, read_arp=read_arp, on_finished=on_finished,
+                       collectors=evidence_collectors(settings))
+
+
+def evidence_collectors(settings: ScanSettings) -> dict[str, Collector]:
+    """The real collectors for the evidence methods turned on, in the settings' order.
+    A method that's turned on but not built yet is logged once and skipped."""
+    missing = [method for method in settings.evidence_methods if method not in EVIDENCE_COLLECTORS]
+    if missing:
+        logger.info("evidence methods not available in this version, skipped: %s", ", ".join(missing))
+    return {method: EVIDENCE_COLLECTORS[method] for method in settings.evidence_methods
+            if method in EVIDENCE_COLLECTORS}

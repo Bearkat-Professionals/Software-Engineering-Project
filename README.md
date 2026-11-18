@@ -97,6 +97,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2); `--workers` / `--timeout` try other sweep settings |
 | `scan` | `backend.services.scan.check_scan` | run a whole scan in the background as a user, watch its progress, then see the outcome and devices (#44) |
+| `ev` | `backend.services.scan.check_evidence` | ask every address in a range (default: your subnet) what it is with mDNS, SSDP, ...; prints each host's evidence and hostname, saves nothing (2.2.3, #151) |
 | `ident` | `backend.services.scan.check_identification` | after a scan, list every device's vendor, type, score, level and flag, checked against its stored evidence (#69, test database; `--database NAME` for another) |
 | `speed` | `backend.services.scan.check_sweep_speed` | time a ping sweep at 1, 8, 32 and 64 workers and print a table for the PR (#81) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
@@ -154,10 +155,28 @@ from backend.services.scan.scan_settings import ScanSettings
 settings = ScanSettings.from_env()                      # .env, or the defaults
 hosts, status = sweep_subnet(scope, settings=settings)
 ```
+## Evidence collection settings (#151)
+After Host Discovery, a scan asks each host what it is (2.2.3). mDNS and SSDP are built; NetBIOS and reverse DNS are accepted in the setting and skipped until #148 is merged.
+
+| `.env` key | Default | Allowed | What it does |
+|---|---|---|---|
+| `SCAN_EVIDENCE_METHODS` | `mdns,ssdp,netbios,reverse_dns` | any of those, comma separated; set it to nothing (`SCAN_EVIDENCE_METHODS=`) to turn the phase off | which evidence methods run, all at the same time |
+| `SCAN_EVIDENCE_WAIT_S` | 5 | 1 to 10 | how long mDNS and SSDP listen for answers |
+
+A method that's turned on but can't run (e.g. another program holds UDP port 5353) is listed in the scan's errors as `mdns unavailable: ...`, the others still run, and the scan ends `partial`. A method turned off isn't an error. With every method on, the phase takes about `SCAN_EVIDENCE_WAIT_S` seconds (5 by default), and never more than `SCAN_EVIDENCE_WAIT_S` + 5.
+
+See what each host says, without saving anything:
+```
+.\dev ev                                       # your subnet
+.\dev ev 192.168.1.0/24 --methods mdns --wait 5
+.\dev ev 192.168.1.0/24 --ip 192.168.1.20      # one device
+```
+**Windows Firewall:** the first time Python listens for mDNS or SSDP answers, Windows may ask whether to allow it. Allow it on **private** networks, or those methods hear nothing.
+
 A scan records its settings in `scan.configuration_used`. Saving results stays one host at a time on purpose: each save is a short database transaction, and threads would need a connection each for little gain.
 
 ## Running a scan (#44)
-A scan runs in the background: it opens a session, discovers hosts, identifies and saves them, then closes with an outcome (`success`, `partial` or `failed`) and any errors. Only one scan runs at a time.
+A scan runs in the background: it opens a session, discovers hosts, collects evidence from them, identifies and saves them, then closes with an outcome (`success`, `partial` or `failed`) and any errors. Only one scan runs at a time.
 
 ```
 .\dev scan 192.168.1.0/24 --user blaine                  # watch it, then see the devices
@@ -172,7 +191,7 @@ Before the first run (the database tests empty these tables, so redo it after `.
 | Outcome | When |
 |---|---|
 | `success` | every discovery method worked and every host was saved |
-| `partial` | the scan finished, but ping or the ARP cache was unavailable, or some hosts couldn't be saved |
+| `partial` | the scan finished, but ping, the ARP cache or an evidence method was unavailable, or some hosts couldn't be saved |
 | `failed` | no discovery method worked, or the scan stopped with an error (the first error line says why) |
 
 **"Refused: A scan started by ... is still running."** Another scan really is running, or one was cut off by a crash or Ctrl+C before it could close. If you're sure nothing else is scanning, add `--recover` once: it closes scans left running as failed. Don't use it while a teammate's scan is running on the same database; it would close theirs too.
@@ -223,6 +242,8 @@ DB_PASSWORD= <your_database_password>
 DB_NAME=network_device_scanner
 SCAN_PROBE_WORKERS=32       # pings at once, 1 to 128
 SCAN_PROBE_TIMEOUT_S=1.0    # seconds each ping waits, more than 0 and at most 5
+SCAN_EVIDENCE_METHODS=mdns,ssdp,netbios,reverse_dns   # empty turns evidence collection off
+SCAN_EVIDENCE_WAIT_S=5      # seconds mDNS and SSDP listen, 1 to 10
 ```
 
 ## Creating the first admin (#89)

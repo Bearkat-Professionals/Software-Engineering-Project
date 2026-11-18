@@ -190,4 +190,5 @@ def _without_suffix(text: str, suffix: str) -> str:
 
 
 def _unavailable(why: str) -> CollectorResult:
-    return CollectorResult(METHOD, {}, {}, available=False, reason=f"mDNS unavailable: {why}")
+    """The Evidence Collection Manager writes "mdns unavailable: <why>", so only the why goes here."""
+    return CollectorResult(METHOD, {}, {}, available=False, reason=why)

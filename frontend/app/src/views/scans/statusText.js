@@ -2,6 +2,7 @@
 const PHASE_TEXT = {
 
     discovering_hosts: "Finding devices",
+    collecting_evidence: "Collecting evidence",
     saving_results: "Saving results",
     closing: "Closing",
 
