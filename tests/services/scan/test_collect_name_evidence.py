@@ -116,6 +116,15 @@ class ReverseDnsTests(unittest.TestCase):
         result = self.collect(lambda ip: (names[ip], [], [ip]), hosts=names)
         self.assertEqual(result.hostnames, {PRINTER_IP: "printer.lan"})
 
+    def test_a_bare_netbios_name_from_windows_fallback_is_not_dns(self) -> None:     # DI-04
+        for name in ("READYSHARE", "READYSHARE.", "  READYSHARE  "):
+            with self.subTest(name=name):
+                result = self.collect(lambda ip, name=name: (name, [], [ip]))
+                self.assertEqual((result.available, result.evidence, result.hostnames), (True, {}, {}))
+
+    def test_a_dotted_name_with_a_trailing_dot_is_kept(self) -> None:
+        self.assertEqual(self.collect(lambda ip: ("router.lan.", [], [ip])).hostnames, {ROUTER_IP: "router.lan."})
+
     def test_names_are_cleaned(self) -> None:
         result = self.collect(lambda ip: ("evil\x1b[31m.lan\x00" + "x" * 400, [], [ip]))
         name = result.hostnames[ROUTER_IP]
@@ -159,7 +168,7 @@ class ReverseDnsTests(unittest.TestCase):
         self.assertIn("TypeError", result.reason)
 
     def test_no_hosts(self) -> None:
-        self.assertEqual(self.collect(lambda ip: ("x", [], []), hosts=()).hostnames, {})
+        self.assertEqual(self.collect(lambda ip: ("x.lan", [], []), hosts=()).hostnames, {})
 
 
 # ---- NetBIOS -----------------------------------------------------------------------------
@@ -267,7 +276,7 @@ class DeadlineTests(unittest.TestCase):
 
         def never(ip):
             release.wait(30)
-            return ("late", [], [])
+            return ("late.lan", [], [])
         start = time.monotonic()
         result = collect_reverse_dns([PC_IP], self.WAIT_S, lookup=never, workers=2)
         self.assertLess(time.monotonic() - start, self.WAIT_S + 1)

@@ -67,7 +67,9 @@ def collect_reverse_dns(hosts: Sequence[str], wait_s: float, *, lookup: Lookup =
     """The PTR name of each host, looked up workers at a time (SCAN_PROBE_WORKERS by default).
     One lookup is given up on after lookup_timeout_s, and all of them by wait_s: a lookup
     still running then is left to finish in the background and its answer is ignored.
-    An address with no name, or whose "name" is the address again, gets no evidence."""
+    An address with no name, or whose "name" is the address again, gets no evidence. So does
+    a bare one-label name ("READYSHARE"): on Windows, gethostbyaddr falls back to NetBIOS and
+    LLMNR when there's no PTR record, and that name is NetBIOS evidence, not DNS (DI-04)."""
     if not callable(lookup):
         return _unavailable(REVERSE_DNS_METHOD, "reverse DNS lookups can't be made on this computer")
     hosts = list(dict.fromkeys(hosts))
@@ -80,8 +82,8 @@ def collect_reverse_dns(hosts: Sequence[str], wait_s: float, *, lookup: Lookup =
     hostnames: dict[str, str] = {}
     for ip, answer in answers.items():
         name = clean_field(answer[0] if answer else None)
-        if name is None or name == ip:
-            continue
+        if name is None or name == ip or "." not in name.rstrip("."):
+            continue        # no PTR record; Windows' NetBIOS/LLMNR fallback answered instead
         evidence[ip] = [RawEvidence(EvidenceType.REVERSE_DNS, name)]
         hostnames[ip] = name
     logger.info("Reverse DNS: %d hosts asked, %d answered in time, %d with a name",

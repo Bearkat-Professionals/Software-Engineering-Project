@@ -156,12 +156,12 @@ settings = ScanSettings.from_env()                      # .env, or the defaults
 hosts, status = sweep_subnet(scope, settings=settings)
 ```
 ## Evidence collection settings (#151)
-After Host Discovery, a scan asks each host what it is (2.2.3). mDNS and SSDP are built; NetBIOS and reverse DNS are accepted in the setting and skipped until #148 is merged.
+After Host Discovery, a scan asks each host what it is (2.2.3), with all four methods at the same time: mDNS and SSDP (the services and model a device announces), NetBIOS (a Windows computer's name, from UDP port 137) and reverse DNS (the address's DNS name). Reverse DNS keeps only real DNS names with a dot, like `router.lan`: when there's no DNS entry, Windows answers with the NetBIOS name instead, and that already counts as NetBIOS evidence.
 
 | `.env` key | Default | Allowed | What it does |
 |---|---|---|---|
 | `SCAN_EVIDENCE_METHODS` | `mdns,ssdp,netbios,reverse_dns` | any of those, comma separated; set it to nothing (`SCAN_EVIDENCE_METHODS=`) to turn the phase off | which evidence methods run, all at the same time |
-| `SCAN_EVIDENCE_WAIT_S` | 5 | 1 to 10 | how long mDNS and SSDP listen for answers |
+| `SCAN_EVIDENCE_WAIT_S` | 5 | 1 to 10 | how long each method waits for answers (one reverse DNS lookup gives up after 2 seconds) |
 
 A method that's turned on but can't run (e.g. another program holds UDP port 5353) is listed in the scan's errors as `mdns unavailable: ...`, the others still run, and the scan ends `partial`. A method turned off isn't an error. With every method on, the phase takes about `SCAN_EVIDENCE_WAIT_S` seconds (5 by default), and never more than `SCAN_EVIDENCE_WAIT_S` + 5.
 
