@@ -27,7 +27,7 @@ def main() -> None:
         parser.error(str(exc))
 
     if entries is None:
-        print("ARP table unavailable (arp could not run on this machine).")
+        print("ARP table unavailable (it could not be read on this machine).")
         return
     if not entries:
         print("No ARP entries found.")
@@ -38,7 +38,7 @@ def main() -> None:
         by_interface[entry.interface_ip].append(entry)
 
     for interface_ip, rows in by_interface.items():
-        print(f"\nInterface {interface_ip}  ({len(rows)} entries)")
+        print(f"\nInterface {interface_ip or '(address unknown)'}  ({len(rows)} entries)")
         for entry in rows:
             print(f"  {entry.ip_address:<16} {entry.mac_address}  {entry.entry_type.value}")
     print(f"\n{len(entries)} entries across {len(by_interface)} interface(s)")
@@ -46,3 +46,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    
