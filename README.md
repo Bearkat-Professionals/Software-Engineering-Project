@@ -611,6 +611,11 @@ Step 3: Load the schema and the seed (I ran these commands in my IDE)
 
 - mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/schema/database_schema.sql
 - mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/seed/seed_reference_data.sql
+- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/seed/seed_signatures.sql
+
+`seed_signatures.sql` adds the starter device types and identification signatures after
+the required `seed_reference_data.sql` rows. It is safe to run more than once: an
+existing type or signature is left unchanged rather than duplicated.
 
 Step 4: Install python requirements (Run the following commands inside your IDE terminal)
 
@@ -641,6 +646,15 @@ Step 2.1: Apply database migrations to existing databases before running the app
 - `network_device_scanner_test` (or the database named by `TEST_DB_NAME`)
 
 In MAMP/phpMyAdmin, select the first database, choose **Import**, select the migration file, and run it. Repeat for the test database. A fresh database created from `database/schema/database_schema.sql` already contains these changes and does not need the migrations.
+
+Step 2.2: Load the starter device types and signatures after
+`database/seed/seed_reference_data.sql`. In MAMP/phpMyAdmin, select the database, choose
+the **Import** tab, select `database/seed/seed_signatures.sql`, and run it. Repeat for the
+test database. Running the file a second time changes nothing.
+
+The Apple TV mDNS signature deliberately uses the narrower `model=AppleTV` marker instead
+of `_airplay._tcp`; Sonos devices can advertise AirPlay too, and the broad rule could
+create a tie between the streaming-device and smart-speaker categories.
 
 Step 3: Run the server with the following command (test database ONLY):
     - `.\dev crud`   (long form: `py -3.13 -m backend.dev_tools.crud_server`)
