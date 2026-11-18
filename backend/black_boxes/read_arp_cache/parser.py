@@ -89,23 +89,22 @@ def parse_linux_neigh(text: str, addresses: dict[str, str]) -> list[ArpEntry]:
         192.168.1.30 dev wlp2s0 lladdr 28:6f:b9:00:00:01 router DELAY
         192.168.1.9 dev wlp2s0  FAILED                        (skipped: no MAC)
 
-    The state is the last word. interface_ip is the device's own address, or "".
+        The state is whichever word is a known state, so words after it ("STALE proto zebra",
+        from routing software) don't matter. interface_ip is the device's own address, or "".
     """
     entries: list[ArpEntry] = []
     for line in text.splitlines():
         words = line.split()
         if len(words) < 4 or not _IP_ONLY.match(words[0]) or words[1] != "dev":
             continue
-        device, state = words[2], words[-1]
+        device = words[2]
         mac = words[words.index("lladdr") + 1] if "lladdr" in words[3:-1] else None
         if mac is None or not _MAC_ONLY.match(mac):
             continue
-        if state in LINUX_DYNAMIC_STATES:
-            entry_type = ArpEntryType.DYNAMIC
-        elif state in LINUX_STATIC_STATES:
-            entry_type = ArpEntryType.STATIC
-        else:
-            continue
+        states = [word for word in words[3:] if word in LINUX_DYNAMIC_STATES or word in LINUX_STATIC_STATES]
+        if not states:
+            continue                        # FAILED, INCOMPLETE, NONE: no usable entry
+        entry_type = ArpEntryType.DYNAMIC if states[0] in LINUX_DYNAMIC_STATES else ArpEntryType.STATIC
         entries.append(ArpEntry(ip_address=words[0], mac_address=normalize_mac(mac),
                                 interface_ip=addresses.get(device, ""), entry_type=entry_type))
     return entries

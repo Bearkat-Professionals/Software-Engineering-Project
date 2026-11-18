@@ -160,6 +160,15 @@ class LinuxParserTests(unittest.TestCase):
             linux_entry("10.8.0.1", "02:00:00:00:0A:01", "", STATIC),                     # NOARP; tun0 unknown
         ])                                                                                # FAILED, INCOMPLETE skipped
 
+        def test_words_after_the_state_dont_matter(self):
+            for line, entry_type in (("192.168.1.5 dev wlp2s0 lladdr 02:00:00:00:00:05 STALE proto zebra", DYNAMIC),
+                                 ("192.168.1.5 dev wlp2s0 lladdr 02:00:00:00:00:05 PERMANENT proto static", STATIC)):
+                with self.subTest(line=line):
+                    self.assertEqual(parse_linux_neigh(line, ADDRESSES),
+                                 [linux_entry("192.168.1.5", "02:00:00:00:00:05", "192.168.1.50", entry_type)])
+        self.assertEqual(parse_linux_neigh("192.168.1.5 dev wlp2s0 lladdr 02:00:00:00:00:05 FAILED proto zebra",
+                                           ADDRESSES), [])
+
     def test_a_line_without_lladdr_is_skipped_whatever_its_state(self):
         for line in ("192.168.1.9 dev wlp2s0  FAILED", "192.168.1.9 dev wlp2s0  REACHABLE",
                      "192.168.1.9 dev wlp2s0 lladdr 02:00:00:00:00:09 NONE",
@@ -287,3 +296,4 @@ class FakeArpCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    
