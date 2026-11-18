@@ -5,6 +5,7 @@ import { api } from "../../components/api";
 import { displayName, formatConfidence, formatLastSeen } from "../../components/format";
 import { useMessages } from "../../components/Messages";
 import { useScanStatus } from "../scans/useScanStatus";
+import { useAuth } from "../../auth/AuthProvider";
 
 const PAGE_SIZES = [25, 50, 100];
 
@@ -27,6 +28,8 @@ function readPerPage(params) {
 export default function DeviceList() {
 
     const { showMessage } = useMessages();
+    const { can } = useAuth();
+    const canEdit = can("EDIT_DEVICES");
     const [params, setParams] = useSearchParams();
     const page = readPage(params);
     const perPage = readPerPage(params);
@@ -114,6 +117,8 @@ export default function DeviceList() {
 
           <h1>Devices</h1>
 
+          {canEdit && <p><Link to="/devices/new">Add Device</Link></p>}
+
           {status?.running && (
 
             <p>
@@ -163,7 +168,7 @@ export default function DeviceList() {
 
                     <tr key={device.device_id} className={device.flagged ? "suspicious" : undefined}>
 
-                      <td>{displayName(device)}</td>
+                      <td><Link to={`/devices/${device.device_id}`}>{displayName(device)}</Link></td>
                       <td>{device.type || "unknown"}</td>
                       <td>{device.vendor || "unknown"}</td>
                       <td>{device.ip ?? ""}</td>

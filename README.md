@@ -12,13 +12,13 @@ Software-Engineering-Project/
 │   ├── app/                             # product UI (React + Vite); calls the application API
 │   │   └── src/
 │   │       ├── auth/                    # session, permission checks, and the sign-in guard
-│   │       ├── components/              # API helper, header, shared messages, display formatting
-│   │       ├── pages/                   # login page
+│   │       ├── components/              # API helper, header, shared messages, display formatting, password change
+│   │       ├── pages/                   # login and user management
 │   │       ├── samples/                 # sample JSON used when the API is not running
 │   │       ├── styles/
 │   │       └── views/
 │   │           ├── scans/               # start a scan and follow its progress
-│   │           ├── devices/             # paged device list
+│   │           ├── devices/             # paged device list, plus add, edit, mark, and delete
 │   │           └── reference_settings/  # vendors, device types, signatures, and OUI prefixes
 │   ├── crud-react/                      # dev-only CRUD tester (React + Vite), not the product UI
 │   ├── components/                      # empty placeholder from the original layout
@@ -27,13 +27,14 @@ Software-Engineering-Project/
 │
 ├── backend/                             # Tier 2 (plus data-access code of Tier 3)
 │   ├── records/                         # DeviceRecord, EvidenceItem, ScanRecord, etc.
+│   ├── config/                          # empty placeholder
 │   ├── controller/                      # sign-in, scans, devices, and reference-data routes
 │   ├── services/                        # Tier 2 modules
 │   │   ├── access_control/
 │   │   ├── scan/                        # discovery, identification, and the scan session
 │   │   ├── records/                     # device and reference-data changes
 │   │   ├── reporting/
-│   │   └── backup/
+│   │   └── backup/                      # empty placeholder
 │   ├── shared_modules/
 │   ├── black_boxes/
 │   │   ├── read_arp_cache/

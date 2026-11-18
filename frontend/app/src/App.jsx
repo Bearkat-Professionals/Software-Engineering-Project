@@ -11,6 +11,7 @@ import DeviceList from "./views/devices/DeviceList";
 import ScanScreen from "./views/scans/ScanScreen";
 import ReferenceScreen from "./views/reference_settings/ReferenceScreen";
 import ReferenceForm from "./views/reference_settings/ReferenceForm";
+import DeviceForm from "./views/devices/DeviceForm";
 
 export default function App() {
 
@@ -52,6 +53,10 @@ export default function App() {
               <Route path="/reference/:kind" element={<ReferenceScreen />} />
 
               <Route path="/reference/:kind/:id" element={<ReferenceForm />} />
+
+              <Route path="/devices/new" element={<DeviceForm />} />
+
+              <Route path="/devices/:id" element={<DeviceForm />} />
 
             </Route>
             
