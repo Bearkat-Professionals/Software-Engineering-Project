@@ -57,7 +57,7 @@ def main() -> None:
     parser.add_argument("--methods", metavar="LIST",
                         help="e.g. mdns,ssdp (default: SCAN_EVIDENCE_METHODS in .env, or all)")
     parser.add_argument("--wait", type=float, metavar="SECONDS",
-                        help="how long mDNS and SSDP listen, 1 to 10 (default: SCAN_EVIDENCE_WAIT_S, or 3)")
+                        help="how long mDNS and SSDP listen, 1 to 10 (default: SCAN_EVIDENCE_WAIT_S, or 5)")
     args = parser.parse_args()
 
     scope = args.scope or default_scope()

@@ -157,9 +157,9 @@ After Host Discovery, a scan asks each host what it is (2.2.3). mDNS and SSDP ar
 | `.env` key | Default | Allowed | What it does |
 |---|---|---|---|
 | `SCAN_EVIDENCE_METHODS` | `mdns,ssdp,netbios,reverse_dns` | any of those, comma separated; set it to nothing (`SCAN_EVIDENCE_METHODS=`) to turn the phase off | which evidence methods run, all at the same time |
-| `SCAN_EVIDENCE_WAIT_S` | 3 | 1 to 10 | how long mDNS and SSDP listen for answers |
+| `SCAN_EVIDENCE_WAIT_S` | 5 | 1 to 10 | how long mDNS and SSDP listen for answers |
 
-A method that's turned on but can't run (e.g. another program holds UDP port 5353) is listed in the scan's errors as `mdns unavailable: ...`, the others still run, and the scan ends `partial`. A method turned off isn't an error. With every method on, the phase takes about `SCAN_EVIDENCE_WAIT_S` + 2 seconds, and never more than `SCAN_EVIDENCE_WAIT_S` + 5.
+A method that's turned on but can't run (e.g. another program holds UDP port 5353) is listed in the scan's errors as `mdns unavailable: ...`, the others still run, and the scan ends `partial`. A method turned off isn't an error. With every method on, the phase takes about `SCAN_EVIDENCE_WAIT_S` seconds (5 by default), and never more than `SCAN_EVIDENCE_WAIT_S` + 5.
 
 See what each host says, without saving anything:
 ```
@@ -239,7 +239,7 @@ DB_NAME=network_device_scanner
 SCAN_PROBE_WORKERS=32       # pings at once, 1 to 128
 SCAN_PROBE_TIMEOUT_S=1.0    # seconds each ping waits, more than 0 and at most 5
 SCAN_EVIDENCE_METHODS=mdns,ssdp,netbios,reverse_dns   # empty turns evidence collection off
-SCAN_EVIDENCE_WAIT_S=3      # seconds mDNS and SSDP listen, 1 to 10
+SCAN_EVIDENCE_WAIT_S=5      # seconds mDNS and SSDP listen, 1 to 10
 ```
 
 ## Creating the first admin (#89)

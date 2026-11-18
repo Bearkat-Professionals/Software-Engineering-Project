@@ -6,7 +6,7 @@ Defaults work without any setup. To tune them without changing code, add to .env
     SCAN_PROBE_WORKERS=64                   # 1 to 128 (BB-3's MAX_WORKERS)
     SCAN_PROBE_TIMEOUT_S=0.5                # more than 0, at most 5 seconds
     SCAN_EVIDENCE_METHODS=mdns,ssdp         # any of mdns, ssdp, netbios, reverse_dns; empty = off
-    SCAN_EVIDENCE_WAIT_S=3                  # how long mDNS and SSDP listen, 1 to 10 seconds
+    SCAN_EVIDENCE_WAIT_S=5                  # how long mDNS and SSDP listen, 1 to 10 seconds
 
     settings = ScanSettings.from_env()
     hosts, status = sweep_subnet(scope, settings=settings)
@@ -29,7 +29,7 @@ DEFAULT_PROBE_TIMEOUT_S = 1.0
 MAX_PROBE_TIMEOUT_S = 5.0       # tighter than SH-1's 30 s: the sweep waits this long per round
 DISCOVERY_METHODS = ("arp", "ping")     # Host Discovery methods, in the order they run; also the allowed values
 EVIDENCE_METHODS = ("mdns", "ssdp", "netbios", "reverse_dns")    # 2.2.3 (#147); also the allowed values
-DEFAULT_EVIDENCE_WAIT_S = 3.0
+DEFAULT_EVIDENCE_WAIT_S = 5.0          
 MIN_EVIDENCE_WAIT_S = 1.0
 MAX_EVIDENCE_WAIT_S = 10.0
 

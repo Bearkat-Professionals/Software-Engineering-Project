@@ -59,7 +59,7 @@ class ScanSettingsValueTests(unittest.TestCase):
         configuration = ScanSettings(probe_workers=64, probe_timeout_s=0.5).to_configuration()
         self.assertEqual(configuration, {"probe_workers": 64, "probe_timeout_s": 0.5, "discovery_methods": ["arp", "ping"],
                                          "evidence_methods": ["mdns", "ssdp", "netbios", "reverse_dns"],
-                                         "evidence_wait_s": 3.0})
+                                         "evidence_wait_s": 5.0})
 
         self.assertEqual(json.loads(json.dumps(configuration)), configuration)
 
@@ -98,11 +98,11 @@ class DiscoveryMethodTests(unittest.TestCase):
 class EvidenceSettingTests(unittest.TestCase):
     """SCAN_EVIDENCE_METHODS and SCAN_EVIDENCE_WAIT_S (#151)."""
 
-    def test_defaults_are_every_method_and_3_seconds(self) -> None:
+    def test_defaults_are_every_method_and_5_seconds(self) -> None:
         settings = ScanSettings()
         self.assertEqual(EVIDENCE_METHODS, ("mdns", "ssdp", "netbios", "reverse_dns"))
-        self.assertEqual((settings.evidence_methods, settings.evidence_wait_s), (EVIDENCE_METHODS, 3.0))
-        self.assertEqual(DEFAULT_EVIDENCE_WAIT_S, 3.0)
+        self.assertEqual((settings.evidence_methods, settings.evidence_wait_s), (EVIDENCE_METHODS, 5.0))
+        self.assertEqual(DEFAULT_EVIDENCE_WAIT_S, 5.0)
 
     def test_empty_turns_the_phase_off(self) -> None:
         self.assertEqual(ScanSettings(evidence_methods=()).evidence_methods, ())
@@ -130,12 +130,12 @@ class EvidenceSettingTests(unittest.TestCase):
 
     def test_from_env(self) -> None:
         cases = [
-            ({}, EVIDENCE_METHODS, 3.0),                                         # missing: the defaults
-            ({EVIDENCE_METHODS_KEY: ""}, (), 3.0),                               # empty: off
-            ({EVIDENCE_METHODS_KEY: "  "}, (), 3.0),
-            ({EVIDENCE_METHODS_KEY: " SSDP, mdns ,"}, ("ssdp", "mdns"), 3.0),     # spaces, case, a trailing comma
-            ({EVIDENCE_WAIT_KEY: " 5 "}, EVIDENCE_METHODS, 5.0),
-            ({EVIDENCE_WAIT_KEY: ""}, EVIDENCE_METHODS, 3.0),                   # blank wait: the default
+            ({}, EVIDENCE_METHODS, 5.0),                                         # missing: the defaults
+            ({EVIDENCE_METHODS_KEY: ""}, (), 5.0),                               # empty: off
+            ({EVIDENCE_METHODS_KEY: "  "}, (), 5.0),
+            ({EVIDENCE_METHODS_KEY: " SSDP, mdns ,"}, ("ssdp", "mdns"), 5.0),     # spaces, case, a trailing comma
+            ({EVIDENCE_WAIT_KEY: " 4 "}, EVIDENCE_METHODS, 4.0),
+            ({EVIDENCE_WAIT_KEY: ""}, EVIDENCE_METHODS, 5.0),                   # blank wait: the default
         ]
         for environ, methods, wait in cases:
             with self.subTest(environ=environ):
