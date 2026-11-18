@@ -145,6 +145,22 @@ class AuditTrailTests(unittest.TestCase):
         entry = self.audit.latest("device", device.device_id)
         self.assertEqual(entry.new_value["mac_address"], "AA:BB:CC:00:00:01")
 
+    def test_an_event_that_isnt_about_one_record(self):
+        with self.engine.unit_of_work() as unit:
+            self.audit.record_event(self.user.pk, "restore", 0,
+                                    {"backup": "full-20261117-140000-000", "rows_restored": {"device": 3}}, unit)
+        [entry] = self.audit.history("restore", 0)
+        self.assertEqual((entry.user_id, entry.action, entry.old_value), (self.user.pk, AuditAction.UPDATE, None))
+        self.assertEqual(entry.new_value, {"backup": "full-20261117-140000-000", "rows_restored": {"device": 3}})
+        self.assertIsNotNone(entry.changed_at)
+
+    def test_an_event_needs_a_unit_of_work_and_a_type(self):
+        with self.assertRaises(ValueError):
+            self.audit.record_event(self.user.pk, "restore", 0, {}, None)
+        with self.assertRaises(ValueError):
+            with self.engine.unit_of_work() as unit:
+                self.audit.record_event(self.user.pk, "", 0, {}, unit)
+
     def test_trail_cannot_be_edited(self):
         self.assertFalse(hasattr(self.audit, "update"))
         self.assertFalse(hasattr(self.audit, "delete"))
