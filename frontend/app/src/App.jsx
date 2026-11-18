@@ -1,10 +1,12 @@
 // Routes for sign-in, scans, devices, and reference data. Signed-out visitors stop at the login page.
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import RequireAuth from "./auth/RequireAuth";
+import RequirePermission from "./auth/RequirePermission";
 import { AuthProvider } from "./auth/AuthProvider";
 import Layout from "./components/Layout";
 import { MessageArea } from "./components/Messages";
 import LoginPage from "./pages/LoginPage";
+import UsersPage from "./pages/UsersPage";
 import DeviceList from "./views/devices/DeviceList";
 import ScanScreen from "./views/scans/ScanScreen";
 import ReferenceScreen from "./views/reference_settings/ReferenceScreen";
@@ -37,6 +39,12 @@ export default function App() {
               <Route path="/scans" element={<ScanScreen />} />
 
               <Route path="/devices" element={<DeviceList />} />
+
+              <Route path="/users" element={
+                <RequirePermission permission="MANAGE_USERS">
+                  <UsersPage />
+                </RequirePermission>
+              } />
 
               {/* /reference opens the vendor tab. :id is "new" or a record id. */}
               <Route path="/reference" element={<Navigate to="/reference/vendors" replace />} />

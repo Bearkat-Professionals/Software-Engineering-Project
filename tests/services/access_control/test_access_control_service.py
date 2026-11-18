@@ -12,14 +12,15 @@ from dataclasses import replace
 from unittest import mock
 
 from backend.black_boxes.password_hashing import hash_password, verify_password
-from backend.data_access.account_settings import FirstUserExistsError
+from backend.data_access.account_settings import FirstUserExistsError, LastActiveAdminError
 from backend.data_access.database_engine import IntegrityConstraintError
+from backend.data_access.repository import RecordNotFoundError
 from backend.records import User
 from backend.records.enums import AccountStatus, UserRole
 from backend.services.access_control import access_control_service as module
 from backend.services.access_control.access_control_service import (
-    DISABLED_LOGIN, FAILURE_WINDOW_S, LOCKOUT_S, PASSWORD_MAX, PASSWORD_MIN, WRONG_LOGIN,
-    AccessControlService)
+    ACCOUNT_NOT_FOUND, DISABLED_LOGIN, FAILURE_WINDOW_S, LAST_ADMIN, LOCKOUT_S,
+    PASSWORD_MAX, PASSWORD_MIN, SELF_ROLE, SELF_STATUS, WRONG_LOGIN, AccessControlService)
 from backend.services.access_control.create_admin import create_first_admin
 
 PASSWORD = "correct horse battery"
@@ -37,6 +38,12 @@ class FakeUserStore:
         return next((user for user in self.users.values()
                      if user.username.casefold() == username.casefold()), None)
 
+    def find(self, user_id: int) -> User | None:
+        return self.users.get(user_id)
+
+    def list(self) -> list[User]:
+        return [self.users[user_id] for user_id in sorted(self.users)]
+
     def store(self, user: User, changed_by: int) -> User:
         if self.raise_on_store is not None:
             raise self.raise_on_store
@@ -45,6 +52,33 @@ class FakeUserStore:
         self.users[user.user_id] = user
         self.stored.append((user, changed_by))
         return user
+
+    def apply_account_change(self, user_id: int, changed_by: int, *,
+                             role: UserRole | None = None,
+                             account_status: AccountStatus | None = None,
+                             password_hash: str | None = None) -> User:
+        current = self.find(user_id)
+        if current is None:
+            raise RecordNotFoundError("missing user")
+        changed = replace(
+            current,
+            role=role if role is not None else current.role,
+            account_status=(account_status if account_status is not None
+                            else current.account_status),
+            password_hash=password_hash if password_hash is not None else current.password_hash,
+        )
+        removes_active_admin = (
+            current.role == UserRole.ADMIN
+            and current.account_status == AccountStatus.ACTIVE
+            and (changed.role != UserRole.ADMIN
+                 or changed.account_status != AccountStatus.ACTIVE)
+        )
+        active_admins = sum(
+            user.role == UserRole.ADMIN and user.account_status == AccountStatus.ACTIVE
+            for user in self.users.values())
+        if removes_active_admin and active_admins <= 1:
+            raise LastActiveAdminError("last admin")
+        return self.store(changed, changed_by)
 
     def create_first_user(self, user: User) -> User:
         if self.users:
@@ -264,6 +298,11 @@ class ChangePasswordTests(ServiceTestCase):
         self.assertEqual(result.reasons, ("The current password is incorrect.",))
         self.assertEqual(self.store.stored, [])
 
+    def test_missing_current_password_is_refused_not_raised(self) -> None:
+        result = self.service.change_password(self.SAM, None, "a brand new password")
+        self.assertEqual(result.reasons, ("The current password is incorrect.",))
+        self.assertEqual(self.store.stored, [])
+
     def test_the_new_password_is_stored_hashed_by_the_user_themselves(self) -> None:
         result = self.service.change_password(self.SAM, PASSWORD, "a brand new password")
         self.assertTrue(result.ok, result.reasons)
@@ -277,6 +316,70 @@ class ChangePasswordTests(ServiceTestCase):
         self.assertIn("different", self.service.change_password(self.SAM, PASSWORD, PASSWORD).reasons[0])
         self.assertEqual(self.store.stored, [])
 
+
+class AdminAccountChangesTests(ServiceTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.admin = make_user("ada", user_id=ADMIN_ID)
+        self.admin = replace(self.admin, role=UserRole.ADMIN)
+        self.store.users[ADMIN_ID] = self.admin
+
+    def test_lists_accounts_in_store_order(self) -> None:
+        self.assertEqual([user.user_id for user in self.service.list_users()], [ADMIN_ID, self.SAM.user_id])
+
+    def test_role_and_status_changes_are_stored_with_the_admin(self) -> None:
+        role = self.service.set_role(self.SAM.user_id, "viewer", changed_by=ADMIN_ID)
+        self.assertTrue(role.ok, role.reasons)
+        self.assertEqual((role.user.role, self.store.stored[-1][1]), (UserRole.VIEWER, ADMIN_ID))
+
+        status = self.service.set_status(self.SAM.user_id, "disabled", changed_by=ADMIN_ID)
+        self.assertTrue(status.ok, status.reasons)
+        self.assertEqual((status.user.account_status, self.store.stored[-1][1]),
+                         (AccountStatus.DISABLED, ADMIN_ID))
+
+    def test_an_admin_can_reset_a_password_and_the_hash_is_not_the_plain_text(self) -> None:
+        result = self.service.reset_password(
+            self.SAM.user_id, "a completely new password", changed_by=ADMIN_ID)
+        self.assertTrue(result.ok, result.reasons)
+        stored, changed_by = self.store.stored[-1]
+        self.assertEqual(changed_by, ADMIN_ID)
+        self.assertNotEqual(stored.password_hash, "a completely new password")
+        self.assertTrue(verify_password(stored.password_hash, "a completely new password"))
+
+    def test_an_admin_cannot_demote_or_disable_themselves(self) -> None:
+        self.assertEqual(
+            self.service.set_role(ADMIN_ID, "editor", changed_by=ADMIN_ID).reasons,
+            (SELF_ROLE,))
+        self.assertEqual(
+            self.service.set_status(ADMIN_ID, "disabled", changed_by=ADMIN_ID).reasons,
+            (SELF_STATUS,))
+        self.assertEqual(self.store.stored, [])
+
+    def test_the_last_active_admin_cannot_be_changed_even_by_another_caller(self) -> None:
+        self.assertEqual(
+            self.service.set_role(ADMIN_ID, "viewer", changed_by=999).reasons,
+            (LAST_ADMIN,))
+        self.assertEqual(
+            self.service.set_status(ADMIN_ID, "disabled", changed_by=999).reasons,
+            (LAST_ADMIN,))
+
+    def test_one_of_two_active_admins_can_be_demoted(self) -> None:
+        second = replace(make_user("bea", user_id=2), role=UserRole.ADMIN)
+        self.store.users[second.user_id] = second
+        result = self.service.set_role(second.user_id, "editor", changed_by=ADMIN_ID)
+        self.assertTrue(result.ok, result.reasons)
+        self.assertEqual(result.user.role, UserRole.EDITOR)
+
+    def test_bad_values_and_a_missing_account_are_refused(self) -> None:
+        self.assertIn("not a role", self.service.set_role(self.SAM.user_id, "boss", ADMIN_ID).reasons[0])
+        self.assertIn("not a status", self.service.set_status(self.SAM.user_id, "gone", ADMIN_ID).reasons[0])
+        self.assertEqual(self.service.set_role(999, "viewer", ADMIN_ID).reasons, (ACCOUNT_NOT_FOUND,))
+
+    def test_a_no_op_does_not_write_an_audit_entry(self) -> None:
+        self.assertTrue(self.service.set_role(self.SAM.user_id, self.SAM.role, ADMIN_ID).ok)
+        self.assertTrue(self.service.set_status(
+            self.SAM.user_id, self.SAM.account_status, ADMIN_ID).ok)
+        self.assertEqual(self.store.stored, [])
 
 class CreateAdminTests(unittest.TestCase):
     def run_prompts(self, store: FakeUserStore, answers: list[str], secrets: list[str]) -> tuple[int, str]:

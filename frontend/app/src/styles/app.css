@@ -72,6 +72,98 @@ nav a[aria-current="page"] {
 
 }
 
+label {
+
+    display: grid;
+    gap: 0.25rem;
+
+}
+
+input, select, button {
+
+    font: inherit;
+    padding: 0.4rem 0.55rem;
+
+}
+
+button:not(:disabled), select:not(:disabled), summary {
+
+    cursor: pointer;
+
+}
+
+.account-controls, .user-form, .user-actions, .reset-password-form {
+
+    display: flex;
+    gap: 0.75rem;
+    align-items: end;
+    flex-wrap: wrap;
+
+}
+
+.account-controls {
+
+    margin-top: 0.75rem;
+    align-items: center;
+
+}
+
+.account-menu {
+
+    position: relative;
+
+}
+
+.compact-form {
+
+    display: grid;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+    padding: 0.75rem;
+    border: 1px solid #ccc;
+    background: white;
+
+}
+
+.user-form {
+
+    margin-bottom: 2rem;
+
+}
+
+.user-actions {
+
+    align-items: center;
+
+}
+
+.status {
+
+    text-transform: capitalize;
+    font-weight: bold;
+
+}
+
+.status-disabled {
+
+    color: #a1261d;
+
+}
+
+.visually-hidden {
+
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+
+}
+
 tr.suspicious {
 
     background: #fde2e1;

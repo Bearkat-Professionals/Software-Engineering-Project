@@ -30,7 +30,9 @@ from functools import lru_cache
 from typing import Protocol
 
 from backend.black_boxes.password_hashing import hash_password, verify_password
+from backend.data_access.account_settings import LastActiveAdminError
 from backend.data_access.database_engine import IntegrityConstraintError
+from backend.data_access.repository import RecordNotFoundError
 from backend.records import User
 from backend.records.enums import AccountStatus, UserRole
 
@@ -47,11 +49,22 @@ PASSWORD_MAX = 128                  # stops huge passwords being sent to slow th
 USERNAME_MAX = 100                  # app_user.username is VARCHAR(100)
 USERNAME_PATTERN = re.compile(r"[A-Za-z0-9._-]+")
 
+ACCOUNT_NOT_FOUND = "The user account was not found."
+SELF_ROLE = "You can't change your own admin role. Ask another admin to do it."
+SELF_STATUS = "You can't disable your own account. Ask another admin to do it."
+LAST_ADMIN = "The last active admin can't be disabled or demoted."
+
 
 class UserFinderStorer(Protocol):
     """The parts of 3.3's UserStore used here; tests pass a fake."""
+    def find(self, user_id: int) -> User | None: ...
     def find_by_username(self, username: str) -> User | None: ...
+    def list(self) -> list[User]: ...
     def store(self, user: User, changed_by: int) -> User: ...
+    def apply_account_change(self, user_id: int, changed_by: int, *,
+                             role: UserRole | None = None,
+                             account_status: AccountStatus | None = None,
+                             password_hash: str | None = None) -> User: ...
 
 
 @dataclass(frozen=True)
@@ -155,7 +168,7 @@ class AccessControlService:
                                          self.check_password_rule(username, password)) if reason]
         try:
             role = UserRole(role)
-        except ValueError:
+        except (TypeError, ValueError):
             reasons.append(f"'{role}' is not a role. Use admin, editor or viewer.")
         if not reasons and self.users.find_by_username(username) is not None:
             reasons.append(f"The username '{username}' is already taken.")
@@ -170,7 +183,7 @@ class AccessControlService:
 
     def change_password(self, user: User, current_password: str, new_password: str) -> AccountResult:
         """Change a user's own password, after checking the current one."""
-        if not verify_password(user.password_hash, current_password):
+        if not isinstance(current_password, str) or not verify_password(user.password_hash, current_password):
             return AccountResult(None, ("The current password is incorrect.",))
         reason = self.check_password_rule(user.username, new_password)
         if reason is None and current_password == new_password:
@@ -179,6 +192,60 @@ class AccessControlService:
             return AccountResult(None, (reason,))
         changed = replace(user, password_hash=hash_password(new_password))
         return AccountResult(self.users.store(changed, changed_by=user.user_id))   # audit says password_changed
+
+    def list_users(self) -> list[User]:
+        """Accounts for the admin screen. User.to_dict() removes hashes at the route."""
+        return self.users.list()
+
+    def set_role(self, user_id: int, role: UserRole | str, changed_by: int) -> AccountResult:
+        target = self.users.find(user_id)
+        if target is None:
+            return AccountResult(None, (ACCOUNT_NOT_FOUND,))
+        try:
+            role = UserRole(role)
+        except (TypeError, ValueError):
+            return AccountResult(None, (f"'{role}' is not a role. Use admin, editor or viewer.",))
+        if target.user_id == changed_by and role != UserRole.ADMIN:
+            return AccountResult(None, (SELF_ROLE,))
+        if target.role == role:
+            return AccountResult(target)
+        return self._apply_admin_change(target.user_id, changed_by, role=role)
+
+    def set_status(self, user_id: int, status: AccountStatus | str,
+                   changed_by: int) -> AccountResult:
+        target = self.users.find(user_id)
+        if target is None:
+            return AccountResult(None, (ACCOUNT_NOT_FOUND,))
+        try:
+            status = AccountStatus(status)
+        except (TypeError, ValueError):
+            return AccountResult(None, (f"'{status}' is not a status. Use active or disabled.",))
+        if target.user_id == changed_by and status == AccountStatus.DISABLED:
+            return AccountResult(None, (SELF_STATUS,))
+        if target.account_status == status:
+            return AccountResult(target)
+        return self._apply_admin_change(target.user_id, changed_by, account_status=status)
+
+    def reset_password(self, user_id: int, password: str, changed_by: int) -> AccountResult:
+        target = self.users.find(user_id)
+        if target is None:
+            return AccountResult(None, (ACCOUNT_NOT_FOUND,))
+        reason = self.check_password_rule(target.username, password)
+        if reason is None and verify_password(target.password_hash, password):
+            reason = "The new password must be different from the current one."
+        if reason:
+            return AccountResult(None, (reason,))
+        return self._apply_admin_change(
+            target.user_id, changed_by, password_hash=hash_password(password))
+
+    def _apply_admin_change(self, user_id: int, changed_by: int, **changes: object) -> AccountResult:
+        try:
+            changed = self.users.apply_account_change(user_id, changed_by, **changes)
+        except RecordNotFoundError:
+            return AccountResult(None, (ACCOUNT_NOT_FOUND,))
+        except LastActiveAdminError:
+            return AccountResult(None, (LAST_ADMIN,))
+        return AccountResult(changed)
 
     # ---- failed sign-ins (in memory) ---------------------------------------------
 
