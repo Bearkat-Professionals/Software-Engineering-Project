@@ -59,6 +59,21 @@ class AuditTrail:
         )
         return self._logs.create(entry, unit)
 
+    def record_event(self, user_id: int, record_type: str, record_id: int, new_value: dict[str, Any],
+                     unit: Any, action: AuditAction = AuditAction.UPDATE) -> AuditLog:
+        """Write one audit entry that isn't about a single saved record, inside the
+        caller's unit of work (required). For example a restore (2.5.2):
+
+            audit.record_event(user_id, "restore", 0, {"backup": name, ...}, unit)
+        """
+        if unit is None:
+            raise ValueError("record_event() must run inside the caller's unit of work")
+        if not record_type:
+            raise ValueError("Audit entry needs a record type")
+        entry = AuditLog(user_id=user_id, record_type=record_type, record_id=record_id, action=action,
+                         old_value=None, new_value=new_value, changed_at=datetime.now())
+        return self._logs.create(entry, unit)
+    
     def history(self, record_type: str, record_id: int, unit: Any = None) -> list[AuditLog]:
         """Every entry for one record, oldest first."""
         return self._logs.list(unit, record_type=record_type, record_id=record_id)
