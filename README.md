@@ -3,36 +3,35 @@
 ## Project structure
 ```text
 Software-Engineering-Project/
-├── README
+├── README.md
 ├── dev.py                               # short commands: py -3.13 dev.py
 ├── dev.cmd                              # Windows shortcut: .\dev
 ├── docs/                                # user spec, system design, diagrams
 │
 ├── frontend/                            # Tier 1: 1.0 Web UI Manager
-│   ├── crud-react/                      # dev-only CRUD test page (React + Vite), not the product UI
-│   ├── components/
-│   ├── views/
-│   │   ├── login/
-│   │   ├── devices/
-│   │   ├── scans/
-│   │   ├── reference_settings/
-│   │   └── reports/
-│   └── styles/
+│   ├── app/                             # product UI (React + Vite); calls the application API
+│   │   └── src/
+│   │       ├── auth/                    # session, permission checks, and the sign-in guard
+│   │       ├── components/              # API helper, header, shared messages, display formatting
+│   │       ├── pages/                   # login page
+│   │       ├── samples/                 # sample JSON used when the API is not running
+│   │       ├── styles/
+│   │       └── views/
+│   │           ├── scans/               # start a scan and follow its progress
+│   │           ├── devices/             # paged device list
+│   │           └── reference_settings/  # vendors, device types, signatures, and OUI prefixes
+│   ├── crud-react/                      # dev-only CRUD tester (React + Vite), not the product UI
+│   ├── components/                      # empty placeholder from the original layout
+│   ├── styles/                          # empty placeholder from the original layout
+│   └── views/                           # empty placeholders: login, devices, scans, reference_settings, reports
 │
 ├── backend/                             # Tier 2 (plus data-access code of Tier 3)
 │   ├── records/                         # DeviceRecord, EvidenceItem, ScanRecord, etc.
-│   ├── controller/
+│   ├── controller/                      # sign-in, scans, devices, and reference-data routes
 │   ├── services/                        # Tier 2 modules
 │   │   ├── access_control/
-│   │   ├── scan/
-│   │   │   ├── session/
-│   │   │   ├── discovery/
-│   │   │   ├── evidence/
-│   │   │   ├── identification/
-│   │   │   └── recorder/
-│   │   ├── records/
-│   │   │   ├── devices/
-│   │   │   └── reference_data/
+│   │   ├── scan/                        # discovery, identification, and the scan session
+│   │   ├── records/                     # device and reference-data changes
 │   │   ├── reporting/
 │   │   └── backup/
 │   ├── shared_modules/
@@ -40,8 +39,9 @@ Software-Engineering-Project/
 │   │   ├── read_arp_cache/
 │   │   ├── read_gateway_config/
 │   │   ├── backup_media/
+│   │   ├── password_hashing/
 │   │   └── timed_network_request/       # BB-3: ping and parallel probes
-│   ├── dev_tools/
+│   ├── dev_tools/                       # development-only CRUD server
 │   └── data_access/                     # 3.0 Data Storage Manager (code only)
 │       ├── network_data/
 │       ├── reference_data/
@@ -50,11 +50,15 @@ Software-Engineering-Project/
 │       └── backup_recovery/
 │
 ├── tests/
+│   ├── controller/
 │   ├── services/
 │   ├── data_access/
 │   ├── black_boxes/
 │   ├── dev_tools/
-│   └── fakes/                           # fake ARP data, fake mail, in-memory DB
+│   ├── database_scripts/
+│   ├── shared_modules/
+│   ├── fakes/                           # fake ARP data, fake mail, in-memory DB
+│   └── fixtures/
 │
 └── database/                            # the database itself, no application code
     ├── schema/

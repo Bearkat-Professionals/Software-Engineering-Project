@@ -1,3 +1,4 @@
+// Dropdown of related rows for a foreign-key column.
 import { useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
@@ -15,6 +16,7 @@ export default function ForeignKeyPicker({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
+  // True while the user is typing, so loading the selected row does not overwrite the box.
   const typingRef = useRef(false);
 
   useEffect(() => {
@@ -25,6 +27,7 @@ export default function ForeignKeyPicker({
     }
 
     let ignore = false;
+    // Show the related row's label for the id already stored in the form.
     api("/api/" + parentTable + "/" + value)
       .then((row) => {
         if (!ignore) setQuery(String(row[labelColumn] ?? value));
@@ -39,6 +42,7 @@ export default function ForeignKeyPicker({
 
   useEffect(() => {
     let ignore = false;
+    // Search the parent table after typing pauses.
     const timer = window.setTimeout(() => {
       const params = new URLSearchParams({ limit: "20" });
       const search = query.trim();
@@ -67,6 +71,7 @@ export default function ForeignKeyPicker({
     };
   }, [labelColumn, parentTable, query]);
 
+  // Typing clears the chosen id until a match is picked.
   function typeSearch(event) {
     typingRef.current = true;
     setQuery(event.target.value);
@@ -74,6 +79,7 @@ export default function ForeignKeyPicker({
     onChange("");
   }
 
+  // Store the parent row's id and show its label.
   function choose(row) {
     typingRef.current = false;
     setQuery(String(row[labelColumn] ?? row[parentKey]));
@@ -81,6 +87,7 @@ export default function ForeignKeyPicker({
     onChange(String(row[parentKey]));
   }
 
+  // Optional foreign keys can be saved with no related row.
   function clearChoice() {
     typingRef.current = false;
     setQuery("");

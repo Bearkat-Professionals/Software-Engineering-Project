@@ -1,3 +1,5 @@
+// Calls the local CRUD server. This tester is not part of the product.
+// Turn a failed response into an Error whose message is the server's sentence.
 async function payloadFrom(response) {
 
     const payload = await response.json().catch(() => null);
@@ -13,6 +15,7 @@ async function payloadFrom(response) {
 
 }
 
+// One row, a create, an update, or a delete. A 204 has no body.
 export async function api(path, { method = "GET", body } = {}) {
 
     const response = await fetch(path, {
@@ -35,6 +38,7 @@ export async function api(path, { method = "GET", body } = {}) {
 
 }
 
+// A page of rows plus the total count from the X-Total-Count header.
 export async function apiPage(path) {
 
     const response = await fetch(path, {

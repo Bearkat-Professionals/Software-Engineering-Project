@@ -1,3 +1,4 @@
+// Loads the signed-in user and exposes login, logout, and permission checks.
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { api } from "../components/api";
 import { useMessages } from "../components/Messages";
@@ -6,6 +7,7 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
 
+  // undefined means "still loading". null means signed out.
   const [user, setUser] = useState(undefined);
   const [permissions, setPermissions] = useState([]);
   const { showMessage } = useMessages();
@@ -14,6 +16,7 @@ export function AuthProvider({ children }) {
 
     let ignore = false;
 
+    // Ask the server who the session belongs to. A 401 is a normal signed-out start.
     api("/api/me")
 
       .then((data) => {
@@ -47,6 +50,7 @@ export function AuthProvider({ children }) {
 
     user,
 
+    // Store the user and permissions from a successful sign-in.
     async login(username, password) {
 
       const data = await api("/api/login", { method: "POST", body: { username, password } });
@@ -56,6 +60,7 @@ export function AuthProvider({ children }) {
 
     },
 
+    // Clear the local user even when the server says the session is already gone.
     async logout() {
 
       try {
@@ -75,6 +80,7 @@ export function AuthProvider({ children }) {
 
     },
 
+    // True when the signed-in role includes this permission name.
     can(permission) {
 
       return permissions.includes(permission);

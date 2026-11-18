@@ -1,7 +1,9 @@
+// Calls the product API. Sample mode returns local JSON. A 401 sends the user back to sign in.
 import scanStarted from "../samples/scan-started.json";
 import scanStatusIdle from "../samples/scan-status-idle.json";
 import devices from "../samples/devices.json";
 
+// Local stand-ins used only when VITE_USE_SAMPLES is true.
 const SAMPLES = {
 
   "GET /api/scans/status": scanStatusIdle,
@@ -9,22 +11,26 @@ const SAMPLES = {
 
 };
 
+// A failed request. reasons, existingId, and changedAt come from reference-data errors.
 export class ApiError extends Error {
 
-  constructor(message, { status = 0, unreachable = false } = {}) {
+  constructor(message, { status = 0, unreachable = false, reasons = null, existingId = null, changedAt = null } = {}) {
     
     super(message);
-
+  
     this.name = "ApiError";
     this.status = status;
     this.unreachable = unreachable;
-
+    this.reasons = reasons;
+    this.existingId = existingId;
+    this.changedAt = changedAt;
+  
   }
-
 }
 
 export async function api(path, { method = "GET", body } = {}) {
 
+  // Sample mode never calls the server. The signed-in user is a fixed editor.
   if (import.meta.env.VITE_USE_SAMPLES === "true") {
 
     if (path === "/api/me" || path === "/api/login") {
@@ -94,12 +100,14 @@ export async function api(path, { method = "GET", body } = {}) {
 
   }
 
+  // Logout and other empty successes have no JSON body.
   if (response.status === 204) return null;
 
   const payload = await response.json().catch(() => null);
 
   if (!response.ok) {
 
+    // A wrong password stays on the form. Any other 401 means the session is gone.
     if (response.status === 401 && path !== "/api/login") {
 
       const message = path.startsWith("/api/me")
@@ -119,6 +127,7 @@ export async function api(path, { method = "GET", body } = {}) {
       
     }
 
+    // A proxy or server failure often has no JSON error sentence.
     if (response.status >= 500 && !(payload && typeof payload.error === "string")) {
 
       throw new ApiError("Can't reach the server", { status: response.status, unreachable: true });
@@ -126,9 +135,18 @@ export async function api(path, { method = "GET", body } = {}) {
     }
 
     const message = payload && typeof payload.error === "string"
+
       ? payload.error
       : response.statusText;
-    throw new ApiError(message, { status: response.status });
+
+    throw new ApiError(message, {
+
+      status: response.status,
+      reasons: Array.isArray(payload?.reasons) ? payload.reasons : null,
+      existingId: payload?.existing_id ?? null,
+      changedAt: payload?.changed_at ?? null,
+      
+    });
 
   }
 
