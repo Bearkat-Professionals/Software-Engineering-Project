@@ -2,10 +2,13 @@
 import unittest
 from pathlib import Path
 
-from backend.data_access.reference_data import ReferenceStore
+from backend.data_access.reference_data import ReferenceStore, find_reference_rules
 from backend.data_access.repository import Repository
 from backend.records import DeviceSignature, User
-from backend.records.enums import RecordStatus
+from backend.records.enums import EvidenceType, RecordStatus
+from backend.services.scan.evidence import RawEvidence
+from backend.services.scan.match_signatures import match_signatures
+from backend.services.scan.resolve_conflicts import resolve_conflicts
 from tests.data_access.test_repository import CLEANUP, connect_to_test_database
 
 
@@ -27,11 +30,9 @@ EXPECTED_SIGNATURES = {
     ("mdns", "_googlecast._tcp", "streaming device", "Google Cast device"),
     ("mdns", "model=AppleTV", "streaming device", "Apple TV"),
     ("mdns", "_sonos._tcp", "smart speaker", "Sonos speaker"),
-    ("mdns", "_spotify-connect._tcp", "smart speaker", "Spotify Connect speaker"),
     ("mdns", "_hap._tcp", "smart home", "HomeKit accessory"),
-    ("mdns", "_companion-link._tcp", "phone or tablet", "Apple device"),
     ("ssdp", "manufacturer=Roku", "streaming device", "Roku"),
-    ("ssdp", "InternetGatewayDevice", "router", "Router"),
+    ("ssdp", "Router", "router", "Router"),
     ("ssdp", "manufacturer=Sonos", "smart speaker", "Sonos speaker"),
     ("ssdp", "Philips hue bridge", "smart home", "Hue Bridge"),
     ("ssdp", "Xbox", "game console", "Xbox"),
@@ -132,3 +133,26 @@ class SeedSignaturesTests(unittest.TestCase):
         signatures.retire(roku.pk, admin_id)
 
         self.assertEqual(signatures.find(roku.pk).status, RecordStatus.RETIRED)
+
+    def test_seeded_rules_avoid_known_false_positive_conflicts(self):
+        load_seed(self.engine)
+        rules = find_reference_rules(self.engine)
+
+        cases = (
+            ([RawEvidence(EvidenceType.SSDP,
+                          "manufacturer=NETGEAR,Inc.; model=NETGEAR RS200 Smart WiFi Router")],
+             "router"),
+            ([RawEvidence(EvidenceType.MDNS, "model=AppleTV; _companion-link._tcp")],
+             "streaming device"),
+            ([RawEvidence(EvidenceType.MDNS, "_spotify-connect._tcp"),
+              RawEvidence(EvidenceType.NETBIOS_LLMNR, "DESKTOP-OFFICE")],
+             "computer"),
+        )
+
+        for evidence, expected_type in cases:
+            with self.subTest(expected_type=expected_type):
+                matches = match_signatures(evidence, rules.signatures)
+                resolution = resolve_conflicts(matches, [])
+                self.assertIsNotNone(resolution.device_type_id)
+                self.assertEqual(rules.device_types[resolution.device_type_id].category_name,
+                                 expected_type)
