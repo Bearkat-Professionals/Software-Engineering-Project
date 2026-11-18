@@ -5,11 +5,12 @@
 from __future__ import annotations
 
 import unittest
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from backend.data_access.database_engine import IntegrityConstraintError
 from backend.records import DeviceSignature, DeviceType, OuiPrefix, Vendor
 from backend.records.enums import EvidenceType, RecordStatus
+from backend.shared_modules.edit_lock_guard import EditLockGuard
 from backend.services.records.reference_maintenance import (MaintenanceResult, MaintenanceStatus,
                                                             ReferenceDetail, ReferenceKind,
                                                             ReferenceListing, ReferenceMaintenance,
@@ -585,6 +586,53 @@ class ReadTests(MaintenanceTestCase):
             with self.subTest(text=text, limit=limit):
                 with self.assertRaises(ValueError):
                     self.service.search_vendors(text, limit)
+
+
+class HoldTests(MaintenanceTestCase):
+    """SH-2 (#141): retiring is refused while another user has the record open."""
+
+    HOLD_STARTED = datetime(2026, 11, 13, 14, 5, 12)
+    RECORD_TYPE = {VENDOR: "vendor", DEVICE_TYPE: "device_type", SIGNATURE: "device_signature"}
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.now = 1000.0
+        self.holds = EditLockGuard(clock=lambda: self.now, wall_clock=lambda: self.HOLD_STARTED)
+        self.service = ReferenceMaintenance(self.stores, self.prefixes, self.work, clock=self.clock,
+                                            holds=self.holds)
+
+    def hold(self, kind: ReferenceKind, user_id: int = OTHER_ADMIN) -> None:
+        self.holds.take((self.RECORD_TYPE[kind], STORED_ID[kind]), user_id, f"session-{user_id}")
+
+    def test_retire_is_refused_while_someone_else_holds_it(self) -> None:
+        for kind in ReferenceKind:
+            with self.subTest(kind=kind):
+                self.hold(kind)
+                result = self.service.retire(kind, STORED_ID[kind], ADMIN, None)
+                self.assertStatus(result, MaintenanceStatus.BEING_EDITED, f"Someone else is editing this {kind.label}")
+                self.assertEqual((result.held_by, result.held_since), ((OTHER_ADMIN,), self.HOLD_STARTED))
+        self.assertNothingStored()
+        self.assertEqual(self.work.opened, 0)               # refused before any unit of work
+
+    def test_your_own_hold_doesnt_block_your_retire(self) -> None:
+        self.hold(VENDOR, ADMIN)
+        self.assertStatus(self.service.retire(VENDOR, STORED_ID[VENDOR], ADMIN, None), DONE)
+
+    def test_retire_works_once_the_hold_expires(self) -> None:
+        self.hold(VENDOR)
+        self.now += self.holds.lifetime_s
+        self.assertStatus(self.service.retire(VENDOR, STORED_ID[VENDOR], ADMIN, None), DONE)
+
+    def test_the_same_id_of_another_kind_doesnt_block(self) -> None:
+        self.holds.take(("device_type", STORED_ID[VENDOR]), OTHER_ADMIN, "s")      # same number, other table
+        self.holds.take(("device", STORED_ID[VENDOR]), OTHER_ADMIN, "s")
+        self.assertStatus(self.service.retire(VENDOR, STORED_ID[VENDOR], ADMIN, None), DONE)
+
+    def test_edit_and_reactivate_are_never_blocked(self) -> None:      # the version guard handles them
+        self.hold(VENDOR)
+        self.assertStatus(self.service.edit(VENDOR, STORED_ID[VENDOR], EDIT[VENDOR], ADMIN, None), DONE)
+        self.holds.take(("vendor", 6), OTHER_ADMIN, "s")                          # OldCo, retired
+        self.assertStatus(self.service.reactivate(VENDOR, 6, ADMIN, None), DONE)
 
 
 class SetupTests(unittest.TestCase):

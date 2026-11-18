@@ -27,7 +27,8 @@ from flask.typing import ResponseReturnValue
 
 from backend.controller.api_routes import device_json
 from backend.controller.auth import requires
-from backend.controller.route_helpers import MAX_PAGE, conflict_json, json_body, read_loaded_at, whole_number
+from backend.controller.route_helpers import (MAX_PAGE, being_edited_json, conflict_json, json_body, read_loaded_at,
+                                              whole_number)
 from backend.data_access.network_data import DeviceListing
 from backend.data_access.reference_data.reference_store import SEARCH_MAX_LIMIT
 from backend.records import Device, IdentificationEvidence
@@ -57,6 +58,7 @@ REFUSAL_STATUS: dict[DeviceMaintenanceStatus, int] = {
     DeviceMaintenanceStatus.NOT_FOUND: 404,         # deleted, maybe by someone else (CM-12)
     DeviceMaintenanceStatus.CONFLICT: 409,          # changed by someone else since it was loaded
     DeviceMaintenanceStatus.ALREADY_EXISTS: 409,    # that MAC is already a device
+    DeviceMaintenanceStatus.BEING_EDITED: 409,      # someone else has it open (SH-2, delete only)
 }
 
 RELOAD = "loaded_at is missing or unreadable. Reload the device and try again."
@@ -249,6 +251,8 @@ def _refusal(services: Services, result: DeviceMaintenanceResult, loaded_at: dat
         return jsonify(conflict_json(services.users, "device", result.changed_by, result.changed_at, loaded_at)), status
     if result.status is DeviceMaintenanceStatus.ALREADY_EXISTS:
         return jsonify(error=result.reasons[0], device_id=result.existing_device_id), status
+    if result.status is DeviceMaintenanceStatus.BEING_EDITED:
+        return jsonify(being_edited_json(services.users, "device", result.held_by, result.held_since)), status
     return jsonify(error=result.reasons[0]), status
 
 

@@ -42,6 +42,7 @@ from backend.records import DeviceSignature, DeviceType, OuiPrefix, Vendor
 from backend.records.enums import EvidenceType, RecordStatus
 from backend.records.reference_entity import ReferenceEntity
 from backend.shared_modules.validate_input import validate_reference_name, validate_signature_pattern
+from backend.shared_modules.edit_lock_guard import EditLockGuard
 
 
 RESULT_TEXT_MAX = 255
@@ -119,7 +120,8 @@ class MaintenanceStatus(str, Enum):
     NOT_FOUND = "not_found"
     DUPLICATE = "duplicate"     
     PROTECTED = "protected"     
-    CONFLICT = "conflict" 
+    CONFLICT = "conflict"
+    BEING_EDITED = "being_edited"   # someone else has it open in an edit form (SH-2)
 
 @dataclass(frozen = True)
 class MaintenanceResult:
@@ -130,7 +132,9 @@ class MaintenanceResult:
     reasons: tuple[str, ...] = ()           
     changed_by: int | None = None           
     changed_at: datetime | None = None      
-    existing_id: int | None = None          
+    existing_id: int | None = None
+    held_by: tuple[int, ...] = ()           # BEING_EDITED: the users editing it, oldest hold first
+    held_since: datetime | None = None      # BEING_EDITED: when the oldest of those holds began
 
     @property
     def done(self) -> bool:
@@ -196,7 +200,9 @@ class PrefixRecords(Protocol):
 class ReferenceMaintenance:
     def __init__(self, stores: Mapping[ReferenceKind, ReferenceRecords], prefixes: PrefixRecords,
                  unit_of_work: Callable[[], AbstractContextManager[Any]],
-                 clock: Callable[[], datetime] = datetime.now) -> None:
+                 clock: Callable[[], datetime] = datetime.now, *, holds: EditLockGuard | None = None) -> None:
+        """holds is SH-2, shared with the hold routes: retire is refused while someone else
+        holds the record (without it, retires don't check holds)."""
         missing = set(ReferenceKind) - set(stores)
         if missing:
             raise ValueError(f"no store for {sorted(kind.value for kind in missing)}")
@@ -204,6 +210,7 @@ class ReferenceMaintenance:
         self._prefixes = prefixes
         self._unit_of_work = unit_of_work
         self._clock = clock
+        self._holds = holds
 
 #add
 
@@ -240,8 +247,12 @@ class ReferenceMaintenance:
 
     def retire(self, kind: ReferenceKind, record_id: int, acting_user_id: int,
                loaded_at: datetime | None) -> MaintenanceResult:
-        """Retired records stay on the devices that use them, but match nothing new (DI-06)."""
+        """Retired records stay on the devices that use them, but match nothing new (DI-06).
+        Refused (BEING_EDITED) while another user has the record open (2.3.2.3, SH-2)."""
         kind = ReferenceKind(kind)
+        refused = self._being_edited(kind, record_id, acting_user_id)
+        if refused is not None:
+            return refused
         store = self._stores[kind]
         return self._run(kind, record_id, lambda unit: self._done(
             store.retire(record_id, acting_user_id, unit, loaded_at=loaded_at), acting_user_id))
@@ -381,6 +392,18 @@ class ReferenceMaintenance:
             if found is not None:
                 names[type_id] = found.category_name
         return names
+
+    def _being_edited(self, kind: ReferenceKind, record_id: int, acting_user_id: int) -> MaintenanceResult | None:
+        """SH-2 reports, the service decides (design 8.4): BEING_EDITED if anyone else holds the
+        record, otherwise None. Your own hold never blocks you."""
+        if self._holds is None:
+            return None
+        others = self._holds.held_by_others((kind.record_class.TABLE, record_id), acting_user_id)
+        if not others:
+            return None
+        return MaintenanceResult(MaintenanceStatus.BEING_EDITED,
+                                 held_by=tuple(hold.user_id for hold in others), held_since=others[0].since,
+                                 reasons=(f"Someone else is editing this {kind.label}. Try again when they've finished.",))
 
     def _done(self, record: Any, acting_user_id: int) -> MaintenanceResult:
         # Read after the store wrote its audit entry, so it is never earlier than that entry:

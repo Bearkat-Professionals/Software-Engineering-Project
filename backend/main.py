@@ -13,6 +13,7 @@ from backend.config import DatabaseConfig
 from backend.controller.app_controller import Services, create_app, on_scan_finished
 from backend.controller.auth import read_secret_key                                   
 from backend.data_access.account_settings import UserStore
+from backend.shared_modules.edit_lock_guard import EditLockGuard
 from backend.data_access.database_engine import DatabaseConnectionError, DatabaseEngine
 from backend.data_access.network_data import DeviceStore, ScanStore
 from backend.data_access.reference_data import OuiPrefixStore, ReferenceStore
@@ -67,21 +68,23 @@ def main() -> None:
 
     devices = DeviceStore(engine)
     vendors, device_types = ReferenceStore(engine, Vendor), ReferenceStore(engine, DeviceType)
+    holds = EditLockGuard()             # SH-2: ONE registry, shared by the services and the hold routes
 
     reference = ReferenceMaintenance(
         {ReferenceKind.VENDOR: vendors,
          ReferenceKind.DEVICE_TYPE: device_types,
          ReferenceKind.SIGNATURE: ReferenceStore(engine, DeviceSignature)},
-        OuiPrefixStore(engine), engine.unit_of_work)
+        OuiPrefixStore(engine), engine.unit_of_work, holds=holds)
 
     # SH-4 the same way the scans build it, plus users so its conflict notice can name who
     saver = DeviceRecordSaver(devices, vendors, device_types, users)
-    device_maintenance = DeviceMaintenance(engine, saver, devices, users)
+    device_maintenance = DeviceMaintenance(engine, saver, devices, users, holds=holds)
 
     services = Services(scan_manager=manager, scan_sessions=sessions, devices=devices,
                         users=users, access=AccessControlService(users), reference=reference,
                         device_maintenance=device_maintenance,
-                        device_detail=build_device_detail_service(engine))     # search uses `devices`
+                        device_detail=build_device_detail_service(engine),     # search uses `devices`
+                        edit_holds=holds)
     app = create_app(services, secret_key=secret_key)      # https=True once HTTPS arrives (M7)
     try:
         app.run(host=HOST, port=port, debug=False)

@@ -25,7 +25,8 @@ from flask.typing import ResponseReturnValue
 
 from backend.controller.auth import requires
 from backend.data_access.reference_data.reference_store import DEFAULT_PER_PAGE, MAX_PER_PAGE
-from backend.controller.route_helpers import MAX_PAGE, conflict_json, json_body, read_loaded_at, whole_number
+from backend.controller.route_helpers import (MAX_PAGE, being_edited_json, conflict_json, json_body, read_loaded_at,
+                                              whole_number)
 from backend.records.reference_entity import ReferenceEntity
 from backend.services.access_control.permissions import Permission
 from backend.services.records.reference_maintenance import (MaintenanceResult, MaintenanceStatus,
@@ -60,6 +61,7 @@ REFUSAL_STATUS: dict[MaintenanceStatus, int] = {
     MaintenanceStatus.NOT_FOUND: 404,
     MaintenanceStatus.DUPLICATE: 409,     # Conflict: that name, pattern or prefix exists
     MaintenanceStatus.CONFLICT: 409,      # Conflict: someone else changed it after it was loaded
+    MaintenanceStatus.BEING_EDITED: 409,  # Conflict: someone else has it open (SH-2, retire only)
 }
 
 STATUSES = ("active", "retired", "both")
@@ -212,6 +214,8 @@ def _refusal(services: Services, label: str, result: MaintenanceResult,
         return _conflict(services, label, result, loaded_at), status
     if result.status is MaintenanceStatus.DUPLICATE:
         return jsonify(error=result.reasons[0], existing_id=result.existing_id), status
+    if result.status is MaintenanceStatus.BEING_EDITED:
+        return jsonify(being_edited_json(services.users, label, result.held_by, result.held_since)), status
     return jsonify(error=result.reasons[0]), status
 
 
