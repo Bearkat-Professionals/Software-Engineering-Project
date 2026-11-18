@@ -33,7 +33,7 @@ export default function DeviceForm() {
     const { can } = useAuth();
     const canEdit = can("EDIT_DEVICES");
     const { showMessage } = useMessages();
-    const creating = id === "new";
+    const creating = id === undefined;
     const [device, setDevice] = useState(null);
     const [loadedAt, setLoadedAt] = useState(null);
     const [fields, setFields] = useState(blankFields);
