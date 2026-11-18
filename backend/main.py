@@ -20,6 +20,7 @@ from backend.records import DeviceSignature, DeviceType, Vendor
 from backend.services.access_control.access_control_service import AccessControlService
 from backend.services.records.reference_maintenance import ReferenceKind, ReferenceMaintenance
 from backend.services.records.device_maintenance import DeviceMaintenance
+from backend.services.reporting import build_device_detail_service
 from backend.shared_modules.save_device_record import DeviceRecordSaver
 from backend.services.scan.scan_manager import build_scan_manager
 from backend.services.scan.scan_session import ScanSessionController
@@ -79,7 +80,8 @@ def main() -> None:
 
     services = Services(scan_manager=manager, scan_sessions=sessions, devices=devices,
                         users=users, access=AccessControlService(users), reference=reference,
-                        device_maintenance=device_maintenance)
+                        device_maintenance=device_maintenance,
+                        device_detail=build_device_detail_service(engine))     # search uses `devices`
     app = create_app(services, secret_key=secret_key)      # https=True once HTTPS arrives (M7)
     try:
         app.run(host=HOST, port=port, debug=False)

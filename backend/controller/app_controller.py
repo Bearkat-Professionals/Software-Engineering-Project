@@ -30,6 +30,7 @@ from backend.services.scan.scan_manager import ScanManager, ScanResult
 from backend.services.scan.scan_session import ScanSessionController
 from backend.services.records.reference_maintenance import ReferenceMaintenance
 from backend.services.records.device_maintenance import DeviceMaintenance
+from backend.services.reporting import DeviceDetailService
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ class Services:
     access: AccessControlService
     reference: ReferenceMaintenance | None = None     # None only in tests that don't use reference data
     device_maintenance: DeviceMaintenance | None = None   # None only in tests that don't change devices
+    device_detail: DeviceDetailService | None = None      # None only in tests that don't read one device
 
 
 def create_app(services: Services, *, secret_key: str, https: bool = False,

@@ -19,6 +19,7 @@ from backend.services.records.device_maintenance import (DeviceEdit, DeviceMaint
                                                          DeviceMaintenanceStatus, LoadedDevice)
 from backend.services.scan.scan_session import ScanState, ScanStatusReport
 from tests.controller.test_api_routes import FakeDevices, FakeScanManager, FakeSessions
+from tests.controller.test_search_detail_routes import DETAIL_JSON, FakeDeviceDetail
 from tests.fakes.fake_accounts import PASSWORD, SECRET_KEY, FakeAccess, FakeUsers
 
 SAM = User(user_id=4, username="sam", password_hash="not-a-real-hash", role=UserRole.EDITOR)
@@ -106,7 +107,8 @@ def make_client(user: User = SAM, *, maintenance: FakeDeviceMaintenance | None =
     services = Services(scan_manager=FakeScanManager(),
                         scan_sessions=FakeSessions(ScanStatusReport(state=ScanState.NONE)),
                         devices=FakeDevices(), users=users, access=FakeAccess(users),
-                        reference=pickers or FakePickers(), device_maintenance=maintenance or FakeDeviceMaintenance())
+                        reference=pickers or FakePickers(), device_maintenance=maintenance or FakeDeviceMaintenance(),
+                        device_detail=FakeDeviceDetail())
     client = create_app(services, secret_key=SECRET_KEY).test_client()
     signed_in = client.post("/api/login", json={"username": user.username, "password": PASSWORD})
     assert signed_in.status_code == 200, signed_in.get_json()
@@ -129,7 +131,7 @@ class GetDeviceTests(RouteTestCase):
     def test_get_returns_the_form_shape(self) -> None:
         response = self.client.get("/api/devices/7")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), REPLY)
+        self.assertEqual(response.get_json(), {**REPLY, **DETAIL_JSON})      # plus the detail (#121)
 
     def test_the_mark_follows_the_stored_flags(self) -> None:
         cases = (({"trusted_status": True}, "trusted"), ({"flag_set_by_user": True}, "flagged"), ({}, "automatic"))

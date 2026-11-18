@@ -14,7 +14,7 @@ from flask.testing import FlaskClient
 
 from backend.controller.api_routes import STATUS_URL
 from backend.controller.app_controller import Services, create_app
-from backend.data_access.network_data import DeviceListing, DevicePage
+from backend.data_access.network_data import DeviceListing, DevicePage, DeviceSearch
 from backend.records import Device, User
 from backend.records.enums import NetworkStatus, ScanOutcome, UserRole
 from backend.records.scan import Scan
@@ -61,6 +61,11 @@ class FakeDevices:
                          reverse=True)
         start = (page - 1) * per_page
         return DevicePage(ordered[start:start + per_page], page, per_page, len(ordered))
+
+    def search(self, search: DeviceSearch = DeviceSearch(), page: int = 1, per_page: int = 50) -> DevicePage:
+        """With no criteria the real search() IS list_page() (#121). Criteria: test_search_detail_routes."""
+        assert search == DeviceSearch(), "use test_search_detail_routes.FakeSearch for criteria"
+        return self.list_page(page, per_page)
 
 
 def listing(device_id: int, seen_minutes_ago: int, **fields: Any) -> DeviceListing:
