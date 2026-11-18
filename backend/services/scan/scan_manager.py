@@ -34,6 +34,7 @@ from backend.records.enums import AlertEventName, ScanOutcome
 from backend.records.scan import Scan
 from backend.services.scan.collect_evidence import NO_EVIDENCE, CollectedEvidence, Collector, collect_evidence
 from backend.services.scan.collect_mdns_evidence import collect_mdns
+from backend.services.scan.collect_name_evidence import collect_netbios, collect_reverse_dns
 from backend.services.scan.collect_ssdp_evidence import collect_ssdp
 from backend.services.scan.detect_randomized_mac import mark_randomized_macs
 from backend.services.scan.discovered_host import DiscoveredHost
@@ -54,10 +55,9 @@ RecordHosts = Callable[..., RecordSummary]      # record_scan_results with engin
 
 OK, UNAVAILABLE, OFF = "ok", "unavailable", "off"
 
-# Every evidence collector that exists so far, by its setting name (2.2.3). Name evidence
-# (netbios, reverse_dns, #148) is added here when it's merged; until then those two
-# settings are accepted and skipped, so they never make a scan partial.
-EVIDENCE_COLLECTORS: dict[str, Collector] = {"mdns": collect_mdns, "ssdp": collect_ssdp}
+# Every evidence collector, by its setting name (2.2.3).
+EVIDENCE_COLLECTORS: dict[str, Collector] = {"mdns": collect_mdns, "ssdp": collect_ssdp,
+                                             "netbios": collect_netbios, "reverse_dns": collect_reverse_dns}
 
 
 @dataclass(frozen=True)

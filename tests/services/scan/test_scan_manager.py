@@ -18,6 +18,9 @@ from backend.data_access.reference_data import ReferenceRules
 from backend.records import Vendor
 from backend.records.enums import AlertEventName, EvidenceType, ScanOutcome, ScanStatus
 from backend.services.scan.collect_evidence import NO_EVIDENCE, CollectedEvidence, CollectorResult
+from backend.services.scan.collect_mdns_evidence import collect_mdns
+from backend.services.scan.collect_name_evidence import collect_netbios, collect_reverse_dns
+from backend.services.scan.collect_ssdp_evidence import collect_ssdp
 from backend.services.scan.discovered_host import DiscoveredHost
 from backend.services.scan.evidence import RawEvidence
 from backend.services.scan.record_scan_results import RecordSummary
@@ -313,7 +316,7 @@ class EvidencePhaseTests(ManagerTestCase):
         self.assertEqual(len(collectors["ssdp"].asked), 1)
 
     def test_a_method_turned_on_without_a_collector_is_skipped_not_unavailable(self) -> None:
-        result = self.run_scan(collectors={"ssdp": fake_collector("ssdp")})        # netbios etc. not built yet
+        result = self.run_scan(collectors={"ssdp": fake_collector("ssdp")})        # the others have no collector here
         self.assertEqual((result.outcome, result.errors), (ScanOutcome.SUCCESS, ()))
 
     def test_no_hosts_found_asks_nothing(self) -> None:
@@ -324,10 +327,19 @@ class EvidencePhaseTests(ManagerTestCase):
         self.assertEqual(collectors["mdns"].asked, [])
 
     def test_the_real_collectors_follow_the_settings(self) -> None:
-        self.assertEqual(set(EVIDENCE_COLLECTORS), {"mdns", "ssdp"})
-        self.assertEqual(list(evidence_collectors(ScanSettings())), ["mdns", "ssdp"])
-        self.assertEqual(list(evidence_collectors(ScanSettings(evidence_methods=("ssdp", "netbios")))), ["ssdp"])
+        self.assertEqual(list(evidence_collectors(ScanSettings(evidence_methods=("ssdp", "netbios")))),
+                         ["ssdp", "netbios"])
         self.assertEqual(evidence_collectors(ScanSettings(evidence_methods=())), {})
+
+    def test_all_four_evidence_methods_are_built_and_none_skipped(self) -> None:     # #148
+        methods = ["mdns", "ssdp", "netbios", "reverse_dns"]
+        self.assertEqual(set(EVIDENCE_COLLECTORS), set(methods))
+        with self.assertNoLogs("backend.services.scan.scan_manager", level="INFO"):    # no "skipped" line
+            built = evidence_collectors(ScanSettings(evidence_methods=tuple(methods)))
+        self.assertEqual(list(built), methods)
+        self.assertEqual(built, {"mdns": collect_mdns, "ssdp": collect_ssdp,
+                                 "netbios": collect_netbios, "reverse_dns": collect_reverse_dns})
+        self.assertEqual(list(evidence_collectors(ScanSettings())), list(ScanSettings().evidence_methods))
 
 
 if __name__ == "__main__":
