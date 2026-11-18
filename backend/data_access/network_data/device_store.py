@@ -37,6 +37,7 @@ _CHILD_TABLES = {
 
 DEFAULT_PER_PAGE = 50
 MAX_PER_PAGE = 200
+IN_CHUNK = 1000           #Javier Changed
 # Columns the device list can be narrowed by exact match (3.1.2 "by criteria");
 # DeviceSearch has a field with each of these names
 LIST_CRITERIA = ("network_status", "flagged_status", "trusted_status", "is_randomized_mac",
@@ -211,6 +212,39 @@ class DeviceStore:
             rows = cursor.fetchall()
         return DevicePage([_listing(row) for row in rows], page, per_page, total)
 
+
+    def search_all(self, search: DeviceSearch, limit: int, unit: Any = None) -> list[DeviceListing]:
+        where, params = _search_where(search)
+        sql = _LISTING_SELECT + where + " " + _order_by(search) + " LIMIT %s"
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(sql, params + [limit + 1])
+            rows = cursor.fetchall()
+
+        listings = []
+        for row in rows:
+            listings.append(_listing(row))
+        return listings
+
+    def listings_for(self, device_ids: list[int], unit: Any = None) -> list[DeviceListing]:
+        ids = sorted(set(device_ids))
+        listings = []
+        with _unit_of_work(self._engine, unit) as cursor:
+            for start in range(0, len(ids), IN_CHUNK):
+                chunk = ids[start:start + IN_CHUNK]
+                sql = _LISTING_SELECT + "WHERE d.`device_id` IN (" + _marks(chunk) + ") ORDER BY d.`device_id`"
+                cursor.execute(sql, chunk)
+                for row in cursor.fetchall():
+                    listings.append(_listing(row))
+        return listings
+
+
+
+
+
+
+
+
+    
     def list_page(self, page: int = 1, per_page: int = DEFAULT_PER_PAGE, unit: Any = None,
                   **criteria: Any) -> DevicePage:
         """One page of the device list, newest sighting first. criteria narrow it
@@ -300,6 +334,26 @@ class DeviceStore:
             cursor.execute(f"SELECT COUNT(*) AS n FROM `{table}` WHERE `device_id` = %s", (device_id,))
             counts[key] = cursor.fetchone()["n"]
         return counts
+
+
+
+def _order_by(search: DeviceSearch) -> str:            #Javier Changed
+    sort = SORT_COLUMNS[search.sort]
+    if search.descending:
+        direction = "DESC"
+    else:
+        direction = "ASC"
+    return "ORDER BY " + sort + " IS NULL, " + sort + " " + direction + ", d.`device_id` " + direction
+
+
+def _marks(ids: list[int]) -> str:
+    marks = []
+    for device_id in ids:
+        marks.append("%s")
+    return ", ".join(marks)
+
+
+
 
 def _search_where(search: DeviceSearch) -> tuple[str, list[Any]]:
     """WHERE clause and parameters for a search. Every value is a parameter;

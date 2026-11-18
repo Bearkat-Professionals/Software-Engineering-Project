@@ -266,6 +266,29 @@ class DeviceDetailService:
         return store.find(pk, unit) if pk is not None else None
 
 
+def resolve_evidence(records: list[IdentificationEvidence], signatures_by_id: dict[int, DeviceSignature | None]) -> tuple[Resolution, dict[EvidenceItem, EvidenceDetail]]:   #Javier change
+    matches: list[SignatureMatch] = []
+    other: list[EvidenceItem] = []
+    details: dict[EvidenceItem, EvidenceDetail] = {}
+
+    for record in records:
+        item = EvidenceItem.from_record(record)
+        signature = None
+        if record.signature_id is not None:
+            signature = signatures_by_id.get(record.signature_id)
+
+        details[item] = EvidenceDetail(record, getattr(signature, "resulting_device_name", None), getattr(signature, "resulting_model", None))
+        if signature is None:
+            other.append(item)
+        else:
+            matches.append(SignatureMatch(item, signature.device_type_id, signature.resulting_device_name, signature.resulting_model))
+
+    return resolve_conflicts(matches, other), details
+
+
+
+
+
 def build_device_detail_service(engine: DatabaseEngine) -> DeviceDetailService:
     """Build the service with the real data-access stores."""
     # Kept local so the fake-backed unit tests do not require a database driver.

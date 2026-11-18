@@ -271,6 +271,9 @@ class ScanStore:
         """The evidence behind a device's identification, oldest first."""
         return self._evidence.list(unit, device_id=device_id)
 
+    def observations_for(self, scan_id: int, unit: Any = None) -> list[ScanObservation]: #Javier changed
+         return self._observations.list(unit, scan_id=scan_id)
+
 # Both scans' observations, joined to the device and its vendor and type names (2.4.3).
 # Data rule: scan_observation is found by its scan_id index, device by its primary key.
 COMPARE_SQL = (
