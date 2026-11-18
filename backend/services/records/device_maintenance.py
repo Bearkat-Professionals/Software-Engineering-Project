@@ -41,6 +41,7 @@ from backend.records import Device, User
 from backend.records.enums import IdentificationLevel
 from backend.services.scan.assign_level import stored_level
 from backend.services.scan.detect_randomized_mac import is_randomized_mac
+from backend.shared_modules.edit_lock_guard import EditLockGuard
 from backend.shared_modules.save_device_record import (DeviceChanges, DeviceRecordSaver, SaveOutcome,
                                                        SaveStatus)
 from backend.shared_modules.validate_input import validate_mac
@@ -58,7 +59,8 @@ class DeviceMaintenanceStatus(str, Enum):
     REJECTED = "rejected"              
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"               
-    ALREADY_EXISTS = "already_exists"   
+    ALREADY_EXISTS = "already_exists"
+    BEING_EDITED = "being_edited"       # someone else has it open in an edit form (SH-2) 
 
 
 @dataclass(frozen=True)
@@ -69,7 +71,9 @@ class DeviceMaintenanceResult:
     changed_by: int | None = None               
     changed_at: datetime | None = None          
     existing_device_id: int | None = None       
-    removed: dict[str, int] | None = None       
+    removed: dict[str, int] | None = None
+    held_by: tuple[int, ...] = ()               # BEING_EDITED: the users editing it, oldest hold first
+    held_since: datetime | None = None          # BEING_EDITED: when the oldest of those holds began    
 
     @property
     def done(self) -> bool:
@@ -128,14 +132,18 @@ class DeviceRecords(Protocol):
 
 class DeviceMaintenance:
     def __init__(self, engine: UnitOfWork, saver: DeviceRecordSaver, devices: DeviceRecords,
-                 users: UserFinder | None = None, clock: Callable[[], datetime] = datetime.now) -> None:
+                 users: UserFinder | None = None, clock: Callable[[], datetime] = datetime.now, *,
+                 holds: EditLockGuard | None = None) -> None:
         """users names who caused a delete conflict (without it, "another user"). clock must be
-        the audit log's clock (AuditTrail uses datetime.now), or the conflict check is wrong."""
+        the audit log's clock (AuditTrail uses datetime.now), or the conflict check is wrong.
+        holds is SH-2, shared with the hold routes: delete is refused while someone else holds
+        the device (without it, deletes don't check holds)."""
         self._engine = engine
         self._saver = saver
         self._devices = devices
         self._users = users
         self._clock = clock
+        self._holds = holds
 
     #add
 
@@ -201,7 +209,11 @@ class DeviceMaintenance:
 
 #delete 
     def delete(self, device_id: int, acting_user_id: int, loaded_at: datetime | None) -> DeviceMaintenanceResult:
-        """Its observations and evidence go with it (DI-05); the counts come back in removed."""
+        """Its observations and evidence go with it (DI-05); the counts come back in removed.
+        Refused (BEING_EDITED) while another user has the device open (2.3.1.3, SH-2)."""
+        refused = self._being_edited(device_id, acting_user_id)
+        if refused is not None:
+            return refused
         try:
             with self._engine.unit_of_work() as unit:
                 removed = self._devices.delete(device_id, acting_user_id, unit, loaded_at=loaded_at)
@@ -269,6 +281,19 @@ class DeviceMaintenance:
             return DeviceMaintenanceResult(DeviceMaintenanceStatus.CONFLICT, reasons=outcome.reasons,
                                            changed_by=outcome.changed_by, changed_at=outcome.changed_at)
         return DeviceMaintenanceResult(DeviceMaintenanceStatus.REJECTED, reasons=outcome.reasons)
+
+    def _being_edited(self, device_id: int, acting_user_id: int) -> DeviceMaintenanceResult | None:
+        """SH-2 reports, the service decides (design 8.4): BEING_EDITED if anyone else holds the
+        device, otherwise None. Your own hold never blocks you. This only warns before acting;
+        the version guard (loaded_at) is what stops a lost update."""
+        if self._holds is None:
+            return None
+        others = self._holds.held_by_others((Device.TABLE, device_id), acting_user_id)
+        if not others:
+            return None
+        return DeviceMaintenanceResult(DeviceMaintenanceStatus.BEING_EDITED,
+                                       held_by=tuple(hold.user_id for hold in others), held_since=others[0].since,
+                                       reasons=("Someone else is editing this device. Try again when they've finished.",))
 
     def _conflict_reason(self, conflict: EditConflictError, loaded_at: datetime, unit: Any) -> str:
         """Worded exactly like SH-4's edit conflict, so both read the same: who, and when

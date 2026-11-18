@@ -8,7 +8,7 @@ also show SH-4 and the service agree.
 from __future__ import annotations
 
 import unittest
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from backend.records import Device, DeviceType, User, Vendor
 from backend.records.enums import AuditAction, IdentificationLevel, NetworkStatus, RecordStatus
@@ -17,6 +17,7 @@ from backend.services.records.device_maintenance import (MARKS, DeviceEdit, Devi
                                                          DeviceMaintenanceStatus as MaintenanceStatus,
                                                          LoadedDevice)
 from backend.services.scan.assign_level import stored_level
+from backend.shared_modules.edit_lock_guard import EditLockGuard
 from tests.fakes.fake_device_maintenance import (FakeClock, FakeEngine, FakeMaintainedDevices, FakeUsers,
                                                  SpySaver)
 from tests.fakes.fake_reference_store import FakeReferenceStore
@@ -336,6 +337,56 @@ class DeleteTests(MaintenanceTestCase):
         service = DeviceMaintenance(self.engine, self.saver, self.devices, clock=self.clock)
         self.devices.changed_elsewhere(1, OTHER, self.clock() + timedelta(minutes=3))
         self.assertIn("changed by another user at", service.delete(1, ADMIN, self.clock()).reasons[0])
+
+
+class HoldTests(MaintenanceTestCase):
+    """SH-2 (#141): a delete is refused while another user has the device open."""
+
+    HOLD_STARTED = datetime(2026, 11, 13, 14, 5, 12)
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.now = 1000.0                                   # the guard's clock, in seconds
+        self.holds = EditLockGuard(clock=lambda: self.now, wall_clock=lambda: self.HOLD_STARTED)
+        self.service = DeviceMaintenance(self.engine, self.saver, self.devices, USERS, clock=self.clock,
+                                         holds=self.holds)
+
+    def test_delete_is_refused_while_someone_else_holds_the_device(self) -> None:
+        self.holds.take(("device", 1), OTHER, "ada-session")
+        result = self.service.delete(1, ADMIN, self.clock())
+        self.assertStatus(result, MaintenanceStatus.BEING_EDITED, "Someone else is editing this device")
+        self.assertEqual((result.held_by, result.held_since), ((OTHER,), self.HOLD_STARTED))
+        self.assertIn(1, self.devices.rows)
+        self.assertEqual(self.engine.opened, 0)             # refused before any unit of work
+
+    def test_your_own_hold_doesnt_block_your_delete(self) -> None:
+        self.holds.take(("device", 1), ADMIN, "sam-session")
+        self.assertStatus(self.service.delete(1, ADMIN, self.clock()), DONE)
+
+    def test_delete_works_once_the_hold_expires(self) -> None:
+        self.holds.take(("device", 1), OTHER, "ada-session")
+        self.now += self.holds.lifetime_s
+        self.assertStatus(self.service.delete(1, ADMIN, self.clock()), DONE)
+
+    def test_delete_works_once_the_hold_is_released(self) -> None:
+        hold = self.holds.take(("device", 1), OTHER, "ada-session")
+        self.holds.release(hold.hold_id, OTHER)
+        self.assertStatus(self.service.delete(1, ADMIN, self.clock()), DONE)
+
+    def test_a_hold_on_another_device_or_record_type_doesnt_block(self) -> None:
+        self.holds.take(("device", 2), OTHER, "ada-session")
+        self.holds.take(("vendor", 1), OTHER, "ada-session")
+        self.assertStatus(self.service.delete(1, ADMIN, self.clock()), DONE)
+
+    def test_edits_and_marks_are_never_blocked(self) -> None:          # the version guard handles them
+        self.holds.take(("device", 1), OTHER, "ada-session")
+        self.assertStatus(self.service.edit(1, DeviceEdit(model="X"), ADMIN, self.clock()), DONE)
+        self.assertStatus(self.service.set_mark(1, "trusted", ADMIN, self.clock()), DONE)
+
+    def test_two_others_are_both_named_oldest_first(self) -> None:
+        self.holds.take(("device", 1), OTHER, "ada-session")
+        self.holds.take(("device", 1), 9, "kim-session")
+        self.assertEqual(self.service.delete(1, ADMIN, self.clock()).held_by, (OTHER, 9))
 
 
 # ---- load ---------------------------------------------------------------------------

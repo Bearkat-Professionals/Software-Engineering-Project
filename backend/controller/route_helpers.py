@@ -1,10 +1,12 @@
-"""Helpers the API route modules share (#51, #126, the device record routes): reading the
-request the same way everywhere, and the conflict notice's wording. Each stops a bad
-request with a 400 and a sentence a person can read. No database code here (tier rules).
+"""Helpers the API route modules share (#51, #126, the device record routes, #141): reading the
+request the same way everywhere, and the wording of the conflict and "being edited" notices.
+Each stops a bad request with a 400 and a sentence a person can read. No database code here
+(tier rules).
 """
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Callable
+from datetime import datetime, date
 from typing import Any, Protocol
 
 from flask import abort, request
@@ -71,3 +73,26 @@ def conflict_json(users: UserFinder, label: str, changed_by: int | None, changed
     return {"error": f"This {label} was changed by {who}{when} after you opened it. Reload to see their changes.",
             "changed_by": who,
             "changed_at": changed_at.isoformat() if changed_at is not None else None}
+
+def being_edited_json(users: UserFinder, label: str, held_by: tuple[int, ...], since: datetime | None,
+                      *, today: Callable[[], date] = date.today) -> dict[str, Any]:
+    """'sam is editing this device (since 14:05). Try again when they've finished.' with who
+    and since when as fields too (SH-2, #141). The services know only the users' ids; the
+    date is added when the hold didn't start today."""
+    names = [_username(users, user_id) for user_id in held_by] or ["another user"]
+    who = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
+    verb = "is" if len(names) == 1 else "are"
+    if since is None:
+        when = ""
+    elif since.date() == today():
+        when = f" (since {since:%H:%M})"
+    else:
+        when = f" (since {since:%Y-%m-%d %H:%M})"
+    return {"error": f"{who} {verb} editing this {label}{when}. Try again when they've finished.",
+            "held_by": names,
+            "since": since.isoformat(timespec="seconds") if since is not None else None}
+
+
+def _username(users: UserFinder, user_id: int) -> str:
+    user = users.find(user_id)
+    return user.username if user is not None else "another user"

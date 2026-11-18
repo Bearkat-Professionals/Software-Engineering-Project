@@ -459,6 +459,7 @@ A scan may add the device again if it's still on the network.
 | No such device | 404 | `{"error": "There is no device with id 7. It may have been deleted; reload the list."}` |
 | Changed by someone else since you loaded it | 409 | `{"error": "This device was changed by sam at 14:05 after you opened it. Reload to see their changes.", "changed_by": "sam", "changed_at": "2026-11-08T14:05:31"}` |
 | That MAC is already a device | 409 | `{"error": "A device with MAC F0:D1:A9:12:34:56 is already stored. Edit that one instead.", "device_id": 7}` |
+| Delete only: someone else has it open ([edit holds](#edit-holds-sh-2-141)) | 409 | `{"error": "sam is editing this device (since 14:05). Try again when they've finished.", "held_by": ["sam"], "since": "2026-11-13T14:05:12"}` |
 
 `device_id` in the last refusal lets the screen offer a link to the existing device. Device names and models are stored exactly as typed, so show them as text, never as HTML.
 
@@ -531,9 +532,28 @@ Reload the vendor afterwards to show its new list of prefixes.
 | No such record or prefix | 404 | `{"error": "There is no vendor with id 999. It may have been removed; reload the list."}` |
 | Name, pattern or prefix already exists | 409 | `{"error": "A vendor with this name already exists.", "existing_id": 88}` |
 | Changed by someone else since you loaded it | 409 | `{"error": "This vendor was changed by sam at 14:05 after you opened it. Reload to see their changes.", "changed_by": "sam", "changed_at": "2026-11-11T14:05:31"}` |
+| Retire only: someone else has it open ([edit holds](#edit-holds-sh-2-141)) | 409 | `{"error": "sam is editing this vendor (since 14:05). Try again when they've finished.", "held_by": ["sam"], "since": "2026-11-13T14:05:12"}` |
 
 A prefix refusal says "The OUI prefix can't be saved." A duplicate offers `existing_id` so the screen can link to the existing record (`null` when two people added it at the same moment). Names and patterns are stored exactly as typed, so show them as text, never as HTML.
 
+### Edit holds (SH-2, #141)
+An edit form takes a **hold** when it opens, renews it every 30 seconds while it stays open, and releases it when it closes. While someone else holds a record, **deleting a device or retiring a reference record is refused** (409, naming who). Edits are never blocked: two people can edit at once, and the second save gets the "changed by" conflict instead. Your own hold never blocks you.
+
+| Request | Body | Success | Refusals |
+|---|---|---|---|
+| `POST /api/holds` | `{"record_type": "device", "record_id": 7}` | 201 | 400 bad type or id, 403 role, 404 no such record |
+| `PUT /api/holds/<hold_id>` | `{}` | 200 | 404: it ended (expired, released, or you signed out); take a new one |
+| `DELETE /api/holds/<hold_id>` | `{}` | 204 | none: releasing a hold that's already gone is fine |
+
+POST and PUT answer the same shape, so the form can show who else has the record open:
+```json
+{"hold_id": "k3J9...", "expires_in_s": 120,
+ "others": [{"username": "sam", "since": "2026-11-13T14:05:12"}]}
+```
+- `record_type` is `device`, `vendor`, `device_type` or `device_signature` (the names `audit_log` uses).
+- Taking a hold needs the right to change that record: `EDIT_DEVICES` for a device, `EDIT_REFERENCE_DATA` for the rest. A viewer gets 403, logged.
+- A hold lasts 2 minutes unless renewed, so a closed tab frees the record within 2 minutes. Signing out releases that session's holds at once. Holds live in the app's memory: restarting the app ends them all.
+- A hold is a courtesy, not the safety net: `loaded_at` (the version guard) is what stops a lost update. The hold id is a secret like your session; don't log it.
 
 ## CRUD test page and server (development only)
 A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.

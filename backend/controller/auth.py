@@ -220,7 +220,7 @@ def _register_routes(app: Flask, services: Services, sessions: SessionRegistry) 
             logger.warning("Failed sign-in for %r: %s", username, result.reason)
             return jsonify(error=result.reason), 401
 
-        sessions.end(session.get("sid"))
+        _end_with_holds(services, sessions, session.get("sid"))
         session.clear()             # never reuse a session made before sign-in (session fixation)
         session["sid"] = sessions.start(result.user.user_id)
         session.permanent = True    # the cookie lasts the 8 hours, not just until the browser closes
@@ -229,7 +229,7 @@ def _register_routes(app: Flask, services: Services, sessions: SessionRegistry) 
     @app.post("/api/logout")
     @requires()
     def logout() -> ResponseReturnValue:
-        sessions.end(session.get("sid"))
+        _end_with_holds(services, sessions, session.get("sid"))     # sign-out frees the forms' holds (SH-2)
         session.clear()
         return "", 204
 
@@ -237,6 +237,27 @@ def _register_routes(app: Flask, services: Services, sessions: SessionRegistry) 
     @requires()
     def me() -> ResponseReturnValue:
         return jsonify(_me(g.user))
+
+def _end_with_holds(services: Services, sessions: SessionRegistry, sid: Any) -> None:
+    """End a session and release the edit holds taken in it (SH-2, #141)."""
+    if isinstance(sid, str):
+        services.edit_holds.release_session(sid)
+    sessions.end(sid)
+
+
+def current_session_id() -> str | None:
+    """The signed-in session's id, for SH-2 to remember which session took a hold. Only
+    inside a route guarded by @requires; it's a secret, so never log it."""
+    sid = session.get("sid")
+    return sid if isinstance(sid, str) else None
+
+
+def check_permission(user: User, permission: Permission) -> None:
+    """For a route whose permission depends on the request (the hold routes: EDIT_DEVICES for
+    a device, EDIT_REFERENCE_DATA for the rest). Stops with 403, logged, like @requires."""
+    decision = authorize(user, permission)
+    if not decision.allowed:
+        _refuse(403, decision.reason, user, permission)
 
 def _me(user: User) -> dict[str, Any]:
     """The user without the password hash (to_dict drops it), and what they may do."""
