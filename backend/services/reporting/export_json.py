@@ -149,6 +149,46 @@ def scan_export(scan, started_by_username, observation):
     return one_scan
 
 
+def devices_scope(search):
+    seen_from = None
+    if search.seen_from is not None:
+        seen_from = search.seen_from.isoformat()
+    seen_to = None
+    if search.seen_to is not None:
+        seen_to = search.seen_to.isoformat()
+
+    filters = {
+        "device_type_id": search.device_type_id,
+        "vendor_id": search.vendor_id,
+        "network_status": get_text(search.network_status),
+        "flagged_status": search.flagged_status,
+        "trusted_status": search.trusted_status,
+        "is_randomized_mac": search.is_randomized_mac,
+        "confidence_min": search.confidence_min,
+        "confidence_max": search.confidence_max,
+        "seen_from": seen_from,
+        "seen_to": seen_to,
+        "text": search.text,
+    }
+    scope = {
+        "kind": "devices",
+        "filters": filters,
+        "sort": search.sort,
+        "descending": search.descending,
+    }
+    return scope
+
+
+def scan_scope(scan_id):
+    scope = {
+        "kind": "scan",
+        "scan_id": scan_id,
+    }
+    return scope
+
+
+
+
 
 def export_text(document):
     text = json.dumps(document, ensure_ascii=False, indent= 2)
@@ -181,7 +221,7 @@ class ExportService:
         log_msg = exported_by.username + " exported devices (" + scope + "): " + str(len(devices)) + " devices"
         logger.info(log_msg)
 
-        document = self.make_document(exported_by, None, devices)
+        document = self.make_document(exported_by, devices_scope(search), None, devices)
         return ExportResult(MaintenanceStatus.DONE, document, None)
 
 
@@ -210,34 +250,39 @@ class ExportService:
         logger.info(log_msg)
 
         one_scan = scan_export(scan, username, observations)
-        document = self.make_document(exported_by, one_scan, devices)
+        document = self.make_document(exported_by, scan_scope(scan_id), one_scan, devices)
         return ExportResult(MaintenanceStatus.DONE, document, None)
 
     def devices_export(self, listings, unit):
-        devices = []
+        device_ids = []
         for listing in listings:
-            device_id = listing.device.device_id
-            evidence = self.scans.evidence_for(device_id, unit)      
+            device_ids.append(listing.device.device_id)
+        evidence = self.scans.evidence_for_devices(device_ids, unit)
 
-            signatures = {}
-            for record in evidence:       
-                if record.signature_id is not None:
+        signatures = {}
+        for device_id in evidence:
+            for record in evidence[device_id]:
+                if record.signature_id is not None and record.signature_id not in signatures:
                     signatures[record.signature_id] = self.signatures.find(record.signature_id, unit)
 
-            one_device = device_export(listing, evidence, signatures)
+        devices = []
+        for listing in listings:
+            device_evidence = evidence.get(listing.device.device_id, [])
+            one_device = device_export(listing, device_evidence, signatures)
             devices.append(one_device)
         return devices
 
-    def make_document(self, exported_by, scan, devices):
-        now = datetime.now(timezone.utc)     
-        document = {       
+    def make_document(self, exported_by, scope, scan, devices):
+        now = datetime.now(timezone.utc)
+        document = {
             "format": FORMAT,
             "format_version": FORMAT_VERSION,
             "exported_at": iso_utc(now),
             "exported_by": exported_by.username,
-            "scan": scan,
+            "scope": scope,
             "device_count": len(devices),
             "devices": devices,
+            "scan": scan,
         }
         return document
 

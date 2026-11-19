@@ -9,8 +9,13 @@ from backend.services.reporting.device_detail import DeviceDetailService
 from backend.services.reporting.export_json import MAX_EXPORT_DEVICES, ExportService, device_export, export_text, iso_utc, scan_export
 from tests.services.reporting.test_device_detail import FakeDeviceReader, FakeEngine, FakeOuiPrefixReader, FakeReferenceReader, FakeScanReader
 
+
+
+
+
+
 HASH = "$argon2id$v=19$m=65536,t=3,p=4$c2FsdA$aGFzaA"
-SECRET_KEY = "Secret-key-that-might-be-related-to-Javier"
+SECRET_KEY = "secret-key-that-might-be-related-to-javier"
 JAVIER = User(user_id=3, username="javier", password_hash=HASH)
 MARK = User(user_id=4, username="mark", password_hash=HASH)
 
@@ -18,6 +23,8 @@ STRONG = DeviceSignature(signature_id=11, device_type_id=4, pattern_value="_amaz
 WEAK = DeviceSignature(signature_id=12, device_type_id=5, pattern_value="living-tv", evidence_type=EvidenceType.REVERSE_DNS, resulting_device_name="Living Room TV")
 TIED = DeviceSignature(signature_id=13, device_type_id=5, pattern_value="roku", evidence_type=EvidenceType.SSDP, resulting_device_name="Roku")
 SIGNATURES = {11: STRONG, 12: WEAK, 13: TIED}
+
+
 
 OUI = IdentificationEvidence(evidence_id=1, device_id=7, evidence_type=EvidenceType.OUI, raw_value="70:13:01", weight=20)
 MDNS = IdentificationEvidence(evidence_id=2, device_id=7, evidence_type=EvidenceType.MDNS, raw_value="_amazon._tcp", weight=35, signature_id=11)
@@ -30,6 +37,9 @@ ECHO = DeviceListing(Device(device_id=7, mac_address="70:13:01:65:8E:F7", device
 PHONE = DeviceListing(Device(device_id=8, mac_address="DA:A1:19:00:00:01", is_randomized_mac=True), "unknown", "unknown")
 SCAN = Scan(scan_id=9, user_id=4, target_scope="192.168.1.0/24", status=ScanStatus.COMPLETED, outcome=ScanOutcome.SUCCESS, started_at=datetime(2026, 11, 16, 8, 0), configuration_used={"secret_key": SECRET_KEY, "sid": "k3J9", "password": "letmein"})
 OBSERVATIONS = [ScanObservation(observation_id=21, scan_id=9, device_id=7, ip_address="192.168.1.20"), ScanObservation(observation_id=22, scan_id=9, device_id=8)]
+
+
+
 
 
 class FakeDevices:
@@ -51,6 +61,7 @@ class FakeScans:
     def __init__(self, evidence, observations):
         self.evidence = evidence
         self.observations = observations
+        self.evidence_reads = 0
 
     def find(self, scan_id, unit=None):
         if scan_id == 9:
@@ -60,21 +71,30 @@ class FakeScans:
     def observations_for(self, scan_id, unit=None):
         return self.observations
 
-    def evidence_for(self, device_id, unit=None):
-        found = []
+    def evidence_for_devices(self, device_ids, unit=None):
+        self.evidence_reads = self.evidence_reads + 1
+        found = {}
+        for device_id in device_ids:
+            found[device_id] = []
         for record in self.evidence:
-            if record.device_id == device_id:
-                found.append(record)
+            if record.device_id in found:
+                found[record.device_id].append(record)
         return found
+
+
+
+
 
 
 class FakeRecords:
     def __init__(self, records):
         self.records = {}
+        self.reads = 0
         for record in records:
             self.records[record.pk] = record
 
     def find(self, pk, unit=None):
+        self.reads = self.reads + 1
         return self.records.get(pk)
 
 
@@ -86,6 +106,11 @@ def make_service(listings=None, evidence=None, observations=None):
     if observations is None:
         observations = OBSERVATIONS
     return ExportService(FakeEngine().unit_of_work, FakeDevices(listings), FakeScans(evidence, observations), FakeRecords([STRONG, WEAK, TIED]), FakeRecords([JAVIER, MARK]))
+
+
+
+
+
 
 
 class TestExportJson(unittest.TestCase):
@@ -104,7 +129,7 @@ class TestExportJson(unittest.TestCase):
         self.assertEqual(list(part["observations"][0]), ["device_id", "ip", "hostname", "status", "observed_at"])
 
         document = make_service().export_devices(DeviceSearch(), JAVIER).document
-        self.assertEqual(list(document), ["format", "format_version", "exported_at", "exported_by", "scan", "device_count", "devices"])
+        self.assertEqual(list(document), ["format", "format_version", "exported_at", "exported_by", "scope", "device_count", "devices", "scan"])
 
     def test_every_key_present_with_null_when_empty(self):
         part = device_export(PHONE, [], {})
@@ -140,6 +165,31 @@ class TestExportJson(unittest.TestCase):
             if row["counted"]:
                 counted.append(row["raw_value"])
         self.assertEqual(counted, ["70:13:01", "_amazon._tcp"])
+
+    def test_scope_says_what_the_file_contains(self):
+        search = DeviceSearch(flagged_status=True, text="echo")
+        scope = make_service().export_devices(search, JAVIER).document["scope"]
+        self.assertEqual(scope["kind"], "devices")
+        self.assertEqual(scope["filters"]["flagged_status"], True)
+        self.assertEqual(scope["filters"]["text"], "echo")
+        self.assertEqual(scope["filters"]["vendor_id"], None)
+
+        scope = make_service().export_scan(9, JAVIER).document["scope"]
+        self.assertEqual(scope, {"kind": "scan", "scan_id": 9})
+
+    def test_evidence_and_signatures_are_read_once(self):
+        listings = []
+        evidence = []
+        for device_id in range(1, 10):
+            listings.append(DeviceListing(Device(device_id=device_id, mac_address="70:13:01:00:00:0" + str(device_id)), "Vantiva", "smart speaker"))
+            evidence.append(IdentificationEvidence(evidence_id=device_id, device_id=device_id, evidence_type=EvidenceType.MDNS, raw_value="_amazon._tcp", weight=35, signature_id=11))
+        scans = FakeScans(evidence, OBSERVATIONS)
+        signatures = FakeRecords([STRONG])
+        service = ExportService(FakeEngine().unit_of_work, FakeDevices(listings), scans, signatures, FakeRecords([JAVIER]))
+
+        service.export_devices(DeviceSearch(), JAVIER)
+        self.assertEqual(scans.evidence_reads, 1)
+        self.assertEqual(signatures.reads, 1)
 
     def test_utc_near_midnight(self):
         central = timezone(timedelta(hours=-6))
@@ -179,6 +229,10 @@ class TestExportJson(unittest.TestCase):
         first["exported_at"] = None
         second["exported_at"] = None
         self.assertEqual(export_text(first), export_text(second))
+
+
+
+
 
 
 if __name__ == "__main__":

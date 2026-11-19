@@ -198,35 +198,11 @@ class DeviceDetailService:
         records: list[IdentificationEvidence],
         unit: Any,
     ) -> tuple[Resolution, dict[EvidenceItem, EvidenceDetail]]:
-        matches: list[SignatureMatch] = []
-        other: list[EvidenceItem] = []
-        details: dict[EvidenceItem, EvidenceDetail] = {}
-        signature_cache: dict[int, DeviceSignature | None] = {}
-
+        signatures = {}
         for record in records:
-            item = EvidenceItem.from_record(record)
-            signature = None
-            if record.signature_id is not None:
-                if record.signature_id not in signature_cache:
-                    signature_cache[record.signature_id] = self._signatures.find(record.signature_id, unit)
-                signature = signature_cache[record.signature_id]
-
-            details[item] = EvidenceDetail(
-                record,
-                getattr(signature, "resulting_device_name", None),
-                getattr(signature, "resulting_model", None),
-            )
-            if signature is None:
-                other.append(item)
-            else:
-                matches.append(SignatureMatch(
-                    item,
-                    signature.device_type_id,
-                    signature.resulting_device_name,
-                    signature.resulting_model,
-                ))
-
-        return resolve_conflicts(matches, other), details
+            if record.signature_id is not None and record.signature_id not in signatures:
+                signatures[record.signature_id] = self._signatures.find(record.signature_id, unit)
+        return resolve_evidence(records, signatures)
 
     def _inferred_values(
         self,
