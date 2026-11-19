@@ -6,6 +6,7 @@ import { displayName, formatConfidence, formatLastSeen } from "../../components/
 import { useMessages } from "../../components/Messages";
 import { useScanStatus } from "../scans/useScanStatus";
 import { useAuth } from "../../auth/AuthProvider";
+import { downloadFile } from "../../components/download";
 
 const PAGE_SIZES = [25, 50, 100];
 
@@ -86,6 +87,7 @@ export default function DeviceList() {
     const { showMessage } = useMessages();
     const { can } = useAuth();
     const canEdit = can("EDIT_DEVICES");
+    const [exporting, setExporting] = useState(false);
     const [params, setParams] = useSearchParams();
     const page = readPage(params);
     const perPage = readPerPage(params);
@@ -391,6 +393,28 @@ export default function DeviceList() {
 
     }
 
+    // Export uses the list's filters and sort without paging.
+    // button stays disabled until download has finished or failed
+    async function onExport() {
+
+      const filters = new URLSearchParams(query);
+
+      filters.delete("page");
+      filters.delete("per_page");
+
+      const text = filters.toString();
+
+      setExporting(true);
+
+      try {
+        await downloadFile(text === "" ? "/api/export/devices" : `/api/export/devices?${text}`, "devices.json");
+      } catch (err) {
+        showMessage("error", err.message);
+      } finally {
+        setExporting(false);
+      }
+    }
+
     const rows = listing?.devices ?? [];
     const total = listing?.total ?? 0;
     const start = total === 0 ? 0 : (page - 1) * perPage + 1;
@@ -413,6 +437,12 @@ export default function DeviceList() {
             <p>
               A scan started by {status.started_by} is running. <Link to="/scans">View scan</Link>
             </p>
+            
+          )}
+
+          {can("EXPORT") && (
+
+            <p><button type="button" onClick={onExport} disabled={exporting}>Export JSON</button></p>
 
           )}
           
