@@ -15,6 +15,8 @@ INSERT IGNORE INTO device_type (category_name, status) VALUES
 # A signature is a duplicate when its evidence type and pattern are already present.
 # The Apple TV pattern is intentionally narrower than _airplay._tcp so Sonos devices
 # advertising AirPlay do not tie between streaming-device and smart-speaker rules.
+# host=echo matches an Amazon Echo's mDNS host name (host=echoshow, host=echo-dot-...):
+# some Echos announce only a generic service such as _spotify-connect._tcp.
 INSERT INTO device_signature (
     device_type_id,
     pattern_value,
@@ -38,6 +40,7 @@ FROM (
     UNION ALL SELECT 'streaming device', 'model=AppleTV', 'mdns', 'Apple TV'
     UNION ALL SELECT 'smart speaker', '_sonos._tcp', 'mdns', 'Sonos speaker'
     UNION ALL SELECT 'smart home', '_hap._tcp', 'mdns', 'HomeKit accessory'
+    UNION ALL SELECT 'smart speaker', 'host=echo', 'mdns', 'Amazon Echo'
     UNION ALL SELECT 'streaming device', 'manufacturer=Roku', 'ssdp', 'Roku'
     UNION ALL SELECT 'router', 'Router', 'ssdp', 'Router'
     UNION ALL SELECT 'smart speaker', 'manufacturer=Sonos', 'ssdp', 'Sonos speaker'

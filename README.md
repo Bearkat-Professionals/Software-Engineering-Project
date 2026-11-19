@@ -166,6 +166,12 @@ After Host Discovery, a scan asks each host what it is (2.2.3), with all four me
 
 A method that's turned on but can't run (e.g. another program holds UDP port 5353) is listed in the scan's errors as `mdns unavailable: ...`, the others still run, and the scan ends `partial`. A method turned off isn't an error. With every method on, the phase takes about `SCAN_EVIDENCE_WAIT_S` seconds (5 by default), and never more than `SCAN_EVIDENCE_WAIT_S` + 5.
 
+**What mDNS evidence looks like.** One line per service a device announces: `service=...; host=...; name=...; model=...`. `host` is the device's own `.local` name without `.local`, and the same name its hostname comes from. Any `;` inside a value becomes `,`, so a name can't fake another field. For example, an Echo Show that only announces Spotify Connect gives:
+```
+service=_spotify-connect._tcp; host=echoshow; name=SpotifyConnect
+```
+Signatures match anywhere in that line, so `host=echo` (in the starter signatures) finds Echos by their host name. Evidence that matches no signature isn't stored, so the new format only affects new scans.
+
 See what each host says, without saving anything:
 ```
 .\dev ev                                       # your subnet

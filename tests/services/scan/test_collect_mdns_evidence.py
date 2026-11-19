@@ -23,22 +23,18 @@ TV, PRINTER, OUTSIDE = "192.168.1.20", "192.168.1.31", "192.168.1.99"
 HOSTS = [TV, PRINTER]
 LOG = "backend.services.scan.collect_mdns_evidence"
 
-
 def service(kind: str, name: str, server: str | None = "Living-Room-TV.local.", addresses=(TV,),
             **txt: bytes | None) -> MdnsService:
     service_type = f"{kind}.local."
     return MdnsService(service_type, f"{name}.{service_type}", server, tuple(addresses),
                        {key.encode(): value for key, value in txt.items()})
 
-
 def raw(evidence: list[RawEvidence]) -> list[str]:
     for item in evidence:
         assert item.evidence_type is EvidenceType.MDNS
     return [item.raw_value for item in evidence]
 
-
 #mdns_evidence (pure)
-
 class MdnsEvidenceTests(unittest.TestCase):
     def test_one_device_with_three_services_gives_three_items(self) -> None:
         result = mdns_evidence([service("_googlecast._tcp", "Living Room TV", md=b"Chromecast Ultra"),
@@ -48,9 +44,9 @@ class MdnsEvidenceTests(unittest.TestCase):
         self.assertEqual(result.method, "mdns")
         self.assertTrue(result.available)
         self.assertEqual(raw(result.evidence[TV]), [
-            "service=_googlecast._tcp; name=Living Room TV; model=Chromecast Ultra",   # the ticket's example
-            "service=_airplay._tcp; name=Living Room TV",
-            "service=_raop._tcp; name=AA11BB22@Living Room TV",
+            "service=_googlecast._tcp; host=Living-Room-TV; name=Living Room TV; model=Chromecast Ultra",
+            "service=_airplay._tcp; host=Living-Room-TV; name=Living Room TV",
+            "service=_raop._tcp; host=Living-Room-TV; name=AA11BB22@Living Room TV",
         ])
         self.assertEqual(result.hostnames, {TV: "Living-Room-TV"})
 
@@ -60,7 +56,7 @@ class MdnsEvidenceTests(unittest.TestCase):
                                HOSTS)
         self.assertNotIn(OUTSIDE, result.evidence)
         self.assertNotIn(OUTSIDE, result.hostnames)
-        self.assertEqual(raw(result.evidence[PRINTER]), ["service=_ipp._tcp; name=Shared"])
+        self.assertEqual(raw(result.evidence[PRINTER]), ["service=_ipp._tcp; host=shared; name=Shared"])
 
     def test_model_from_md_then_model_then_ty(self) -> None:
         cases = [
@@ -75,7 +71,7 @@ class MdnsEvidenceTests(unittest.TestCase):
             with self.subTest(txt=txt):
                 line = raw(mdns_evidence([service("_ipp._tcp", "P", **txt)], HOSTS).evidence[TV])[0]
                 if model is None:
-                    self.assertEqual(line, "service=_ipp._tcp; name=P")
+                    self.assertEqual(line, "service=_ipp._tcp; host=Living-Room-TV; name=P")
                 else:
                     self.assertTrue(line.endswith(f"; model={model}"), line)
 
@@ -89,7 +85,7 @@ class MdnsEvidenceTests(unittest.TestCase):
 
     def test_control_characters_in_the_instance_name(self) -> None:
         line = raw(mdns_evidence([service("_hap._tcp", "Lamp\x00\x07 Desk\x1b[2J")], HOSTS).evidence[TV])[0]
-        self.assertEqual(line, "service=_hap._tcp; name=Lamp Desk [2J")
+        self.assertEqual(line, "service=_hap._tcp; host=Living-Room-TV; name=Lamp Desk [2J")
         for control in ("\x00", "\x07", "\x1b", "\n"):
             self.assertNotIn(control, line)
 
@@ -110,6 +106,41 @@ class MdnsEvidenceTests(unittest.TestCase):
         line = raw(mdns_evidence([service("_ipp._tcp", "N" * 300, md=b"M" * 300)], HOSTS).evidence[TV])[0]
         self.assertLessEqual(len(line), FIELD_MAX)
 
+    def test_the_host_name_is_in_the_value_second(self) -> None:
+        echo = service("_spotify-connect._tcp", "SpotifyConnect", server="echoshow.local.")
+        self.assertEqual(raw(mdns_evidence([echo], HOSTS).evidence[TV]),
+                         ["service=_spotify-connect._tcp; host=echoshow; name=SpotifyConnect"])   # the ticket's Echo Show
+
+    def test_the_host_is_the_same_name_as_the_hostname(self) -> None:
+        cases = {"Living-Room.local.": "host=Living-Room;", "printer.LOCAL": "host=printer;",
+                 "bad\x00name.local.": "host=bad name;"}
+        for server, expected in cases.items():
+            with self.subTest(server=server):
+                result = mdns_evidence([service("_ipp._tcp", "P", server=server)], HOSTS)
+                self.assertIn(expected, raw(result.evidence[TV])[0])
+                self.assertIn(f"host={result.hostnames[TV]};", raw(result.evidence[TV])[0])
+                self.assertNotIn(".local", raw(result.evidence[TV])[0].lower())
+
+    def test_no_server_name_means_no_host(self) -> None:
+        for server in (None, "", ".local.", "\x00\x01.local."):
+            with self.subTest(server=server):
+                line = raw(mdns_evidence([service("_ipp._tcp", "P", server=server)], HOSTS).evidence[TV])[0]
+                self.assertEqual(line, "service=_ipp._tcp; name=P")
+
+    def test_a_long_instance_name_keeps_the_host(self) -> None:
+        line = raw(mdns_evidence([service("_spotify-connect._tcp", "N" * 300, server="echo-dot-kitchen.local.",
+                                          md=b"M" * 300)], HOSTS).evidence[TV])[0]
+        self.assertLessEqual(len(line), FIELD_MAX)
+        self.assertTrue(line.startswith("service=_spotify-connect._tcp; host=echo-dot-kitchen; name=NNN"), line)
+
+    def test_a_semicolon_in_a_value_cannot_add_a_field(self) -> None:
+        line = raw(mdns_evidence([service("_hap._tcp", "Kitchen; model=Xbox", server="lamp;x.local.",
+                                          md=b"Hue; v=2")], HOSTS).evidence[TV])[0]
+        self.assertEqual(line, "service=_hap._tcp; host=lamp,x; name=Kitchen, model=Xbox; model=Hue, v=2")
+        self.assertEqual(line.count(";"), 3)                       # exactly four fields
+        self.assertEqual(mdns_evidence([service("_hap._tcp", "P", server="lamp;x.local.")], HOSTS).hostnames[TV],
+                         "lamp;x")                                 # the hostname itself is kept as it is
+
     def test_the_same_service_heard_twice_is_one_item(self) -> None:
         twice = service("_ipp._tcp", "Office")
         self.assertEqual(len(mdns_evidence([twice, twice], HOSTS).evidence[TV]), 1)
@@ -119,11 +150,10 @@ class MdnsEvidenceTests(unittest.TestCase):
 
 
 #collect_mdns
-
 class CollectMdnsTests(unittest.TestCase):
     def test_returns_the_evidence(self) -> None:
         result = collect_mdns(HOSTS, 3, browse=lambda wait_s, interface_ip: [service("_ipp._tcp", "P")])
-        self.assertEqual(raw(result.evidence[TV]), ["service=_ipp._tcp; name=P"])
+        self.assertEqual(raw(result.evidence[TV]), ["service=_ipp._tcp; host=Living-Room-TV; name=P"])
 
     def test_passes_wait_s_and_the_hosts_adapter_on(self) -> None:
         asked = []

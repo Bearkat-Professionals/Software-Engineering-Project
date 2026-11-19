@@ -31,6 +31,7 @@ EXPECTED_SIGNATURES = {
     ("mdns", "model=AppleTV", "streaming device", "Apple TV"),
     ("mdns", "_sonos._tcp", "smart speaker", "Sonos speaker"),
     ("mdns", "_hap._tcp", "smart home", "HomeKit accessory"),
+    ("mdns", "host=echo", "smart speaker", "Amazon Echo"),
     ("ssdp", "manufacturer=Roku", "streaming device", "Roku"),
     ("ssdp", "Router", "router", "Router"),
     ("ssdp", "manufacturer=Sonos", "smart speaker", "Sonos speaker"),
@@ -145,6 +146,19 @@ class SeedSignaturesTests(unittest.TestCase):
             ([RawEvidence(EvidenceType.MDNS, "model=AppleTV; _companion-link._tcp")],
              "streaming device"),
             ([RawEvidence(EvidenceType.MDNS, "_spotify-connect._tcp"),
+              RawEvidence(EvidenceType.NETBIOS_LLMNR, "DESKTOP-OFFICE")],
+             "computer"),
+            # an Echo Show says what it is only in its mDNS host name
+            ([RawEvidence(EvidenceType.MDNS, "service=_spotify-connect._tcp; host=echoshow; name=SpotifyConnect")],
+             "smart speaker"),
+            ([RawEvidence(EvidenceType.MDNS, "service=_spotify-connect._tcp; host=Echo-Dot-Kitchen; name=x")],
+             "smart speaker"),
+            # values in today's format, with host=, still resolve as before
+            ([RawEvidence(EvidenceType.SSDP, "manufacturer=Vantiva; model=CGM4331 Router; name=Router")],
+             "router"),
+            ([RawEvidence(EvidenceType.MDNS, "service=_companion-link._tcp; host=Living-Room; model=AppleTV11,1")],
+             "streaming device"),
+            ([RawEvidence(EvidenceType.MDNS, "service=_spotify-connect._tcp; host=DESKTOP-OFFICE; name=Spotify"),
               RawEvidence(EvidenceType.NETBIOS_LLMNR, "DESKTOP-OFFICE")],
              "computer"),
         )
