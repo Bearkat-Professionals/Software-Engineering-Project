@@ -20,8 +20,10 @@ from dataclasses import dataclass, field
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from backend.controller import api_routes, auth, device_routes, hold_routes, reference_routes, user_routes
+from backend.controller import (api_routes, auth, backup_routes, device_routes, hold_routes, reference_routes,
+                                user_routes)
 from backend.controller.auth import requires
+from backend.services.backup import BackupRecoveryService
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import DeviceStore
 from backend.services.access_control.access_control_service import AccessControlService
@@ -49,6 +51,7 @@ class Services:
     device_maintenance: DeviceMaintenance | None = None   # None only in tests that don't change devices
     device_detail: DeviceDetailService | None = None      # None only in tests that don't read one device
     edit_holds: EditLockGuard = field(default_factory=EditLockGuard)   # SH-2; main.py shares one with the services
+    backups: BackupRecoveryService | None = None          # None only in tests that don't back up
 
 
 def create_app(services: Services, *, secret_key: str, https: bool = False,
@@ -90,6 +93,7 @@ def register_routes(app: Flask, services: Services) -> None:
     device_routes.register(app, services)       # one device: read, add, edit, mark, delete; the pickers (2.3.1)
     user_routes.register(app, services)         # account administration and change-password (#92)
     hold_routes.register(app, services)         # edit holds: take, renew, release (SH-2, #141)
+    backup_routes.register(app, services)       # backup and recovery (#171)
 
 
 def on_scan_finished(result: ScanResult) -> None:
