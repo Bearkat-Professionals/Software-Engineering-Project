@@ -23,8 +23,9 @@ STATIC_PREFIXES = ("stat", "est")
 
 
 def normalize_mac(raw: str) -> str:
-    """'70-13-01-65-8e-f7' -> '70:13:01:65:8E:F7'"""
-    return raw.replace("-", ":").upper()
+    """'70-13-01-65-8e-f7' or '70:13:1:65:8e:f7' -> '70:13:01:65:8E:F7'"""
+    parts = raw.replace("-", ":").split(":")
+    return ":".join(part.zfill(2) for part in parts).upper()
 
 
 def parse_entry_type(word: str) -> ArpEntryType | None:
@@ -133,4 +134,32 @@ def parse_proc_net_arp(text: str, addresses: dict[str, str]) -> list[ArpEntry]:
         entry_type = ArpEntryType.STATIC if flags & PROC_FLAG_PERMANENT else ArpEntryType.DYNAMIC
         entries.append(ArpEntry(ip_address=fields[0], mac_address=mac,
                                 interface_ip=addresses.get(fields[5], ""), entry_type=entry_type))
+    return entries
+
+# macOS
+MACOS_MAC = re.compile(r"^[0-9A-Fa-f]{1,2}(?::[0-9A-Fa-f]{1,2}){5}$")   # 70:13:1:65:8e:f7 (no leading zeros)
+MACOS_LINE = re.compile(rf"\(({IP})\) at (\S+) on (\S+)(.*)$")
+
+
+def parse_macos_arp(text: str, addresses: dict[str, str]) -> list[ArpEntry]:
+    """Entries from macOS `arp -an`, matched by shape: (<IP>) at <MAC> on <interface>
+
+        ? (192.168.1.1) at 70:13:1:65:8e:f7 on en0 ifscope [ethernet]
+        ? (192.168.1.7) at (incomplete) on en0 ifscope [ethernet]       (skipped: no MAC yet)
+        ? (224.0.0.251) at 1:0:5e:0:0:fb on en0 ifscope permanent [ethernet]
+
+    "permanent" is static, everything else dynamic. Broadcast and multicast
+    entries are kept as they are. interface_ip is the interface's own address, or "".
+    """
+    entries: list[ArpEntry] = []
+    for line in text.splitlines():
+        found = MACOS_LINE.search(line)
+        if not found:
+            continue                        # e.g. "-- no entry" lines
+        ip, mac, interface, rest = found.groups()
+        if not MACOS_MAC.match(mac):
+            continue                        # "(incomplete)": no usable entry
+        entry_type = ArpEntryType.STATIC if "permanent" in rest.split() else ArpEntryType.DYNAMIC
+        entries.append(ArpEntry(ip_address=ip, mac_address=normalize_mac(mac),
+                                interface_ip=addresses.get(interface, ""), entry_type=entry_type))
     return entries
