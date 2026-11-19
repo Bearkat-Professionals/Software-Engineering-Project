@@ -131,6 +131,23 @@ Run the unit tests (they use no network, so they pass offline):
 
 For other modules' tests, use `tests/fakes/fake_network.py` instead of real pings.
 
+## ARP cache (BB-1 Read ARP Cache)
+Reads the operating system's ARP table without admin rights: `arp -a` on Windows, `ip -4 neigh show` (or `/proc/net/arp`) on Linux, and `arp -an` on macOS. It returns `None` when the table can't be read, and never raises for a missing command or a timeout.
+
+```python
+from backend.black_boxes.read_arp_cache import read_arp_cache
+
+read_arp_cache()                # every entry
+read_arp_cache("192.168.1.1")   # just that IP's entry ([] if it isn't there)
+```
+
+macOS support is built from documented output and has not been run on a real Mac.
+
+Print this machine's ARP table:
+```
+.\dev arp
+```
+
 ## Scan speed settings (#81)
 The ping sweep runs many pings at once. Two settings control it:
 

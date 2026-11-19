@@ -1,0 +1,6 @@
+# Constructed, not recorded. Nobody on our team has a Mac, so this is
+# hand-built from what macOS arp -an is documented to print.
+? (192.168.1.1) at 70:13:1:65:8e:f7 on en0 ifscope [ethernet]
+? (192.168.1.7) at (incomplete) on en0 ifscope [ethernet]
+? (192.168.1.255) at ff:ff:ff:ff:ff:ff on en0 ifscope [ethernet]
+? (224.0.0.251) at 1:0:5e:0:0:fb on en0 ifscope permanent [ethernet]
