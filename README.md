@@ -12,13 +12,13 @@ Software-Engineering-Project/
 │   ├── app/                             # product UI (React + Vite); calls the application API
 │   │   └── src/
 │   │       ├── auth/                    # session, permission checks, and the sign-in guard
-│   │       ├── components/              # API helper, header, shared messages, display formatting
-│   │       ├── pages/                   # login page
+│   │       ├── components/              # API helper, header, shared messages, display formatting, password change
+│   │       ├── pages/                   # login and user management
 │   │       ├── samples/                 # sample JSON used when the API is not running
 │   │       ├── styles/
 │   │       └── views/
 │   │           ├── scans/               # start a scan and follow its progress
-│   │           ├── devices/             # paged device list
+│   │           ├── devices/             # paged device list, plus add, edit, mark, and delete
 │   │           └── reference_settings/  # vendors, device types, signatures, and OUI prefixes
 │   ├── crud-react/                      # dev-only CRUD tester (React + Vite), not the product UI
 │   ├── components/                      # empty placeholder from the original layout
@@ -27,13 +27,14 @@ Software-Engineering-Project/
 │
 ├── backend/                             # Tier 2 (plus data-access code of Tier 3)
 │   ├── records/                         # DeviceRecord, EvidenceItem, ScanRecord, etc.
+│   ├── config/                          # empty placeholder
 │   ├── controller/                      # sign-in, scans, devices, and reference-data routes
 │   ├── services/                        # Tier 2 modules
 │   │   ├── access_control/
 │   │   ├── scan/                        # discovery, identification, and the scan session
 │   │   ├── records/                     # device and reference-data changes
 │   │   ├── reporting/
-│   │   └── backup/
+│   │   └── backup/                      # empty placeholder
 │   ├── shared_modules/
 │   ├── black_boxes/
 │   │   ├── read_arp_cache/
@@ -95,6 +96,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
+| `gw` | `backend.black_boxes.read_gateway_config.check_gateway` | print this machine's default routes and the gateway chosen, and why (BB-2); `--for 192.168.1.0/24` picks the one facing that network, as a scan does. macOS is built from recorded output and hasn't run on a real Mac |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2); `--workers` / `--timeout` try other sweep settings |
 | `scan` | `backend.services.scan.check_scan` | run a whole scan in the background as a user, watch its progress, then see the outcome and devices (#44) |
 | `ev` | `backend.services.scan.check_evidence` | ask every address in a range (default: your subnet) what it is with mDNS, SSDP, ...; prints each host's evidence and hostname, saves nothing (2.2.3, #151) |

@@ -38,6 +38,8 @@ COMMANDS: dict[str, Command] = {
                       "ping addresses, or --sweep a range (BB-3)"),
     "arp":    Command("backend.black_boxes.read_arp_cache.check_arp_cache",
                       "print this machine's ARP table (BB-1)"),
+    "gw":     Command("backend.black_boxes.read_gateway_config.check_gateway",
+                      "print this machine's default routes and the gateway (BB-2); --for <range>"),
     "chd":    Command("backend.services.scan.check_host_discovery",
                       "run Host Discovery on a range and list the devices (2.2.2)"),
     "scan":   Command("backend.services.scan.check_scan",

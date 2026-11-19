@@ -1,19 +1,28 @@
 """Unit tests for BB-1 Read ARP Cache (#25).
 
-No real network and no real arp command: the parser gets saved `arp -a` text,
-and subprocess.run is replaced with a stand-in, so these pass offline.
+No real network and no real arp command: the parsers get saved output (Windows
+`arp -a` below, Linux in tests/fixtures/arp/), and subprocess.run and open are
+replaced with stand-ins, so these pass offline on any system.
 
     python -m unittest tests.black_boxes.test_read_arp_cache -v
 """
 import subprocess
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from backend.black_boxes.read_arp_cache import ArpEntry, ArpEntryType, read_arp_cache
-from backend.black_boxes.read_arp_cache.parser import normalize_mac, parse_arp_output
+from backend.black_boxes.read_arp_cache.parser import (normalize_mac, parse_arp_output, parse_linux_addresses,
+                                                      parse_linux_neigh, parse_proc_net_arp)
 from tests.fakes.fake_arp_cache import FakeArpCache
 
 RUN = "backend.black_boxes.read_arp_cache.read_arp_cache.subprocess.run"
+OPEN = "backend.black_boxes.read_arp_cache.read_arp_cache.open"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "arp"
+
+
+def fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
 
 ONE_INTERFACE = """
 Interface: 10.0.0.2 --- 0x12
@@ -118,9 +127,158 @@ class ReadArpCacheTests(unittest.TestCase):
         run.assert_not_called()
 
     @mock.patch(RUN)
-    def test_other_operating_systems_are_unavailable_for_now(self, run):    # M6
-        with mock.patch("sys.platform", "linux"):
+    def test_other_operating_systems_are_unavailable_for_now(self, run):    # Windows and Linux are built
+        for platform in ("freebsd14", "aix", "darwin"):                    # macOS: #174
+            with self.subTest(platform=platform), mock.patch("sys.platform", platform):
+                self.assertIsNone(read_arp_cache())
+        run.assert_not_called()
+
+
+# ---- Linux (#174): the parsers, with recorded output --------------------------------
+
+def linux_entry(ip: str, mac: str, interface_ip: str, entry_type: ArpEntryType) -> ArpEntry:
+    return ArpEntry(ip_address=ip, mac_address=mac, interface_ip=interface_ip, entry_type=entry_type)
+
+
+DYNAMIC, STATIC = ArpEntryType.DYNAMIC, ArpEntryType.STATIC
+ADDRESSES = {"lo": "127.0.0.1", "wlp2s0": "192.168.1.50", "docker0": "172.17.0.1", "eth0": "10.0.3.15"}
+
+
+class LinuxParserTests(unittest.TestCase):
+    def test_the_device_addresses(self):
+        self.assertEqual(parse_linux_addresses(fixture("linux_ip_addr.txt")), ADDRESSES)   # eth0@if8 -> eth0
+        self.assertEqual(parse_linux_addresses(""), {})
+
+    def test_ip_neigh_every_state(self):
+        self.assertEqual(parse_linux_neigh(fixture("linux_ip_neigh.txt"), ADDRESSES), [
+            linux_entry("192.168.1.1", "02:13:01:65:8E:F7", "192.168.1.50", DYNAMIC),     # REACHABLE
+            linux_entry("192.168.1.20", "02:A7:37:12:34:56", "192.168.1.50", DYNAMIC),    # STALE
+            linux_entry("192.168.1.30", "02:6F:B9:00:00:01", "192.168.1.50", DYNAMIC),    # router, then DELAY
+            linux_entry("192.168.1.40", "02:00:00:00:00:40", "192.168.1.50", DYNAMIC),    # PROBE
+            linux_entry("192.168.1.50", "02:00:00:00:00:50", "192.168.1.50", STATIC),     # PERMANENT
+            linux_entry("172.17.0.2", "02:42:AC:11:00:02", "172.17.0.1", DYNAMIC),
+            linux_entry("10.8.0.1", "02:00:00:00:0A:01", "", STATIC),                     # NOARP; tun0 unknown
+        ])                                                                                # FAILED, INCOMPLETE skipped
+
+        def test_words_after_the_state_dont_matter(self):
+            for line, entry_type in (("192.168.1.5 dev wlp2s0 lladdr 02:00:00:00:00:05 STALE proto zebra", DYNAMIC),
+                                 ("192.168.1.5 dev wlp2s0 lladdr 02:00:00:00:00:05 PERMANENT proto static", STATIC)):
+                with self.subTest(line=line):
+                    self.assertEqual(parse_linux_neigh(line, ADDRESSES),
+                                 [linux_entry("192.168.1.5", "02:00:00:00:00:05", "192.168.1.50", entry_type)])
+        self.assertEqual(parse_linux_neigh("192.168.1.5 dev wlp2s0 lladdr 02:00:00:00:00:05 FAILED proto zebra",
+                                           ADDRESSES), [])
+
+    def test_a_line_without_lladdr_is_skipped_whatever_its_state(self):
+        for line in ("192.168.1.9 dev wlp2s0  FAILED", "192.168.1.9 dev wlp2s0  REACHABLE",
+                     "192.168.1.9 dev wlp2s0 lladdr 02:00:00:00:00:09 NONE",
+                     "192.168.1.9 dev wlp2s0 lladdr 02:00:00:00:00:09 FAILED",     # newer kernels keep the old MAC
+                     "192.168.1.9 dev wlp2s0 lladdr 02:00:00:00:00:09 INCOMPLETE",
+                     "192.168.1.9 dev wlp2s0 lladdr",                              # cut off: no crash
+                     "192.168.1.9 dev wlp2s0 lladdr notamac STALE", "garbage", ""):
+            with self.subTest(line=line):
+                self.assertEqual(parse_linux_neigh(line, ADDRESSES), [])
+
+    def test_proc_net_arp_flags_and_the_zero_mac(self):
+        self.assertEqual(parse_proc_net_arp(fixture("linux_proc_net_arp.txt"), ADDRESSES), [
+            linux_entry("192.168.1.1", "02:13:01:65:8E:F7", "192.168.1.50", DYNAMIC),     # 0x2: complete
+            linux_entry("192.168.1.20", "02:A7:37:12:34:56", "192.168.1.50", DYNAMIC),
+            linux_entry("192.168.1.50", "02:00:00:00:00:50", "192.168.1.50", STATIC),     # 0x6: has 0x4, permanent
+            linux_entry("172.17.0.2", "02:42:AC:11:00:02", "172.17.0.1", DYNAMIC),
+        ])                                                                                # header, 0x0 skipped
+
+    def test_proc_zero_mac_alone_is_skipped(self):
+        line = "192.168.1.9      0x1         0x2         00:00:00:00:00:00     *        wlp2s0"
+        self.assertEqual(parse_proc_net_arp(line, ADDRESSES), [])
+
+    def test_macs_are_upper_case_with_colons(self):
+        macs = [e.mac_address for e in parse_linux_neigh(fixture("linux_ip_neigh.txt"), {})]
+        self.assertTrue(all(mac == mac.upper() and mac.count(":") == 5 for mac in macs))
+
+    def test_an_unknown_device_has_no_interface_ip(self):
+        entries = parse_linux_neigh(fixture("linux_ip_neigh.txt"), {})
+        self.assertEqual({e.interface_ip for e in entries}, {""})
+
+
+# ---- Linux: read_arp_cache() with subprocess.run (and open) faked ---------------------------
+
+def finished(command: list[str], stdout: str, returncode: int = 0) -> subprocess.CompletedProcess:
+    return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr="")
+
+
+def linux_commands(neigh: str | Exception = None, addr: str | Exception = None):
+    """A stand-in for subprocess.run answering `ip neigh` and `ip addr` from the fixtures."""
+    neigh = fixture("linux_ip_neigh.txt") if neigh is None else neigh
+    addr = fixture("linux_ip_addr.txt") if addr is None else addr
+
+    def run(command, **kwargs):
+        answer = neigh if command[2] == "neigh" else addr
+        if isinstance(answer, BaseException):
+            raise answer
+        return finished(command, answer)
+    return run
+
+
+@mock.patch("sys.platform", "linux")
+class LinuxReadArpCacheTests(unittest.TestCase):
+    def test_success_with_the_device_addresses(self):
+        with mock.patch(RUN, side_effect=linux_commands()) as run:
+            entries = read_arp_cache()
+        self.assertEqual(entries[0], linux_entry("192.168.1.1", "02:13:01:65:8E:F7", "192.168.1.50", DYNAMIC))
+        self.assertEqual(len(entries), 7)
+        commands = [c.args[0] for c in run.call_args_list]
+        self.assertEqual(commands, [["ip", "-4", "neigh", "show"], ["ip", "-4", "-o", "addr", "show"]])
+        for c in run.call_args_list:
+            self.assertEqual(c.kwargs["env"]["LC_ALL"], "C")                         # plain, untranslated output
+            self.assertEqual(c.kwargs["timeout"], 10)
+            self.assertNotIn("shell", c.kwargs)
+
+    def test_one_ip_is_passed_on_and_kept(self):
+        with mock.patch(RUN, side_effect=linux_commands(neigh="192.168.1.20 dev wlp2s0 lladdr 02:a7:37:12:34:56 STALE\n")) as run:
+            entries = read_arp_cache("192.168.1.20")
+        self.assertEqual(run.call_args_list[0].args[0], ["ip", "-4", "neigh", "show", "to", "192.168.1.20"])
+        self.assertEqual([e.ip_address for e in entries], ["192.168.1.20"])
+
+    def test_one_ip_not_in_the_table_is_empty(self):
+        with mock.patch(RUN, side_effect=linux_commands(neigh="")):
+            self.assertEqual(read_arp_cache("203.0.113.5"), [])
+
+    def test_no_address_map_still_reads_the_table(self):
+        with mock.patch(RUN, side_effect=linux_commands(addr=OSError("blocked"))):
+            entries = read_arp_cache()
+        self.assertEqual(len(entries), 7)
+        self.assertEqual({e.interface_ip for e in entries}, {""})
+
+    def test_ip_missing_reads_proc_net_arp(self):
+        with mock.patch(RUN, side_effect=FileNotFoundError("ip")), \
+             mock.patch(OPEN, mock.mock_open(read_data=fixture("linux_proc_net_arp.txt"))) as opened:
+            entries = read_arp_cache()
+            one = read_arp_cache("192.168.1.20")
+            none = read_arp_cache("192.168.1.99")
+        self.assertEqual(opened.call_args.args[0], "/proc/net/arp")
+        self.assertEqual([e.ip_address for e in entries], ["192.168.1.1", "192.168.1.20", "192.168.1.50", "172.17.0.2"])
+        self.assertEqual([e.ip_address for e in one], ["192.168.1.20"])               # filtered by the ip itself
+        self.assertEqual(none, [])
+
+    def test_both_missing_is_unavailable(self):
+        with mock.patch(RUN, side_effect=FileNotFoundError("ip")), \
+             mock.patch(OPEN, side_effect=FileNotFoundError("/proc/net/arp")):
             self.assertIsNone(read_arp_cache())
+
+    def test_a_timeout_is_unavailable(self):
+        with mock.patch(RUN, side_effect=subprocess.TimeoutExpired(cmd="ip", timeout=10)), \
+             mock.patch(OPEN) as opened:
+            self.assertIsNone(read_arp_cache())
+        opened.assert_not_called()                                                  # ip is there; it hung
+
+    def test_a_failed_run_is_unavailable(self):
+        with mock.patch(RUN, return_value=finished(["ip"], "", returncode=1)):
+            self.assertIsNone(read_arp_cache())
+
+    @mock.patch(RUN)
+    def test_bad_ip_is_rejected_before_ip_runs(self, run):
+        with self.assertRaises(ValueError):
+            read_arp_cache("10.0.0.1; whoami")
         run.assert_not_called()
 
 
@@ -138,3 +296,4 @@ class FakeArpCacheTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+    

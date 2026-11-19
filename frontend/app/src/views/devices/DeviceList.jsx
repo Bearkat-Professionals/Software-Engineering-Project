@@ -5,6 +5,7 @@ import { api } from "../../components/api";
 import { displayName, formatConfidence, formatLastSeen } from "../../components/format";
 import { useMessages } from "../../components/Messages";
 import { useScanStatus } from "../scans/useScanStatus";
+import { useAuth } from "../../auth/AuthProvider";
 
 const PAGE_SIZES = [25, 50, 100];
 
@@ -83,6 +84,8 @@ function SortHeader({ label, column, sort, order, onSort }) {
 export default function DeviceList() {
 
     const { showMessage } = useMessages();
+    const { can } = useAuth();
+    const canEdit = can("EDIT_DEVICES");
     const [params, setParams] = useSearchParams();
     const page = readPage(params);
     const perPage = readPerPage(params);
@@ -402,6 +405,8 @@ export default function DeviceList() {
         <main>
 
           <h1>Devices</h1>
+
+          {canEdit && <p><Link to="/devices/new">Add Device</Link></p>}
 
           {status?.running && (
 
