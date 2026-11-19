@@ -6,7 +6,7 @@ becomes one piece of evidence, and the device's .local name becomes its hostname
 
     result = collect_mdns(["192.168.1.20", "192.168.1.31"], wait_s=3)
     result.evidence["192.168.1.20"]
-        # [RawEvidence(MDNS, "service=_googlecast._tcp; name=Living Room TV; model=Chromecast Ultra")]
+        # [RawEvidence(MDNS, "service=_googlecast._tcp; host=Living-Room-TV; name=Living Room TV; model=Chromecast Ultra")]
     result.hostnames["192.168.1.20"]      # "Living-Room-TV"
 
 Uses the zeroconf library: plain UDP on port 5353, no admin rights (SEC-04, NFR-04). 
@@ -61,9 +61,9 @@ def browse_mdns(wait_s: float, interface_ip: str | None = None, *,
     from zeroconf import ServiceBrowser, ServiceStateChange, Zeroconf, ZeroconfServiceTypes
 
     deadline = clock() + wait_s
-    found: list[tuple[str, str]] = []       # (type, instance name), in the order they arrived
+    found: list[tuple[str, str]] = []       
     seen: set[tuple[str, str]] = set()
-    lock = threading.Lock()                 # zeroconf calls the browser's handler on its own thread
+    lock = threading.Lock()                 
 
     def on_change(zeroconf: Any, service_type: str, name: str, state_change: Any) -> None:
         if state_change is not ServiceStateChange.Added:
@@ -151,16 +151,25 @@ def collect_mdns(hosts: Sequence[str], wait_s: float,
     return mdns_evidence(services, hosts)
 
 #helpers
-
 def _raw_value(service: MdnsService) -> str:
-    """'service=_googlecast._tcp; name=Living Room TV; model=Chromecast Ultra', leaving out
-    any part that is empty after cleaning."""
+    """'service=_googlecast._tcp; host=Living-Room-TV; name=Living Room TV; model=Chromecast Ultra',
+    leaving out any part that is empty after cleaning.
+
+    host is the device's own .local name. It goes second because the whole line is cut at
+    255 characters and instance names can be long: some devices say what they are only in
+    their host name (an Echo Show: service=_spotify-connect._tcp; host=echoshow;
+    name=SpotifyConnect), so signatures must be able to see it.
+    """
     service_type = _without_suffix(service.service_type, LOCAL)
     name = _without_suffix(service.instance_name, "." + service.service_type)
-    parts = [("service", clean_field(service_type)), ("name", clean_field(name)),
-             ("model", clean_field(_model(service.properties)))]
-    return clean_field("; ".join(f"{key}={value}" for key, value in parts if value)) or ""
+    parts = [("service", clean_field(service_type)), ("host", _hostname(service.server)),
+             ("name", clean_field(name)), ("model", clean_field(_model(service.properties)))]
+    return clean_field("; ".join(f"{key}={_value(value)}" for key, value in parts if value)) or ""
 
+def _value(text: str) -> str:
+    """A ";" inside a value would look like a new field ("Kitchen; model=Xbox"), so it
+    becomes "," (as the SSDP collector does)."""
+    return text.replace(";", ",")
 
 def _model(properties: dict[Any, Any]) -> str | None:
     """The model from the TXT record: md, then model, then ty. Bytes that aren't UTF-8
@@ -174,7 +183,6 @@ def _model(properties: dict[Any, Any]) -> str | None:
                 return value
     return None
 
-
 def _hostname(server: str | None) -> str:
     """'Living-Room-TV.local.' -> 'Living-Room-TV'"""
     if not server:
@@ -184,10 +192,8 @@ def _hostname(server: str | None) -> str:
         name = name[: -len(".local")]
     return clean_field(name) or ""
 
-
 def _without_suffix(text: str, suffix: str) -> str:
     return text[: -len(suffix)] if suffix and text.lower().endswith(suffix.lower()) else text.rstrip(".")
-
 
 def _unavailable(why: str) -> CollectorResult:
     """The Evidence Collection Manager writes "mdns unavailable: <why>", so only the why goes here."""
