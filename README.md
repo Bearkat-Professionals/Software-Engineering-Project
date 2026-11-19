@@ -95,6 +95,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `crud` | `backend.dev_tools.crud_server` | start the CRUD API the React test page uses (test database) |
 | `ping` | `backend.black_boxes.timed_network_request.check_ping` | ping addresses, or `--sweep` a range (BB-3) |
 | `arp` | `backend.black_boxes.read_arp_cache.check_arp_cache` | print this machine's ARP table (BB-1) |
+| `gw` | `backend.black_boxes.read_gateway_config.check_gateway` | print this machine's default routes and the gateway chosen, and why (BB-2); `--for 192.168.1.0/24` picks the one facing that network, as a scan does. macOS is built from recorded output and hasn't run on a real Mac |
 | `chd` | `backend.services.scan.check_host_discovery` | run Host Discovery on a range and list the devices (2.2.2); `--workers` / `--timeout` try other sweep settings |
 | `scan` | `backend.services.scan.check_scan` | run a whole scan in the background as a user, watch its progress, then see the outcome and devices (#44) |
 | `ev` | `backend.services.scan.check_evidence` | ask every address in a range (default: your subnet) what it is with mDNS, SSDP, ...; prints each host's evidence and hostname, saves nothing (2.2.3, #151) |

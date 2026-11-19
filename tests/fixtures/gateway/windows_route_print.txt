@@ -1,0 +1,18 @@
+﻿===========================================================================
+Interface List
+  7...bc fc e7 ea a8 03 ......Intel(R) Ethernet Controller I226-V
+ 19...a8 e2 91 ea 69 58 ......MediaTek Wi-Fi 7 MT7925 Wireless LAN Card
+  2...aa e2 91 ea 49 78 ......MediaTek Wi-Fi 7 MT7925 Wireless LAN Card #3
+  8...aa e2 91 ea 59 68 ......MediaTek Wi-Fi 7 MT7925 Wireless LAN Card #4
+  5...a8 e2 91 ea 69 59 ......Bluetooth Device (Personal Area Network)
+  1...........................Software Loopback Interface 1
+===========================================================================
+
+IPv4 Route Table
+===========================================================================
+Active Routes:
+Network Destination        Netmask          Gateway       Interface  Metric
+          0.0.0.0          0.0.0.0      192.168.4.1     192.168.4.95     25
+===========================================================================
+Persistent Routes:
+  None
