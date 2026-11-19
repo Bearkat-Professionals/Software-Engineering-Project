@@ -80,6 +80,14 @@ class FakeScanStore:
         scan.ended_at = self.now
         return deepcopy(scan)
 
+    def set_gateway(self, scan_id: int, ip: str | None, mac: str | None) -> Scan:
+        scan = self.scans.get(scan_id)
+        if scan is None:
+            raise RecordNotFoundError(f"scan {scan_id} does not exist")
+        scan.gateway_ip = ip
+        scan.gateway_mac = mac
+        return deepcopy(scan)
+
     def add_running(self, user_id: int) -> Scan:
         """A scan left 'running', as if the server stopped during it."""
         return self.start(Scan(user_id=user_id, target_scope=SCOPE))

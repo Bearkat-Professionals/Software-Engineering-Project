@@ -23,8 +23,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
+from typing import Protocol
 
 from backend.black_boxes.read_arp_cache import ArpEntry, read_arp_cache
+from backend.black_boxes.read_gateway_config import Gateway, read_gateway as read_gateway_config
 from backend.black_boxes.timed_network_request import Probe, ProbeResult, ping
 from backend.data_access.database_engine import DatabaseEngine
 from backend.data_access.network_data import DeviceStore, ScanStore
@@ -35,7 +37,7 @@ from backend.records.scan import Scan
 from backend.services.scan.collect_evidence import NO_EVIDENCE, CollectedEvidence, Collector, collect_evidence
 from backend.services.scan.collect_mdns_evidence import collect_mdns
 from backend.services.scan.collect_name_evidence import collect_netbios, collect_reverse_dns
-from backend.services.scan.collect_ssdp_evidence import collect_ssdp
+from backend.services.scan.collect_ssdp_evidence import collect_ssdp, local_address_for
 from backend.services.scan.detect_randomized_mac import mark_randomized_macs
 from backend.services.scan.discovered_host import DiscoveredHost
 from backend.services.scan.filter_addresses import filter_addresses
@@ -50,7 +52,15 @@ from backend.shared_modules.save_device_record import DeviceRecordSaver
 
 logger = logging.getLogger(__name__)
 
-ArpReader = Callable[[], "list[ArpEntry] | None"]
+
+class ArpReader(Protocol):
+    def __call__(self, ip: str | None = None) -> list[ArpEntry] | None: ...
+
+
+class GatewayReader(Protocol):
+    def __call__(self, local_ip: str | None = None) -> Gateway | None: ...
+
+
 RecordHosts = Callable[..., RecordSummary]      # record_scan_results with engine, saver and scans filled in
 
 OK, UNAVAILABLE, OFF = "ok", "unavailable", "off"
@@ -97,6 +107,7 @@ class ScanManager:
     def __init__(self, sessions: ScanSessionController, *, load_rules: Callable[[], ReferenceRules],
                  record_hosts: RecordHosts, settings: ScanSettings, probe: Probe | None = None,
                  read_arp: ArpReader = read_arp_cache, clock: Callable[[], datetime] = datetime.now,
+                 read_gateway: GatewayReader = read_gateway_config,
                  on_finished: Callable[[ScanResult], None] | None = None,
                  collectors: Mapping[str, Collector] | None = None) -> None:
         self.sessions = sessions
@@ -105,6 +116,7 @@ class ScanManager:
         self.settings = settings
         self.probe = probe                      # None: ping with settings.probe_timeout_s
         self.read_arp = read_arp
+        self.read_gateway = read_gateway
         self.clock = clock
         self.on_finished = on_finished
         self.collectors = dict(collectors or {})    # by method name; only those in the settings run
@@ -146,6 +158,7 @@ class ScanManager:
         try:
             rules = IdentificationRules.from_reference(self.load_rules())   # once per scan (design 14.1)
             found = self._discover(scan.target_scope)
+            self._record_gateway(scan.scan_id, found.hosts)
             if not found.any_method_worked:
                 stop_reason = "no host discovery method worked: the ARP cache and ping were both unavailable"
             else:
@@ -190,6 +203,20 @@ class ScanManager:
         if ping_status == UNAVAILABLE:
             self.sessions.add_error("ping unavailable: no address could be probed")
         return _Discovery(mark_randomized_macs(filter_addresses(hosts, scope)), arp_status, ping_status)
+
+    def _record_gateway(self, scan_id: int, hosts: list[DiscoveredHost]) -> None:
+        """Find BB-2's gateway and pair it with BB-1's MAC without changing the outcome."""
+        gateway = self.read_gateway(local_address_for([host.ip_address for host in hosts]))
+        gateway_mac = None
+        if gateway is not None:
+            gateway_mac = next((host.mac_address for host in hosts
+                                if host.ip_address == gateway.ip and host.mac_address), None)
+            if gateway_mac is None:
+                entries = self.read_arp(gateway.ip)
+                if entries:
+                    gateway_mac = next((entry.mac_address for entry in entries
+                                        if entry.ip_address == gateway.ip), None)
+        self.sessions.scan_store.set_gateway(scan_id, gateway.ip if gateway is not None else None, gateway_mac)
 
     def _counting_probe(self, scope: str) -> Probe:
         """The probe, wrapped so every finished probe reports "N of total" (2.2.1.3)."""
@@ -267,6 +294,7 @@ def _alerts(outcome: ScanOutcome, summary: RecordSummary | None) -> tuple[AlertC
 
 def build_scan_manager(engine: DatabaseEngine, sessions: ScanSessionController, settings: ScanSettings, *,
                        probe: Probe | None = None, read_arp: ArpReader = read_arp_cache,
+                       read_gateway: GatewayReader = read_gateway_config,
                        on_finished: Callable[[ScanResult], None] | None = None) -> ScanManager:
     """A ScanManager on the real database and network. The one place that knows which
     stores and evidence collectors it uses."""
@@ -274,7 +302,8 @@ def build_scan_manager(engine: DatabaseEngine, sessions: ScanSessionController, 
     saver = DeviceRecordSaver(devices, ReferenceStore(engine, Vendor), ReferenceStore(engine, DeviceType))
     record = partial(record_scan_results, engine=engine, saver=saver, devices=devices, scans=ScanStore(engine))
     return ScanManager(sessions, load_rules=partial(find_reference_rules, engine), record_hosts=record,
-                       settings=settings, probe=probe, read_arp=read_arp, on_finished=on_finished,
+                       settings=settings, probe=probe, read_arp=read_arp, read_gateway=read_gateway,
+                       on_finished=on_finished,
                        collectors=evidence_collectors(settings))
 
 

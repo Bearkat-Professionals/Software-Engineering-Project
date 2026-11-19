@@ -436,6 +436,27 @@ class ScanStoreTests(NetworkDataTestCase):
         with self.assertRaises(RecordNotFoundError):
             self.scans.finish(999_999, ScanOutcome.SUCCESS)
 
+    def test_gateway_is_saved_and_the_latest_finished_mac_is_read(self):
+        first = self.scan(datetime(2026, 11, 18, 9))
+        saved = self.scans.set_gateway(first.pk, "192.168.1.1", "70:13:01:65:8E:F7")
+        self.assertEqual((saved.gateway_ip, saved.gateway_mac),
+                         ("192.168.1.1", "70:13:01:65:8E:F7"))
+        self.scans.finish(first.pk, ScanOutcome.SUCCESS)
+
+        no_gateway = self.scan(datetime(2026, 11, 18, 10))
+        self.scans.set_gateway(no_gateway.pk, None, None)
+        self.scans.finish(no_gateway.pk, ScanOutcome.SUCCESS)
+        self.assertEqual(self.scans.latest_gateway_mac(), "70:13:01:65:8E:F7")
+
+        newest = self.scan(datetime(2026, 11, 18, 11))
+        self.scans.set_gateway(newest.pk, "192.168.1.254", "28:6F:B9:10:20:30")
+        self.assertEqual(self.scans.latest_gateway_mac(), "70:13:01:65:8E:F7")   # still running
+        self.scans.finish(newest.pk, ScanOutcome.PARTIAL)
+        self.assertEqual(self.scans.latest_gateway_mac(), "28:6F:B9:10:20:30")
+
+        with self.assertRaises(RecordNotFoundError):
+            self.scans.set_gateway(999_999, None, None)
+
     def test_a_scan_records_each_device_once(self):
         device = self.device("F0:D1:A9:00:00:01")
         scan = self.scan()

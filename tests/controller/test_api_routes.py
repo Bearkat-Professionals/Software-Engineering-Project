@@ -49,6 +49,17 @@ class FakeSessions:
         return self.report
 
 
+class FakeScans:
+    """The one ScanStore read the device list/detail uses for the inferred gateway mark."""
+    def __init__(self, gateway_mac: str | None = None) -> None:
+        self.gateway_mac = gateway_mac
+        self.latest_gateway_calls = 0
+
+    def latest_gateway_mac(self) -> str | None:
+        self.latest_gateway_calls += 1
+        return self.gateway_mac
+
+
 class FakeDevices:
     """DeviceStore.list_page in memory, with its order: newest last_seen first, then highest id."""
     def __init__(self, listings: list[DeviceListing] = ()) -> None:
@@ -78,12 +89,13 @@ def listing(device_id: int, seen_minutes_ago: int, **fields: Any) -> DeviceListi
 
 def make_client(user: User | None = SAM, *, manager: FakeScanManager | None = None,
                 report: ScanStatusReport | None = None,
-                devices: FakeDevices | None = None) -> FlaskClient:
+                devices: FakeDevices | None = None, scans: FakeScans | None = None) -> FlaskClient:
     """A test client signed in as `user` (None: signed out)."""
     users = FakeUsers(*([user] if user is not None else []))
     services = Services(scan_manager=manager or FakeScanManager(),
                         scan_sessions=FakeSessions(report or ScanStatusReport(state=ScanState.NONE)),
-                        devices=devices or FakeDevices(), users=users, access=FakeAccess(users))
+                        devices=devices or FakeDevices(), users=users, access=FakeAccess(users),
+                        scans=scans or FakeScans())
     app: Flask = create_app(services, secret_key=SECRET_KEY)
     client = app.test_client()
     if user is not None:
@@ -202,9 +214,17 @@ class DeviceListTests(unittest.TestCase):
         body = self.get("/api/devices", devices).get_json()
         self.assertEqual(body, {"devices": [{
             "device_id": 7, "name": None, "type": "unknown", "vendor": "Apple, Inc.",
-            "ip": "192.168.1.7", "mac": "F0:D1:A9:00:00:07", "is_randomized_mac": False,
+            "ip": "192.168.1.7", "mac": "F0:D1:A9:00:00:07", "is_gateway": False,
+            "is_randomized_mac": False,
             "network_status": "online", "confidence": 20, "flagged": True, "trusted": False,
             "last_seen": "2026-10-26T14:03:00"}], "page": 1, "per_page": 50, "total": 1})
+
+    def test_gateway_is_marked_and_the_latest_scan_is_read_once(self) -> None:
+        scans = FakeScans("f0:d1:a9:00:00:07")
+        devices = FakeDevices([listing(7, 0), listing(8, 1)])
+        body = make_client(devices=devices, scans=scans).get("/api/devices").get_json()
+        self.assertEqual([device["is_gateway"] for device in body["devices"]], [True, False])
+        self.assertEqual(scans.latest_gateway_calls, 1)
 
     def test_a_blank_name_is_null_and_a_real_name_is_kept(self) -> None:
         devices = FakeDevices([listing(1, 0, device_name=""), listing(2, 1, device_name="Printer")])

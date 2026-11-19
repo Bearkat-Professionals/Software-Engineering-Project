@@ -23,7 +23,7 @@ from werkzeug.exceptions import HTTPException
 from backend.controller import api_routes, auth, device_routes, hold_routes, reference_routes, user_routes
 from backend.controller.auth import requires
 from backend.data_access.account_settings import UserStore
-from backend.data_access.network_data import DeviceStore
+from backend.data_access.network_data import DeviceStore, ScanStore
 from backend.services.access_control.access_control_service import AccessControlService
 from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_manager import ScanManager, ScanResult
@@ -45,6 +45,7 @@ class Services:
     devices: DeviceStore
     users: UserStore
     access: AccessControlService
+    scans: ScanStore | None = None                  # None only in tests that do not read gateway state
     reference: ReferenceMaintenance | None = None     # None only in tests that don't use reference data
     device_maintenance: DeviceMaintenance | None = None   # None only in tests that don't change devices
     device_detail: DeviceDetailService | None = None      # None only in tests that don't read one device
