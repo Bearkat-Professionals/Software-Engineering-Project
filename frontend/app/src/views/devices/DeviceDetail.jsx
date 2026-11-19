@@ -5,6 +5,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../../components/api";
 import { displayName, formatConfidence, formatLastSeen } from "../../components/format";
 import { useMessages } from "../../components/Messages";
+import { useAuth } from "../../auth/AuthProvider";
 
 const HISTORY_PER_PAGE = 20;
 
@@ -14,7 +15,7 @@ const EVIDENCE_TEXT = {
     oui: "MAC prefix (OUI)",
     mdns: "mDNS",
     ssdp: "SSDP",
-    netbios_llmr: "NetBIOS / LLMNR",
+    netbios_llmnr: "NetBIOS / LLMNR",
     reverse_dns: "Reverse DNS",
 
 };
@@ -53,6 +54,7 @@ export default function DeviceDetail() {
 
     const { id } = useParams();
     const { showMessage } = useMessages();
+    const { can } = useAuth();
     const [params, setParams] = useSearchParams();
     const page = readPage(params);
     // Each result remembers the id it belongs to
@@ -66,7 +68,7 @@ export default function DeviceDetail() {
 
         let ignore = false;
 
-        api(`/api/devices/${encodedURIComponent(id)}`)
+        api(`/api/devices/${encodeURIComponent(id)}`)
           .then((found) => { if (!ignore) setLoaded({ id, data: found }); })
           .catch((err) => {
 
@@ -85,7 +87,7 @@ export default function DeviceDetail() {
 
         let ignore = false;
 
-        api(`/api/devices/${encodedURIComponent(id)}/history?page=${page}&per_page${HISTORY_PER_PAGFEF}`)
+        api(`/api/devices/${encodeURIComponent(id)}/history?page=${page}&per_page=${HISTORY_PER_PAGE}`)
           .then((found) => {
 
             if (ignore) return;
@@ -105,7 +107,7 @@ export default function DeviceDetail() {
           })
           .catch((err) => {
             // Device request already reports 404, so it's not repeated
-            if (!ignroe && err.status !== 404) showMessage("error", err.message);
+            if (!ignore && err.status !== 404) showMessage("error", err.message);
           });
 
           return () => { ignore = true; };
@@ -120,7 +122,7 @@ export default function DeviceDetail() {
                 <h1>Device</h1>
                 <p>
                     {current.missing
-                        ? "This device no longer exists. It ma have been deleted."
+                        ? "This device no longer exists. It may have been deleted."
                         : "This device could not be loaded."
                     }
                 </p>
@@ -143,7 +145,7 @@ export default function DeviceDetail() {
           {/* The name is text. */}
           <h1>{displayName(device)}</h1>
 
-          {/* Edit, mark, and delete controls from device maintenance go here. */}
+          {can("EDIT_DEVICES") && <p><Link to={`/devices/${id}/edit`}>Edit</Link></p>}
 
           <section>
 
