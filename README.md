@@ -103,6 +103,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `ident` | `backend.services.scan.check_identification` | after a scan, list every device's vendor, type, score, level and flag, checked against its stored evidence (#69, test database; `--database NAME` for another) |
 | `speed` | `backend.services.scan.check_sweep_speed` | time a ping sweep at 1, 8, 32 and 64 workers and print a table for the PR (#81) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
+| `cmpexp` | `backend.services.reporting.compare_exports` | check that two JSON exports (e.g. from Windows and Linux) have the same keys, key order and types (NFR-08) |
 | `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
 
 Add `--help` after any command for that tool's own options, e.g. `.\dev chd --help`. The long `python -m ...` commands still work. To add a tool, add one line to `COMMANDS` in `dev.py`.
@@ -694,58 +695,105 @@ Errors come back as `{"error": "message"}`. Add rows in dependency order: `devic
 
 ## Starting and setting up the Server
 
-### MariaDB on Linux
-Step 1: Installing MariaDB & Start it (Run the following commands in your terminal)
+### Running on Linux (and macOS)
+Everything runs without admin rights once it's installed: `sudo` is only needed to install packages, set up the database and open the firewall. Every `.\dev <command>` in this README is `python3 dev.py <command>` here. **macOS** follows the same steps but hasn't been run on a real Mac yet (#174): install the packages with Homebrew instead of `apt`, and allow Python when macOS asks to accept incoming connections.
 
-- sudo pacman -S mariaDB (If on Arch Linux)
-- sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
-- sudo systemctl enable --now mariadb
+**1. Install what's needed.** On Debian or Ubuntu:
+```
+sudo apt update
+sudo apt install git python3 python3-venv python3-pip iputils-ping iproute2 mariadb-server
+```
+On Arch: `sudo pacman -S git python python-pip iputils iproute2 mariadb`, then `sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql` once before starting it.
+- Python 3.13 or newer (`python3 --version`).
+- MariaDB 10.5+ or MySQL 8.0.16+ (`mariadb --version`). Older versions lack features the schema uses.
+- `ping` and `ip` are missing on some minimal installs. Without `ping` a scan ends `partial`; without `ip` the ARP table and gateway are read from `/proc` instead.
+- Node.js 20.19 or newer for the screens (`node -v`). Distribution packages are often older; https://nodejs.org lists other ways to install it.
 
-Step 2: Create the account and test database (Run the following commands in your terminal)
+**2. Get the code and its Python packages**, in a virtual environment:
+```
+git clone https://github.com/Bearkat-Professionals/Software-Engineering-Project.git
+cd Software-Engineering-Project
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+Run every later command from this folder with the environment active. In a new terminal, run `source .venv/bin/activate` first.
 
-You're going to start MariaDB and run the following commands.
-
-- CREATE USER '[your_user_here]'@'127.0.0.1' IDENTIFIED BY '[your_password_here]';
-- CREATE DATABASE IF NOT EXISTS network_device_scanner_test
-      CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-- GRANT ALL PRIVILEGES ON network_device_scanner_test.* TO '[your_user_here]'@'127.0.0.1';
-- FLUSH PRIVILEGES;
+**3. Create the databases.** Start the server and open its console:
+```
+sudo systemctl enable --now mariadb
+sudo mariadb
+```
+Then, choosing your own password:
+```sql
+CREATE USER 'katscan'@'127.0.0.1' IDENTIFIED BY 'choose-a-password';
+CREATE DATABASE network_device_scanner CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE network_device_scanner_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+GRANT ALL PRIVILEGES ON network_device_scanner.* TO 'katscan'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON network_device_scanner_test.* TO 'katscan'@'127.0.0.1';
+FLUSH PRIVILEGES;
 EXIT;
+```
+Load the schema and both seed files into **both** databases (each command asks for the password):
+```
+for db in network_device_scanner network_device_scanner_test; do
+  for file in database/schema/database_schema.sql database/seed/seed_reference_data.sql database/seed/seed_signatures.sql; do
+    mariadb -h 127.0.0.1 -u katscan -p "$db" < "$file"
+  done
+done
+```
+**Don't run the files in `database/migrations/` on a new database.** The schema already contains them, and `004_scan_gateway.sql` would fail with "Duplicate column". The migrations are only for a database created before they existed: run the new ones once, in number order, on both databases.
 
-Step 2.1: Creating your .env
+**4. Create `.env`** in the project folder (git ignores it). Make the secret key with `python3 -c "import secrets; print(secrets.token_hex(32))"`:
+```
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=katscan
+DB_PASSWORD=choose-a-password
+DB_NAME=network_device_scanner
+SECRET_KEY=<the 64 characters it printed>
+APP_PORT=5001
+```
+Check it with `python3 dev.py conn`.
 
-- Create your .env file and then input the following
-- DB_HOST=127.0.0.1
-- DB_PORT=3306
-- DB_USER=[your_user_here]
-- DB_NAME=network_device_scanner
+**5. Run the tests.** Everything should pass, including the database tests (they use the `_test` database):
+```
+python3 dev.py test
+```
+The database tests empty the test database's tables, so steps 6 and 7 use the real one.
 
-Step 3: Load the schema and the seed (I ran these commands in my IDE)
+**6. Load vendor names and create the first admin**, both in the real database. Download the IEEE OUI list from https://standards-oui.ieee.org/oui/oui.csv, then:
+```
+python3 dev.py oui path/to/oui.csv --database network_device_scanner
+python3 dev.py admin --database network_device_scanner
+```
 
-- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/schema/database_schema.sql
-- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/seed/seed_reference_data.sql
-- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/seed/seed_signatures.sql
+**7. Let mDNS and SSDP answers in.** Devices answer from your network to ports a firewall blocks. With `ufw` (Ubuntu), if `sudo ufw status` says it's active, allow UDP from your own network only, using your range:
+```
+sudo ufw allow from 192.168.1.0/24 proto udp
+```
+With another firewall, allow incoming UDP from your own subnet the same way. Without this, `python3 dev.py ev` hears nothing from mDNS and SSDP, but nothing fails.
 
-`seed_signatures.sql` adds the starter device types and identification signatures after
-the required `seed_reference_data.sql` rows. It is safe to run more than once: an
-existing type or signature is left unchanged rather than duplicated.
+**8. Check discovery on your network.** None of these need admin rights:
+```
+python3 dev.py arp                       # the ARP table
+python3 dev.py gw --for 192.168.1.0/24   # the gateway facing your network
+python3 dev.py ev                        # what each device says (mDNS, SSDP, ...)
+```
 
-Step 4: Install python requirements (Run the following commands inside your IDE terminal)
+**9. Start the app and the screens**, in two terminals:
+```
+python3 dev.py app                       # terminal 1: http://127.0.0.1:5001/api/health
+```
+```
+cd frontend/app                          # terminal 2
+npm ci
+echo "VITE_USE_SAMPLES=false" > .env.local
+npm run dev
+```
+Open http://127.0.0.1:5173, sign in as the admin, and start a scan of your range.
 
-- python3 -m venv .venv
-- source .venv/bin/activate
-- python -m pip install -r requirements.txt
-
-Step 5: Start the CRUD server with the virtual environment (Run the following commands inside your IDE termnial)
-
-- source .venv/bin/activate
-- python3 -m backend.dev_tools.crud_server
-- Then start the test page in a second terminal: see "CRUD test page and server" above
-
-
-If everything was setup and ran correctly you should see a message stating:
-
-WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+**WSL2 doesn't count as Linux here.** It sits behind a virtual network and sees only one neighbour. Use a real Linux machine, or a virtual machine with a bridged network adapter.
 
 ### MAMP on Windows/MacOS
 
