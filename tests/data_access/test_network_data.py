@@ -569,5 +569,40 @@ class ChangeReportReadTests(NetworkDataTestCase):
             with self.subTest(table=table):
                 self.assertIsNotNone(plan[table]["possible_keys"], plan[table])
 
+
+class ExportReadTests(NetworkDataTestCase):
+
+    def ids(self, listings):
+        device_ids = []
+        for listing in listings:
+            device_ids.append(listing.device.pk)
+        return device_ids
+
+    def test_search_all_matches_search(self):
+        now = datetime.now()
+        self.device("F0:D1:A9:00:00:01", hostname="kitchen-echo", flagged_status=True, last_seen=now)
+        self.device("F0:D1:A9:00:00:02", hostname="office-printer", last_seen=now - timedelta(days=1))
+        self.device("F0:D1:A9:00:00:03", hostname="kitchen-tv", flagged_status=True)
+
+        searches = [DeviceSearch(), DeviceSearch(flagged_status=True), DeviceSearch(text="kitchen"), DeviceSearch(sort="name", descending=False)]
+        for search in searches:
+            paged = self.devices.search(search, page=1, per_page=200).devices
+            everything = self.devices.search_all(search, 100)
+            self.assertEqual(self.ids(everything), self.ids(paged))
+
+        self.assertEqual(len(self.devices.search_all(DeviceSearch(), 1)), 2)
+
+    def test_a_scans_observations_and_its_devices(self):
+        kitchen = self.device("F0:D1:A9:00:00:01")
+        office = self.device("F0:D1:A9:00:00:02")
+        scan = self.scan(seen=(office.pk, kitchen.pk))
+
+        observations = self.scans.observations_for(scan.pk)
+        self.assertEqual(observations[0].device_id, office.pk)
+        self.assertEqual(observations[1].device_id, kitchen.pk)
+
+        listings = self.devices.listings_for([office.pk, kitchen.pk])
+        self.assertEqual(self.ids(listings), sorted([kitchen.pk, office.pk]))
+
 if __name__ == "__main__":
     unittest.main()
