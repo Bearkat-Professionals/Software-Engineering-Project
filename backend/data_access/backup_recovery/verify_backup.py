@@ -23,10 +23,16 @@ class VerificationResult:
         return not self.problems
 
 
-def verify_backup(media: BackupMedia, name: str) -> VerificationResult:
+def verify_backup(
+    media: BackupMedia,
+    name: str,
+    *,
+    private_key_pem: str | bytes | None = None,
+    passphrase: str | bytes | None = None,
+) -> VerificationResult:
     """Load a stored backup and check it."""
     try:
-        data = media.load(name)
+        data = media.load(name, private_key_pem=private_key_pem, passphrase=passphrase)
     except BackupMediaError as exc:                 # missing, damaged, not gzip, not JSON
         return VerificationResult(name, (str(exc),))
     return check_backup(name, data)

@@ -29,14 +29,21 @@ class RestoreResult:
     rows_restored: dict[str, int]       # table -> rows put back
 
 
-def restore_from_backup(engine: DatabaseEngine, media: BackupMedia, name: str) -> RestoreResult:
+def restore_from_backup(
+    engine: DatabaseEngine,
+    media: BackupMedia,
+    name: str,
+    *,
+    private_key_pem: str | bytes | None = None,
+    passphrase: str | bytes | None = None,
+) -> RestoreResult:
     """Replace the backed-up tables' rows with the backup's rows.
 
     A full backup replaces every table; a partial backup replaces only its own
     tables and leaves the rest alone. BackupMediaError (missing or unreadable
     file) and RestoreError both mean nothing was changed.
     """
-    data = media.load(name)
+    data = media.load(name, private_key_pem=private_key_pem, passphrase=passphrase)
     checked = check_backup(name, data)              # verify exactly the data that will be used
     if not checked.ok:
         raise RestoreError(f"backup '{name}' failed verification: " + "; ".join(checked.problems))
