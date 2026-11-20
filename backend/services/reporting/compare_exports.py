@@ -8,8 +8,12 @@ in the same order, with the same types. Only the values may differ.
 
 Prints every difference with its path (e.g. devices[].vendor) and exits 1 if there is
 any, 0 if the structures match. A field that is null in one file and has a value in the
-other isn't a difference: a device with no name is a value, not a structure. Lists are
-compared by the shape of their items, since each machine sees different devices.
+other isn't a difference: a device with no name is a value, not a structure.
+
+Each machine sees different devices, so the two files' lists are compared by the shape of
+their items. First, inside each file, every item of a list is checked against the list's
+first non-null item, so one odd item (a missing key, keys in another order) is reported
+with its index, e.g. "second file: devices[8].user_marks: only in devices[0]: flagged".
 """
 from __future__ import annotations
 
@@ -20,6 +24,7 @@ from pathlib import Path
 from typing import Any
 
 NULL = "null"
+
 
 def shape(value: Any) -> Any:
     """The structure of a JSON value: an object's keys in order with their shapes, a
@@ -39,8 +44,11 @@ def shape(value: Any) -> Any:
         return "number"
     return "string"
 
-def compare_shapes(left: Any, right: Any, path: str = "") -> list[str]:
-    """Every structural difference between two shapes, each as "path: what differs"."""
+
+def compare_shapes(left: Any, right: Any, path: str = "",
+                   first: str = "the first file", second: str = "the second file") -> list[str]:
+    """Every structural difference between two shapes, each as "path: what differs".
+    `first` and `second` name where the two shapes came from, for the messages."""
     where = path or "(top level)"
     if left is None or right is None or left == NULL or right == NULL:
         return []                                   # an empty list or a null: nothing to compare
@@ -49,23 +57,52 @@ def compare_shapes(left: Any, right: Any, path: str = "") -> list[str]:
         if list(left) != list(right):
             missing, extra = [k for k in left if k not in right], [k for k in right if k not in left]
             if missing:
-                problems.append(f"{where}: only in the first file: {', '.join(missing)}")
+                problems.append(f"{where}: only in {first}: {', '.join(missing)}")
             if extra:
-                problems.append(f"{where}: only in the second file: {', '.join(extra)}")
+                problems.append(f"{where}: only in {second}: {', '.join(extra)}")
             if not missing and not extra:
                 problems.append(f"{where}: keys in a different order: {list(left)} vs {list(right)}")
         for key in left:
             if key in right:
-                problems += compare_shapes(left[key], right[key], f"{path}.{key}" if path else key)
+                problems += compare_shapes(left[key], right[key], f"{path}.{key}" if path else key,
+                                           first, second)
         return problems
     if isinstance(left, list) and isinstance(right, list):
-        return compare_shapes(left[0], right[0], f"{path}[]")
+        return compare_shapes(left[0], right[0], f"{path}[]", first, second)
     if _kind(left) != _kind(right):
-        return [f"{where}: {_kind(left)} in the first file, {_kind(right)} in the second"]
+        return [f"{where}: {_kind(left)} in {first}, {_kind(right)} in {second}"]
     return []
 
+
+def check_lists(value: Any, path: str = "") -> list[str]:
+    """Inside one document: every list item whose structure differs from the list's first
+    non-null item, with its index. Null items, and null against a value, are fine."""
+    problems = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            problems += check_lists(item, f"{path}.{key}" if path else key)
+    elif isinstance(value, list):
+        reference = next((index for index, item in enumerate(value) if item is not None), None)
+        for index, item in enumerate(value):
+            here = f"{path}[{index}]"
+            if reference is not None and index != reference:
+                problems += compare_shapes(shape(value[reference]), shape(item), here,
+                                           f"{path}[{reference}]", here)
+            problems += check_lists(item, here)
+    return problems
+
+
+def compare_documents(first: Any, second: Any) -> list[str]:
+    """Every structural problem: odd list items inside each document, then the two
+    documents against each other."""
+    return ([f"first file: {problem}" for problem in check_lists(first)]
+            + [f"second file: {problem}" for problem in check_lists(second)]
+            + compare_shapes(shape(first), shape(second)))
+
+
 def compare_files(first: Path, second: Path) -> list[str]:
-    return compare_shapes(shape(_load(first)), shape(_load(second)))
+    return compare_documents(_load(first), _load(second))
+
 
 def _merge(a: Any, b: Any) -> Any:
     """One shape for two list items: null gives way to the other; objects merge key by key."""
@@ -81,6 +118,7 @@ def _merge(a: Any, b: Any) -> Any:
         return [_merge(a[0], b[0])]
     return a
 
+
 def _kind(item_shape: Any) -> str:
     if isinstance(item_shape, dict):
         return "object"
@@ -88,9 +126,11 @@ def _kind(item_shape: Any) -> str:
         return "list"
     return item_shape
 
+
 def _load(path: Path) -> Any:
     with open(path, encoding="utf-8-sig") as file:   # -sig: a BOM from a Windows editor is fine
         return json.load(file)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check that two JSON exports have the same structure (NFR-08).")
@@ -109,6 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("Same structure: the same keys, in the same order, with the same types. Only values differ.")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
