@@ -24,6 +24,8 @@ from backend.services.access_control.access_control_service import AccessControl
 from backend.services.records.reference_maintenance import ReferenceKind, ReferenceMaintenance
 from backend.services.records.device_maintenance import DeviceMaintenance
 from backend.services.reporting import build_device_detail_service
+from backend.services.reporting.change_report import ChangeReportService
+from backend.services.reporting.export_json import build_export_service
 from backend.shared_modules.save_device_record import DeviceRecordSaver
 from backend.services.scan.scan_manager import build_scan_manager
 from backend.services.scan.scan_session import ScanSessionController
@@ -87,6 +89,8 @@ def main() -> None:
                         users=users, access=AccessControlService(users), reference=reference,
                         device_maintenance=device_maintenance,
                         device_detail=build_device_detail_service(engine),     # search uses `devices`
+                        change_report=ChangeReportService(scans, engine.unit_of_work),
+                        export=build_export_service(engine),
                         edit_holds=holds,
                         backups=BackupRecoveryService(engine, BackupMedia.from_env(), users, ScanStore(engine)))
     app = create_app(services, secret_key=secret_key)      # https=True once HTTPS arrives (M7)

@@ -8,6 +8,10 @@ once (OUT-04), and the store is only asked when all of them pass.
     result.page         # a DevicePage, or None when the criteria were refused
     result.reasons      # e.g. ("seen_to must be a date like 2026-11-07, not '7th'.",)
 
+The parameters: type (or type_id), vendor (or vendor_id), status, flagged, trusted,
+randomized, confidence_min, confidence_max, seen_from, seen_to, q, sort, order. The
+routes read them through route_helpers.device_search_from_query, the one place they do.
+
 A parameter left out, or sent blank (an empty box or "any" in a form), means "any".
 Unknown parameters are ignored, so page and per_page can travel in the same query.
 Reasons repeat what was typed, so a screen that shows them must escape them (XSS).
@@ -73,11 +77,18 @@ def parse_search(params: Mapping[str, str]) -> tuple[DeviceSearch | None, list[s
         else:
             fields[field] = value
 
+    for short, long in (("type", "type_id"), ("vendor", "vendor_id")):     # #156's names; the screens send the short ones
+        both = (_given(params, short), _given(params, long))
+        if None not in both and both[0] != both[1]:
+            reasons.append(f"{short} and {long} are the same filter; send one of them, not both with different values.")
     check("type", "device_type_id", _id)
+    check("type_id", "device_type_id", _id)
     check("vendor", "vendor_id", _id)
+    check("vendor_id", "vendor_id", _id)
     check("status", "network_status", _status)
     check("flagged", "flagged_status", _boolean)
     check("trusted", "trusted_status", _boolean)
+    check("randomized", "is_randomized_mac", _boolean)
     check("confidence_min", "confidence_min", _confidence)
     check("confidence_max", "confidence_max", _confidence)
     check("seen_from", "seen_from", _date)
