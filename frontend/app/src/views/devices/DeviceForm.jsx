@@ -4,6 +4,7 @@ import { useAuth } from "../../auth/AuthProvider";
 import { api } from "../../components/api";
 import { formatConfidence, formatLastSeen } from "../../components/format";
 import { useMessages } from "../../components/Messages";
+import { AWAY_MESSAGE, holdNotice, useEditHold } from "../../components/useEditHold";
 
 const MARKS = [
 
@@ -34,6 +35,7 @@ export default function DeviceForm() {
     const canEdit = can("EDIT_DEVICES");
     const { showMessage } = useMessages();
     const creating = id === undefined;
+    const { others, lost } = useEditHold("device", canEdit && !creating ? Number(id) : null);
     const [device, setDevice] = useState(null);
     const [loadedAt, setLoadedAt] = useState(null);
     const [fields, setFields] = useState(blankFields);
@@ -82,7 +84,15 @@ export default function DeviceForm() {
             return;
 
         }
+        
+        // Someone else has the device open
+        if (err.status === 409 && err.heldBy != null) {
 
+          showMessage("error", err.message);
+          return;
+
+        }
+        
         if (err.status === 409 && err.deviceId != null) {
 
             setDuplicateId(err.deviceId);
@@ -247,6 +257,9 @@ export default function DeviceForm() {
 
           <p><Link to="/devices">Back to the list</Link></p>
           <h1>{creating ? "Add device" : shownName}</h1>
+
+          {others.map((other) => <p key={`${other.username}-${other.since}`}>{holdNotice(other)}</p>)}
+          {lost && <p>{AWAY_MESSAGE}</p>}
 
           {!creating && device == null && <p>Loading...</p>}
           {(creating || device) && (

@@ -4,10 +4,12 @@ import { Link, Navigate, useNavigate, useParams } from "react-router-dom";
 import { useAuth } from "../../auth/AuthProvider";
 import { api } from "../../components/api";
 import { useMessages } from "../../components/Messages";
+import { AWAY_MESSAGE, holdNotice, useEditHold } from "../../components/useEditHold";
 
 // oui is not a signature type. Prefixes belong to a vendor.
 const EVIDENCE_TYPES = ["mdns", "ssdp", "netbios_llmnr", "reverse_dns"];
 const SAVED = "Saved. Scans use this from the next scan.";
+const HOLD_TYPES = { vendors: "vendor", "device-types": "device_type", signatures: "device_signature" };
 
 // Empty values for an add form.
 function blankFields() {
@@ -50,6 +52,7 @@ export default function ReferenceForm() {
   const { showMessage } = useMessages();
   // The add route uses the id "new". Any other id is an existing record.
   const creating = id === "new";
+  const { others, lost } = useEditHold(HOLD_TYPES[kind], canEdit && !creating ? Number(id) : null);
   const [record, setRecord] = useState(null);
   const [loadedAt, setLoadedAt] = useState(null);
   const [usageText, setUsageText] = useState("");
@@ -400,6 +403,10 @@ export default function ReferenceForm() {
       <p><Link to={`/reference/${kind}`}>Back to the list</Link></p>
 
       <h1>{creating ? "Add" : "Edit"}</h1>
+
+      {others.map((other) => <p key={`${other.username}-${other.since}`}>{holdNotice(other)}</p>)}
+
+      {lost && <p>{AWAY_MESSAGE}</p>}
 
       {!creating && record == null && <p>Loading...</p>}
 
