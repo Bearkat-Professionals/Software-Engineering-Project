@@ -31,6 +31,7 @@ ADMIN, SAM = 1, 2
 class FakeMedia:
     def __init__(self, names=(NAME,)) -> None:
         self.stored = [StoredBackup(name, 1000, "2026-11-17T14:00:00") for name in names]
+        self.encryption_enabled = False
 
     def list(self) -> list[StoredBackup]:
         return list(self.stored)
@@ -97,6 +98,7 @@ class Engine35:
         self.problems: tuple[str, ...] = ()
         self.restore_error: Exception | None = None
         self.after_restore = None           # e.g. remove the admin from the "restored" accounts
+        self.key_material_calls: list[tuple[str, dict]] = []
         self.hold = threading.Event()       # set: create returns at once
         self.hold.set()
         self.entered = threading.Event()
@@ -110,12 +112,14 @@ class Engine35:
             raise error
         return StoredBackup(name or "full-20261117-140530-123", 2000, "2026-11-17T14:05:30")
 
-    def verify(self, media, name) -> VerificationResult:
+    def verify(self, media, name, **key_material) -> VerificationResult:
         self.events.append(f"verify {name}")
+        self.key_material_calls.append(("verify", key_material))
         return VerificationResult(name, self.problems)
 
-    def restore(self, engine, media, name) -> RestoreResult:
+    def restore(self, engine, media, name, **key_material) -> RestoreResult:
         self.events.append(f"restore {name}")
+        self.key_material_calls.append(("restore", key_material))
         if self.restore_error is not None:
             raise self.restore_error
         if self.after_restore:
@@ -221,6 +225,8 @@ class ListAndVerifyTests(ServiceTestCase):
                          [("before-restore-20261117-150000-000", "safety"), (NAME, "full"),
                           ("partial-20261116-090000-000", "partial")])
         self.assertEqual((listing.backups[0].size_bytes, listing.backups[0].created), (1000, "2026-11-17T14:00:00"))
+        self.assertFalse(listing.backups[0].encrypted)
+        self.assertIn("unencrypted", listing.warning)
         self.assertIsNone(listing.last_attempt)
         self.assertIsNone(listing.busy)
         self.assertEqual(backup_kind("my-own-name"), "other")
@@ -231,6 +237,22 @@ class ListAndVerifyTests(ServiceTestCase):
             self.fns.problems = ("table 'device' has 3 rows, expected 4",)
             result = self.service.verify(NAME)
         self.assertEqual((result.status, result.problems), (BackupStatus.DONE, self.fns.problems))
+
+    def test_verify_passes_key_material_without_logging_it(self) -> None:
+        seen = {}
+
+        def verify(media, name, **key_material):
+            seen.update(key_material)
+            return VerificationResult(name, ())
+
+        service = BackupRecoveryService(self.engine, self.media, self.users, self.scans,
+                                        create=self.fns.create, verify=verify, restore=self.fns.restore,
+                                        audit=self.audit, clock=lambda: NOW)
+        with self.assertLogs(LOG, "INFO") as logs:
+            service.verify(NAME, private_key_pem="PRIVATE", passphrase="top secret")
+        self.assertEqual(seen, {"private_key_pem": "PRIVATE", "passphrase": "top secret"})
+        self.assertNotIn("PRIVATE", " ".join(logs.output))
+        self.assertNotIn("top secret", " ".join(logs.output))
 
     def test_verify_an_unknown_name(self) -> None:
         result = self.service.verify("nope")
@@ -257,6 +279,18 @@ class RestoreTests(ServiceTestCase):
             "backup": NAME, "safety_backup": "before-restore-20261117-140530-123",
             "rows_restored": {"device": 3, "vendor": 2}}, "unit", AuditAction.UPDATE)])
         self.assertEqual(self.service.list_backups().last_attempt.action, BackupAction.RESTORE)
+
+    def test_restore_uses_key_material_once_per_read_and_never_logs_it(self) -> None:
+        with self.assertLogs(LOG, "WARNING") as logs:
+            result = self.service.restore(NAME, NAME, ADMIN, private_key_pem="PRIVATE",
+                                          passphrase="top secret",
+                                          on_start=lambda: self.events.append("on_start"))
+        self.assertTrue(result.ok)
+        expected = {"private_key_pem": "PRIVATE", "passphrase": "top secret"}
+        self.assertEqual(self.fns.key_material_calls, [("verify", expected), ("restore", expected)])
+        rendered = " ".join(logs.output)
+        self.assertNotIn("PRIVATE", rendered)
+        self.assertNotIn("top secret", rendered)
 
     def assertRefused(self, result, status, reason=None) -> None:
         self.assertEqual(result.status, status)
