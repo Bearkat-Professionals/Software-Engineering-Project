@@ -14,6 +14,7 @@ from typing import Any
 from unittest import mock
 
 from backend.black_boxes.read_arp_cache import ArpEntry, ArpEntryType
+from backend.black_boxes.read_gateway_config import Gateway
 from backend.data_access.reference_data import ReferenceRules
 from backend.records import Vendor
 from backend.records.enums import AlertEventName, EvidenceType, ScanOutcome, ScanStatus
@@ -121,6 +122,56 @@ class FullScanTests(ManagerTestCase):
         self.assertEqual((call["scan_id"], call["user_id"]), (result.scan_id, JAVIER.user_id))
         self.assertEqual(call["rules"].oui_lookup, {"70:13:01": (2, "Vantiva - Connected Home")})   # from the rules
         self.assertEqual(call["seen_at"], NOW.replace(microsecond=0))
+
+    def test_gateway_is_saved_with_the_mac_from_discovered_hosts(self) -> None:
+        gateway = mock.Mock(return_value=Gateway(ROUTER_IP, "192.168.1.3"))
+        with mock.patch("backend.services.scan.scan_manager.local_address_for", return_value="192.168.1.3") as local:
+            result = self.run_scan(read_gateway=gateway)
+        local.assert_called_once_with([ROUTER_IP, LAPTOP_IP])
+        gateway.assert_called_once_with("192.168.1.3")
+        stored = self.stored(result)
+        self.assertEqual((stored.gateway_ip, stored.gateway_mac), (ROUTER_IP, ROUTER_MAC))
+        self.assertNotIn(ROUTER_IP, self.arp.calls)       # the host already carried its MAC
+
+    def test_gateway_mac_falls_back_to_a_targeted_arp_read(self) -> None:
+        gateway_ip, gateway_mac = "192.168.1.254", "28:6F:B9:10:20:30"
+
+        def read_arp(ip: str | None = None) -> list[ArpEntry]:
+            self.arp.calls.append(ip)
+            if ip == gateway_ip:
+                return [arp_entry(gateway_ip, gateway_mac)]
+            return list(self.arp.entries)
+
+        result = self.run_scan(read_arp=read_arp,
+                               read_gateway=lambda local_ip: Gateway(gateway_ip, local_ip or "unknown"))
+        self.assertEqual((self.stored(result).gateway_ip, self.stored(result).gateway_mac),
+                         (gateway_ip, gateway_mac))
+        self.assertIn(gateway_ip, self.arp.calls)
+
+    def test_no_gateway_is_normal_and_the_scan_still_succeeds(self) -> None:
+        result = self.run_scan(read_gateway=lambda local_ip: None)
+        self.assertEqual(result.outcome, ScanOutcome.SUCCESS)
+        self.assertEqual((self.stored(result).gateway_ip, self.stored(result).gateway_mac), (None, None))
+
+    def test_gateway_reader_failure_does_not_fail_the_scan(self) -> None:
+        def broken_gateway(local_ip: str | None) -> Gateway | None:
+            raise OSError("route table unavailable")
+
+        with self.assertLogs("backend.services.scan.scan_manager", "WARNING"):
+            result = self.run_scan(read_gateway=broken_gateway)
+
+        self.assertEqual(result.outcome, ScanOutcome.SUCCESS)
+        self.assertEqual(result.summary.created, 2)
+        self.assertEqual(result.errors, ())
+
+    def test_gateway_database_failure_does_not_fail_the_scan(self) -> None:
+        with mock.patch.object(self.store, "set_gateway", side_effect=ConnectionError("database went away")):
+            with self.assertLogs("backend.services.scan.scan_manager", "WARNING"):
+                result = self.run_scan(read_gateway=lambda local_ip: Gateway(ROUTER_IP, local_ip or "unknown"))
+
+        self.assertEqual(result.outcome, ScanOutcome.SUCCESS)
+        self.assertEqual(result.summary.created, 2)
+        self.assertEqual(result.errors, ())
 
     def test_new_flagged_devices_become_alert_candidates(self) -> None:
         result = self.run_scan()

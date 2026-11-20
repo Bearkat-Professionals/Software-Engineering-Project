@@ -41,7 +41,7 @@ LOADED_DEVICE = LoadedDevice(DEVICE, LOADED, "HP Inc.", "printer")
 DEVICE_JSON = {"device_id": 7, "name": "Office printer", "type": "printer", "vendor": "HP Inc.",
                "device_type_id": 4, "vendor_id": 12, "model": "LaserJet 4000",
                "ip": "192.168.1.23", "hostname": "NPI1A2B3C", "mac": "F0:D1:A9:12:34:56",
-               "is_randomized_mac": False, "network_status": "online", "confidence": 20,
+               "is_gateway": False, "is_randomized_mac": False, "network_status": "online", "confidence": 20,
                "flagged": False, "trusted": True, "mark": "trusted",
                "first_seen": "2026-10-26T14:03:09", "last_seen": "2026-11-08T09:12:44"}
 REPLY = {"device": DEVICE_JSON, "loaded_at": LOADED_TEXT}

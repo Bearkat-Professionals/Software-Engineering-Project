@@ -83,6 +83,8 @@ CREATE TABLE scan (
     status VARCHAR(50),                               #running or completed
     outcome VARCHAR(100),                             #success, partial or failed (empty until the scan ends)
     error_message TEXT,
+    gateway_ip VARCHAR(45),                           #BB-2 result for this scan (inferred)
+    gateway_mac VARCHAR(17),                          #matching BB-1 MAC, when available
 
     INDEX idx_scan_started_at (started_at),           #recent scans first
 

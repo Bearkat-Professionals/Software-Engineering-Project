@@ -60,7 +60,8 @@ def main() -> None:
                          "the database exists in Workbench, and .env credentials are right.") from None
 
     users = UserStore(engine)
-    sessions = ScanSessionController(ScanStore(engine), users)
+    scans = ScanStore(engine)
+    sessions = ScanSessionController(scans, users)
     stuck = sessions.recover_stuck_scans()
     if stuck:
         logger.warning("Closed %d scan(s) left running by the last stop or crash", stuck)
@@ -80,7 +81,7 @@ def main() -> None:
     saver = DeviceRecordSaver(devices, vendors, device_types, users)
     device_maintenance = DeviceMaintenance(engine, saver, devices, users, holds=holds)
 
-    services = Services(scan_manager=manager, scan_sessions=sessions, devices=devices,
+    services = Services(scan_manager=manager, scan_sessions=sessions, devices=devices, scans=scans,
                         users=users, access=AccessControlService(users), reference=reference,
                         device_maintenance=device_maintenance,
                         device_detail=build_device_detail_service(engine),     # search uses `devices`

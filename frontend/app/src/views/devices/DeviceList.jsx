@@ -609,7 +609,10 @@ export default function DeviceList() {
 
                     <tr key={device.device_id} className={device.flagged ? "suspicious" : undefined}>
 
-                      <td><Link to={`/devices/${device.device_id}`}>{displayName(device)}</Link></td>
+                      <td>
+                        <Link to={`/devices/${device.device_id}`}>{displayName(device)}</Link>
+                        {device.is_gateway && <span className="tag" title="Inferred from this computer's routing table">Gateway</span>}
+                      </td>
                       <td>{device.type || "unknown"}</td>
                       <td>{device.vendor || "unknown"}</td>
                       <td>{device.ip ?? ""}</td>

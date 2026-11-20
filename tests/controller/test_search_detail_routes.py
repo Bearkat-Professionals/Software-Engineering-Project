@@ -20,7 +20,7 @@ from backend.services.scan.calculate_score import Contribution, ScoreBreakdown
 from backend.services.scan.evidence import EvidenceItem
 from backend.services.records.device_maintenance import LoadedDevice
 from backend.services.scan.scan_session import ScanState, ScanStatusReport
-from tests.controller.test_api_routes import FakeScanManager, FakeSessions
+from tests.controller.test_api_routes import FakeScanManager, FakeScans, FakeSessions
 from tests.fakes.fake_accounts import PASSWORD, SECRET_KEY, FakeAccess, FakeUsers
 
 VIEWER = User(user_id=5, username="val", password_hash="not-a-real-hash", role=UserRole.VIEWER)
@@ -101,12 +101,13 @@ class FakeDeviceDetail:
 
 
 def make_client(user: User | None = VIEWER, *, devices: FakeSearch | None = None,
-                detail: FakeDeviceDetail | None = None) -> FlaskClient:
+                detail: FakeDeviceDetail | None = None, scans: FakeScans | None = None) -> FlaskClient:
     """Signed in as `user` (a viewer by default: every route here is read-only); None: signed out."""
     users = FakeUsers(*([user] if user is not None else []))
     services = Services(scan_manager=FakeScanManager(), scan_sessions=FakeSessions(ScanStatusReport(state=ScanState.NONE)),
                         devices=devices or FakeSearch(), users=users, access=FakeAccess(users),
-                        device_maintenance=FakeLoad(), device_detail=detail or FakeDeviceDetail())
+                        scans=scans or FakeScans(), device_maintenance=FakeLoad(),
+                        device_detail=detail or FakeDeviceDetail())
     client = create_app(services, secret_key=SECRET_KEY).test_client()
     if user is not None:
         signed_in = client.post("/api/login", json={"username": user.username, "password": PASSWORD})
@@ -164,6 +165,12 @@ class DetailTests(unittest.TestCase):
         self.assertEqual(body["loaded_at"], "2026-11-08T10:15:02")
         self.assertEqual(body["device"]["device_type_id"], 4)       # the edit form's fields are all there
         self.assertEqual({key: body[key] for key in DETAIL_JSON}, DETAIL_JSON)
+
+    def test_detail_marks_the_gateway_and_reads_the_latest_scan_once(self) -> None:
+        scans = FakeScans(DEVICE.mac_address.lower())
+        body = make_client(scans=scans).get("/api/devices/7").get_json()
+        self.assertIs(body["device"]["is_gateway"], True)
+        self.assertEqual(scans.latest_gateway_calls, 1)
 
     def test_unknown_id_is_404(self) -> None:
         response = make_client().get("/api/devices/99")

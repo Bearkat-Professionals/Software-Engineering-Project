@@ -23,6 +23,8 @@ class Scan(Entity):
     status: ScanStatus = ScanStatus.RUNNING
     outcome: ScanOutcome | None = None     # empty until the scan ends
     error_message: str | None = None       # e.g. empty ARP cache, unreachable subnet
+    gateway_ip: str | None = None          # BB-2 result for this scan (inferred)
+    gateway_mac: str | None = None         # matching BB-1 MAC, when it could be read
 
     @property
     def is_running(self) -> bool:

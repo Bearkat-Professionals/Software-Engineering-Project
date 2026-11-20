@@ -357,13 +357,15 @@ Any role.
 ```json
 {"devices": [
    {"device_id": 7, "name": null, "type": "unknown", "vendor": "Apple, Inc.",
-    "ip": "192.168.1.23", "mac": "F0:D1:A9:12:34:56", "is_randomized_mac": false,
+    "ip": "192.168.1.23", "mac": "F0:D1:A9:12:34:56", "is_gateway": true,
+    "is_randomized_mac": false,
     "network_status": "online", "confidence": 20, "flagged": true, "trusted": false,
     "last_seen": "2026-10-26T14:03:09"}],
  "page": 1, "per_page": 50, "total": 14}
 ```
 - Vendor and type are names, not ids. Retired vendors and types still show their names.
 - `name` is `null` when unknown; the screen shows "Unknown".
+- `is_gateway` is inferred from the latest finished scan's BB-2 gateway and is false when no gateway was found.
 - Sorted by `last_seen`, newest first.
 - `page` defaults to 1 and `per_page` to 50 (at most 200). A page past the end gives an empty `devices` list with the real `total`.
 - A `page` or `per_page` that isn't a whole number in range gets a 400 naming the bad value.
@@ -408,7 +410,7 @@ Reading needs any role; changing needs `editor` or `admin` (a viewer gets 403, a
 {"device": {"device_id": 7, "name": "Office printer", "type": "printer", "vendor": "HP Inc.",
             "device_type_id": 4, "vendor_id": 12, "model": "LaserJet 4000",
             "ip": "192.168.1.23", "hostname": "NPI1A2B3C", "mac": "F0:D1:A9:12:34:56",
-            "is_randomized_mac": false, "network_status": "online", "confidence": 20,
+            "is_gateway": true, "is_randomized_mac": false, "network_status": "online", "confidence": 20,
             "flagged": false, "trusted": true, "mark": "trusted",
             "first_seen": "2026-10-26T14:03:09", "last_seen": "2026-11-08T09:12:44"},
  "loaded_at": "2026-11-08T10:15:02"}
@@ -685,7 +687,7 @@ Step 1: Start MAMP and make sure MySQL is green
 
 Step 2: Open a terminal in the project root folder
 
-Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql`; for PR #103, run `database/migrations/002_flag_set_by_user.sql` (without it, saving any device fails with "Unknown column 'flag_set_by_user'"); and for PR #162, run `database/migrations/003_device_mac_index.sql` (without it, concurrent scan and edit saves can deadlock). Run each against both:
+Step 2.1: Apply database migrations to existing databases before running the app or tests. Run each new file in `database/migrations/` once, in number order. For PR #111, run `database/migrations/001_alert_history.sql`; for PR #103, run `database/migrations/002_flag_set_by_user.sql` (without it, saving any device fails with "Unknown column 'flag_set_by_user'"); for PR #162, run `database/migrations/003_device_mac_index.sql` (without it, concurrent scan and edit saves can deadlock); and for #178, run `database/migrations/004_scan_gateway.sql` (without it, scans cannot save their inferred gateway). Run each against both:
 
 - `network_device_scanner` (the real development database)
 - `network_device_scanner_test` (or the database named by `TEST_DB_NAME`)

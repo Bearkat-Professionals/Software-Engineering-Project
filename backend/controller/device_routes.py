@@ -78,7 +78,8 @@ def register(app: Flask, services: Services) -> None:
         detail = services.device_detail.get_device_detail(device_id)
         if detail is None:                                          # deleted just now, by someone else
             abort(404, description=_missing(device_id))
-        return jsonify(device=device_form_json(loaded), loaded_at=loaded.loaded_at.isoformat(),
+        gateway_mac = services.scans.latest_gateway_mac() if services.scans is not None else None
+        return jsonify(device=device_form_json(loaded, gateway_mac), loaded_at=loaded.loaded_at.isoformat(),
                        **detail_json(detail))
 
     @app.get("/api/devices/<int:device_id>/history")
@@ -165,10 +166,10 @@ def mark_of(device: Device) -> str:
     return "automatic"
 
 
-def device_form_json(loaded: LoadedDevice) -> dict[str, Any]:
+def device_form_json(loaded: LoadedDevice, gateway_mac: str | None = None) -> dict[str, Any]:
     """The list's device fields (device_json) plus what the edit form needs."""
     device = loaded.device
-    body = device_json(DeviceListing(device, loaded.vendor_name, loaded.device_type_name))
+    body = device_json(DeviceListing(device, loaded.vendor_name, loaded.device_type_name), gateway_mac)
     body.update(
         device_type_id=device.device_type_id,
         vendor_id=device.vendor_id,

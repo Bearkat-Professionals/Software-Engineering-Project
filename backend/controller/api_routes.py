@@ -72,7 +72,8 @@ def register(app: Flask, services: Services) -> None:
         if not result.ok:
             return jsonify(error="The search can't be run.", reasons=list(result.reasons)), 400
         found = result.page
-        return jsonify(devices=[device_json(listing) for listing in found.devices],
+        gateway_mac = services.scans.latest_gateway_mac() if services.scans is not None else None
+        return jsonify(devices=[device_json(listing, gateway_mac) for listing in found.devices],
                        page=found.page, per_page=found.per_page, total=found.total)
 
 
@@ -107,7 +108,7 @@ def status_json(report: ScanStatusReport) -> dict[str, Any]:
     return {"running": False, "last_scan": None}
 
 
-def device_json(listing: DeviceListing) -> dict[str, Any]:
+def device_json(listing: DeviceListing, gateway_mac: str | None = None) -> dict[str, Any]:
     """One device for the list: vendor and type as NAMES, a blank name as null."""
     device = listing.device
     return {
@@ -117,6 +118,7 @@ def device_json(listing: DeviceListing) -> dict[str, Any]:
         "vendor": listing.vendor_name,
         "ip": device.current_ip,
         "mac": device.mac_address,
+        "is_gateway": _same_mac(device.mac_address, gateway_mac),
         "is_randomized_mac": device.is_randomized_mac,
         "network_status": getattr(device.network_status, "value", device.network_status),
         "confidence": device.confidence_score,
@@ -124,3 +126,7 @@ def device_json(listing: DeviceListing) -> dict[str, Any]:
         "trusted": device.trusted_status,
         "last_seen": device.last_seen.isoformat() if device.last_seen is not None else None,
     }
+
+
+def _same_mac(mac: str | None, other: str | None) -> bool:
+    return bool(mac and other and mac.casefold() == other.casefold())

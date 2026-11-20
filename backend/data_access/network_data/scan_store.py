@@ -147,6 +147,28 @@ class ScanStore:
             self._scans.update(scan, cursor)
             return self._scans.get(scan_id, cursor)
 
+    def set_gateway(self, scan_id: int, ip: str | None, mac: str | None,
+                    unit: Any = None) -> Scan:
+        """Save the gateway BB-2 inferred for this scan. A missing gateway or MAC is normal."""
+        with _unit_of_work(self._engine, unit) as cursor:
+            scan = self._scans.get(scan_id, cursor)
+            if scan is None:
+                raise RecordNotFoundError(f"scan {scan_id} does not exist")
+            scan.gateway_ip = ip
+            scan.gateway_mac = mac
+            self._scans.update(scan, cursor)
+            return self._scans.get(scan_id, cursor)
+
+    def latest_gateway_mac(self, unit: Any = None) -> str | None:
+        """The gateway MAC from the newest finished scan that identified one."""
+        sql = ("SELECT `gateway_mac` FROM `scan` "
+               "WHERE `status` = %s AND `gateway_mac` IS NOT NULL "
+               "ORDER BY `ended_at` DESC, `scan_id` DESC LIMIT 1")
+        with _unit_of_work(self._engine, unit) as cursor:
+            cursor.execute(sql, (ScanStatus.COMPLETED.value,))
+            row = cursor.fetchone()
+        return row["gateway_mac"] if row else None
+
     #3.1.4 Store Observations
     def add_observation(self, observation: ScanObservation, unit: Any = None) -> ScanObservation:
         """Record that this scan saw this device. A scan records each device once:

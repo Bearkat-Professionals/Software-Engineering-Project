@@ -153,7 +153,10 @@ export default function DeviceDetail() {
 
             <dl>
               <Field label="Name" inferred={inferred.includes("device_name")}>{displayName(device)}</Field>
-              <Field label="Type" inferred={inferred.includes("device_type")}>{device.type || "unknown"}</Field>
+              <Field label="Type" inferred={inferred.includes("device_type")}>
+                {device.type || "unknown"}
+                {device.is_gateway && <span className="tag" title="Inferred from this computer's routing table">Gateway</span>}
+              </Field>
               <Field label="Vendor" inferred={inferred.includes("vendor")}>{device.vendor || "unknown"}</Field>
               <Field label="Model" inferred={inferred.includes("model")}>{device.model ?? ""}</Field>
               <Field label="IP">{device.ip ?? ""}</Field>
