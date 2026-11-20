@@ -206,17 +206,20 @@ class ScanManager:
 
     def _record_gateway(self, scan_id: int, hosts: list[DiscoveredHost]) -> None:
         """Find BB-2's gateway and pair it with BB-1's MAC without changing the outcome."""
-        gateway = self.read_gateway(local_address_for([host.ip_address for host in hosts]))
-        gateway_mac = None
-        if gateway is not None:
-            gateway_mac = next((host.mac_address for host in hosts
-                                if host.ip_address == gateway.ip and host.mac_address), None)
-            if gateway_mac is None:
-                entries = self.read_arp(gateway.ip)
-                if entries:
-                    gateway_mac = next((entry.mac_address for entry in entries
-                                        if entry.ip_address == gateway.ip), None)
-        self.sessions.scan_store.set_gateway(scan_id, gateway.ip if gateway is not None else None, gateway_mac)
+        try:
+            gateway = self.read_gateway(local_address_for([host.ip_address for host in hosts]))
+            gateway_mac = None
+            if gateway is not None:
+                gateway_mac = next((host.mac_address for host in hosts
+                                    if host.ip_address == gateway.ip and host.mac_address), None)
+                if gateway_mac is None:
+                    entries = self.read_arp(gateway.ip)
+                    if entries:
+                        gateway_mac = next((entry.mac_address for entry in entries
+                                            if entry.ip_address == gateway.ip), None)
+            self.sessions.scan_store.set_gateway(scan_id, gateway.ip if gateway is not None else None, gateway_mac)
+        except Exception:
+            logger.warning("scan %s: couldn't record the gateway", scan_id, exc_info=True)
 
     def _counting_probe(self, scope: str) -> Probe:
         """The probe, wrapped so every finished probe reports "N of total" (2.2.1.3)."""
