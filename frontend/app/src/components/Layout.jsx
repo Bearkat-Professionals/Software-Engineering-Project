@@ -32,6 +32,7 @@ export default function Layout() {
               <NavLink to="/devices">Devices</NavLink>
               <NavLink to="/reports/changes">Changes</NavLink>
               {can("MANAGE_USERS") && <NavLink to="/users">Users</NavLink>}
+              {can("BACKUP_RESTORE") && <NavLink to="/backups">Backups</NavLink>}
               <NavLink to="/reference/vendors">Reference</NavLink>
 
             </nav>

@@ -1,25 +1,25 @@
 {
-    "backups": [
-      {
-        "name": "full-20261117-140300",
-        "kind": "full",
-        "created_at": "2026-11-17T14:03:00",
-        "size_bytes": 1843200
-      },
-      {
-        "name": "before-restore-20261116-090000",
-        "kind": "safety",
-        "created_at": "2026-11-16T09:00:00",
-        "size_bytes": 900000
-      }
-    ],
-    "last_attempt": {
-      "action": "backup",
+  "backups": [
+    {
       "name": "full-20261117-140300",
-      "by": "sam",
-      "at": "2026-11-17T14:03:00",
-      "status": "done",
-      "reason": null
+      "kind": "full",
+      "created_at": "2026-11-17T14:03:00",
+      "size_bytes": 1843200
     },
-    "busy": null
-  }
+    {
+      "name": "before-restore-20261116-090000",
+      "kind": "safety",
+      "created_at": "2026-11-16T09:00:00",
+      "size_bytes": 900000
+    }
+  ],
+  "last_attempt": {
+    "action": "backup",
+    "name": "full-20261117-140300",
+    "by": "sam",
+    "at": "2026-11-17T14:03:00",
+    "status": "done",
+    "reason": null
+  },
+  "busy": null
+}

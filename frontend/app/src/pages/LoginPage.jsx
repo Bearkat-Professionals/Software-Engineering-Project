@@ -14,13 +14,22 @@ export default function LoginPage() {
     const [password, setPassword] = useState("");
     const [waiting, setWaiting] = useState(false);
     const ended = params.get("ended");
+    const restored = params.get("restored");
 
     useEffect(() => {
 
         // The API adds ended=1 when a session times out on another page.
         if (ended) showMessage("error", "Your session ended. Sign in again to continue.");
     
-    }, [ended, showMessage]);
+        // A restore sends the admin here with the backup's name in the URL.
+        if (restored) {
+            showMessage(
+                "success",
+                `Restored ${restored}. Everyone has been signed out. Sign in again.`,
+            );
+        }
+    
+    }, [ended, restored, showMessage]);
 
     async function onSubmit(event) {
 
