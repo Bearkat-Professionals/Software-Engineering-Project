@@ -833,7 +833,16 @@ Step 6: Open http://localhost:5173 in your browser. That's the test page.
 Step 7: Stop both with **Ctrl+C** in their terminals.
 
 ## Backup and recovery (3.5)
-Backups copy the database's rows into a compressed file in `backups/` (or the folder in `BACKUP_DIR` in your `.env`). The folder is in `.gitignore` because backups contain password hashes. The schema is not in the backup; it lives in `database/schema/`.
+Backups copy the database's rows into a compressed file in `backups/` (or the folder in `BACKUP_DIR` in your `.env`). Set `BACKUP_PUBLIC_KEY` to an RSA public-key PEM path to encrypt every new backup; without it the app keeps the old `.json.gz` format and the backup list warns that encryption is off. The folder is in `.gitignore` because backups contain password hashes. The schema is not in the backup; it lives in `database/schema/`.
+
+Encrypted backups are named `<name>.json.gz.enc`. They use a fresh AES-256-GCM key for every file, wrap that key with RSA-OAEP/SHA-256, and store a JSON header followed by a newline and the authenticated ciphertext. The header is authenticated too, so changing either part makes verification fail. Generate a passphrase-protected RSA-4096 key pair (the command refuses to overwrite either file):
+
+```powershell
+$env:BACKUP_PUBLIC_KEY = "C:\secure\backup-public.pem"
+.\dev backup keygen C:\offline\backup-private.pem
+```
+
+Keep the private key offline. It and its passphrase are supplied only when an encrypted backup is verified or restored; the app never stores or logs either one.
 
 ```python
 from backend.black_boxes.backup_media import BackupMedia
@@ -859,6 +868,8 @@ restore_from_backup(engine, media, stored.name)   # all or nothing
 .\dev backup list                  # stored backups, newest first
 .\dev backup verify NAME           # is it complete and unchanged?
 .\dev backup restore NAME          # asks before changing anything
+.\dev backup verify NAME --private-key C:\offline\backup-private.pem
+.\dev backup restore NAME --private-key C:\offline\backup-private.pem
 .\dev backup compare DB_A DB_B     # do two databases hold the same rows?
 ```
 (Long form: `py -3.13 -m backend.data_access.backup_recovery.check_backup ...`)
@@ -880,16 +891,16 @@ Admins only (`BACKUP_RESTORE`; anyone else gets 403, logged). Every POST sends J
 |---|---|---|---|
 | `GET /api/backups` | | 200 | |
 | `POST /api/backups` | `{}` | 201 | 409 another backup or restore is running, 500 failed |
-| `POST /api/backups/<name>/verify` | `{}` | 200 | 404 |
-| `POST /api/backups/<name>/restore` | `{"confirm": "<name>"}` | 200 | 400, 404, 409, 500 |
+| `POST /api/backups/<name>/verify` | `{"private_key": "<PEM>", "passphrase": "..."}` for encrypted files | 200 | 404 |
+| `POST /api/backups/<name>/restore` | `{"confirm": "<name>", "private_key": "<PEM>", "passphrase": "..."}` for encrypted files | 200 | 400, 404, 409, 500 |
 
 ```json
 GET 200 {"backups": [{"name": "full-20261117-140300", "kind": "full",
-                      "created_at": "2026-11-17T14:03:00", "size_bytes": 1843200}],
+                      "created_at": "2026-11-17T14:03:00", "size_bytes": 1843200, "encrypted": true}],
          "last_attempt": {"action": "backup", "name": "full-20261117-140300", "by": "sam",
                           "at": "2026-11-17T14:03:00", "status": "done", "reason": null},
-         "busy": null}
-POST /api/backups 201 {"backup": {"name": "full-...", "kind": "full", "created_at": "...", "size_bytes": 1843200}}
+         "busy": null, "warning": null}
+POST /api/backups 201 {"backup": {"name": "full-...", "kind": "full", "created_at": "...", "size_bytes": 1843200, "encrypted": true}}
 verify 200 {"name": "full-...", "ok": false, "problems": ["Table vendor: 3 rows expected, 2 found."]}
 restore 200 {"restored": "full-...", "safety_backup": "before-restore-...",
              "rows_restored": {"device": 41, "vendor": 38412}, "signed_out": true}
@@ -901,9 +912,10 @@ Refusals are `{"error": "...", "reasons": [...]}`, plus `"problems"` when a back
 - **Everyone is signed out after a restore.** Just before the database is replaced, every other session and every edit hold ends; after it succeeds, your own session ends too. Everyone signs in again against the restored accounts. A refused restore signs nobody out; if the restore itself fails after it started, the others are already signed out but nothing was changed, and you stay signed in to read why.
 - **Refused while a scan runs** (409), and a scan can't start while a restore runs.
 - **`kind`** is `full`, `partial`, `safety` (a `before-restore-...` backup) or `other`.
+- **`encrypted`** identifies the file format. When `BACKUP_PUBLIC_KEY` is not configured, `warning` explains that new backups are unencrypted.
 - A name that isn't a valid backup name (e.g. `../x`) gets the same 404 as one that doesn't exist. Replies never contain where the files are.
 - A failed backup (e.g. the folder can't be written) answers 500 with the reason, and logs "would send alert 'backup_failed'" (email alerts aren't built yet).
-- **Keep `BACKUP_DIR` on admin-only storage.** Backups hold every account's password hash; anyone who can read the folder can try to crack them.
+- **Keep `BACKUP_DIR` on admin-only storage even when encryption is enabled.** Never put the private key beside the backups or commit either key.
 
 Trying it with PowerShell, as an admin (the app running with `.\dev app`):
 ```powershell

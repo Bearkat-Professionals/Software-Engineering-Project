@@ -90,12 +90,14 @@ class ListedBackup:
     kind: str                       
     created: str                    
     size_bytes: int
+    encrypted: bool = False
 
 @dataclass(frozen=True)
 class BackupListing:
     backups: tuple[ListedBackup, ...]           
     last_attempt: LastAttempt | None
     busy: Running | None
+    warning: str | None = None
 
 class UserFinder(Protocol):
     def find(self, user_id: int, unit: Any = None) -> User | None: ...
@@ -106,8 +108,8 @@ class RunningScanFinder(Protocol):
 class BackupRecoveryService:
     def __init__(self, engine: DatabaseEngine, media: BackupMedia, users: UserFinder, scans: RunningScanFinder, *,
                  create: Callable[..., StoredBackup] = create_full_backup,
-                 verify: Callable[[BackupMedia, str], VerificationResult] = verify_backup,
-                 restore: Callable[[DatabaseEngine, BackupMedia, str], RestoreResult] = restore_from_backup,
+                 verify: Callable[..., VerificationResult] = verify_backup,
+                 restore: Callable[..., RestoreResult] = restore_from_backup,
                  audit: AuditTrail | None = None, clock: Callable[[], datetime] = datetime.now,
                  scan_lock_wait_s: float = SCAN_LOCK_WAIT_S) -> None:
         self._engine = engine
@@ -150,21 +152,28 @@ class BackupRecoveryService:
     #2.5.3 Report Backup Status
     def list_backups(self) -> BackupListing:
         """Every stored backup, newest first, with the last attempt and what's running now."""
-        backups = tuple(ListedBackup(stored.name, backup_kind(stored.name), stored.modified_at, stored.size_bytes)
+        backups = tuple(ListedBackup(stored.name, backup_kind(stored.name), stored.modified_at,
+                                     stored.size_bytes, stored.encrypted)
                         for stored in self._media.list())
+        warning = None if self._media.encryption_enabled else (
+            "Backup encryption is not configured; new backups will be stored unencrypted."
+        )
         with self._state_lock:
-            return BackupListing(backups, self._last, self._running)
+            return BackupListing(backups, self._last, self._running, warning)
 
-    def verify(self, name: str) -> BackupResult:
+    def verify(self, name: str, *, private_key_pem: str | bytes | None = None,
+               passphrase: str | bytes | None = None) -> BackupResult:
         """Check one backup. DONE with its problems; no problems means it's good."""
         if not self._exists(name):
             return _not_found(name)
-        checked = self._verify(self._media, name)
+        checked = self._verify(self._media, name, private_key_pem=private_key_pem, passphrase=passphrase)
         logger.info("backup %s verified: %s", name, "good" if not checked.problems else "problems found")
         return BackupResult(BackupStatus.DONE, problems=tuple(checked.problems))
 
     #2.5.2 Request Restore
     def restore(self, name: str, confirm: str, acting_user_id: int, *,
+                private_key_pem: str | bytes | None = None,
+                passphrase: str | bytes | None = None,
                 on_start: Callable[[], None] = lambda: None) -> BackupResult:
         """Replace the database with a backup, in this order, stopping at the first refusal:
         the confirmation, the name, another backup or restore, a running scan, verification,
@@ -179,7 +188,9 @@ class BackupRecoveryService:
         if busy is not None:
             return busy
         try:
-            result = self._restore_holding_the_scan_lock(name, acting_user_id, by, on_start)
+            result = self._restore_holding_the_scan_lock(
+                name, acting_user_id, by, on_start, private_key_pem, passphrase
+            )
         except Exception as exc:                        
             logger.exception("restore of %s by %s stopped", name, by)
             result = BackupResult(BackupStatus.FAILED, (f"Nothing was changed: {_why(exc)}",))
@@ -192,18 +203,22 @@ class BackupRecoveryService:
         return result
 
     def _restore_holding_the_scan_lock(self, name: str, user_id: int, by: str,
-                                       on_start: Callable[[], None]) -> BackupResult:
+                                       on_start: Callable[[], None],
+                                       private_key_pem: str | bytes | None,
+                                       passphrase: str | bytes | None) -> BackupResult:
         """The scan-open lock is held the whole time, so no scan can start during a restore."""
         try:
             with self._engine.named_lock(SCAN_OPEN_LOCK, self._scan_lock_wait_s) as cursor:
                 if self._scans.find_running(cursor) is not None:
                     return BackupResult(BackupStatus.BUSY, (SCAN_RUNNING_REASON,))
-                return self._restore_now(name, user_id, by, on_start)
+                return self._restore_now(name, user_id, by, on_start, private_key_pem, passphrase)
         except LockNotAvailableError:                   
             return BackupResult(BackupStatus.BUSY, (SCAN_RUNNING_REASON,))
 
-    def _restore_now(self, name: str, user_id: int, by: str, on_start: Callable[[], None]) -> BackupResult:
-        checked = self._verify(self._media, name)
+    def _restore_now(self, name: str, user_id: int, by: str, on_start: Callable[[], None],
+                     private_key_pem: str | bytes | None,
+                     passphrase: str | bytes | None) -> BackupResult:
+        checked = self._verify(self._media, name, private_key_pem=private_key_pem, passphrase=passphrase)
         if checked.problems:
             return BackupResult(BackupStatus.REJECTED, ("The backup didn't pass verification, so nothing was changed.",),
                                 problems=tuple(checked.problems))
@@ -219,7 +234,8 @@ class BackupRecoveryService:
 
         on_start()
         try:
-            restored = self._restore(self._engine, self._media, name)
+            restored = self._restore(self._engine, self._media, name,
+                                     private_key_pem=private_key_pem, passphrase=passphrase)
         except RestoreError as exc:
             return BackupResult(BackupStatus.FAILED, (f"Nothing was changed: {exc}",), safety_backup=safety.name)
         except BackupMediaError:

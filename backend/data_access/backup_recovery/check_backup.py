@@ -12,10 +12,12 @@ real database only reads it, but restoring into a database whose name does
 not end in _test also needs --allow-real, and every restore asks first.
 """
 import argparse
+import getpass
 import os
 from dataclasses import replace
+from pathlib import Path
 
-from backend.black_boxes.backup_media import BackupMedia, BackupMediaError
+from backend.black_boxes.backup_media import BackupMedia, BackupMediaError, write_key_pair
 from backend.config import DatabaseConfig
 from backend.data_access.backup_recovery.backup_format import Backup, rows_checksum
 from backend.data_access.backup_recovery.create_full_backup import create_full_backup
@@ -43,8 +45,10 @@ def show_tables(backup: Backup) -> None:
 
 def cmd_backup(args, media: BackupMedia, create) -> None:
     stored = create(connect(args.database), media)
-    print(f"Saved {stored.name} ({stored.size_bytes:,} bytes) from '{args.database}':")
-    show_tables(Backup.from_dict(media.load(stored.name)))
+    mode = "encrypted" if stored.encrypted else "unencrypted"
+    print(f"Saved {stored.name} ({stored.size_bytes:,} bytes, {mode}) from '{args.database}'.")
+    if not stored.encrypted:
+        show_tables(Backup.from_dict(media.load(stored.name)))
 
 
 def cmd_list(args, media: BackupMedia) -> None:
@@ -52,11 +56,13 @@ def cmd_list(args, media: BackupMedia) -> None:
     if not backups:
         print("No backups yet.")
     for stored in backups:
-        print(f"  {stored.name:<32} {stored.size_bytes:>10,} bytes   {stored.modified_at}")
+        mode = "encrypted" if stored.encrypted else "unencrypted"
+        print(f"  {stored.name:<32} {stored.size_bytes:>10,} bytes   {stored.modified_at}   {mode}")
 
 
 def cmd_verify(args, media: BackupMedia) -> None:
-    result = verify_backup(media, args.name)
+    private_key, passphrase = key_material(args)
+    result = verify_backup(media, args.name, private_key_pem=private_key, passphrase=passphrase)
     if result.ok:
         manifest = result.backup.manifest
         print(f"OK: {args.name} is a complete {manifest.kind.value} backup of "
@@ -77,7 +83,9 @@ def cmd_restore(args, media: BackupMedia) -> None:
         if answer.strip().lower() != "yes":
             print("Cancelled; nothing was changed.")
             return
-    result = restore_from_backup(connect(args.database), media, args.name)
+    private_key, passphrase = key_material(args)
+    result = restore_from_backup(connect(args.database), media, args.name,
+                                 private_key_pem=private_key, passphrase=passphrase)
     print(f"Restored {result.kind.value} backup {args.name} into '{args.database}':")
     for table, count in result.rows_restored.items():
         print(f"  {table:<26} {count:>6} rows")
@@ -102,6 +110,30 @@ def cmd_compare(args, media: BackupMedia) -> None:
     print("All tables match." if not differences else f"{differences} table(s) differ.")
 
 
+def key_material(args) -> tuple[bytes | None, str | None]:
+    """Read private-key material only for this command invocation."""
+    key_path = getattr(args, "private_key", None)
+    if not key_path:
+        return None, None
+    try:
+        private_key = Path(key_path).read_bytes()
+    except OSError as exc:
+        raise BackupMediaError("the backup private key could not be read") from exc
+    return private_key, getpass.getpass("Private-key passphrase: ")
+
+
+def cmd_keygen(args) -> None:
+    public_path = os.getenv("BACKUP_PUBLIC_KEY", "").strip()
+    if not public_path:
+        raise BackupMediaError("set BACKUP_PUBLIC_KEY to the public-key output path first")
+    first = getpass.getpass("New private-key passphrase: ")
+    second = getpass.getpass("Repeat passphrase: ")
+    if first != second:
+        raise BackupMediaError("the passphrases did not match")
+    write_key_pair(Path(public_path), Path(args.private_key), first)
+    print(f"Created backup public key at {public_path} and private key at {args.private_key}.")
+
+
 # ---- command line --------------------------------------------------------------
 
 def main() -> None:
@@ -110,24 +142,34 @@ def main() -> None:
     database = argparse.ArgumentParser(add_help=False)
     database.add_argument("--database", default=None,
                           help="database to use (default: the test database, DB_NAME + '_test')")
+    decrypt = argparse.ArgumentParser(add_help=False)
+    decrypt.add_argument("--private-key", help="private-key PEM for an encrypted backup (passphrase is prompted)")
 
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("full", parents=[database], help="back up every table")
     commands.add_parser("partial", parents=[database], help="back up the reference tables")
     commands.add_parser("list", help="list stored backups, newest first")
-    verify = commands.add_parser("verify", help="check a backup is complete and unchanged")
+    verify = commands.add_parser("verify", parents=[decrypt], help="check a backup is complete and unchanged")
     verify.add_argument("name")
-    restore = commands.add_parser("restore", parents=[database], help="restore a backup (asks first)")
+    restore = commands.add_parser("restore", parents=[database, decrypt], help="restore a backup (asks first)")
     restore.add_argument("name")
     restore.add_argument("--yes", action="store_true", help="don't ask for confirmation")
     restore.add_argument("--allow-real", action="store_true", help="allow a database not ending in _test")
     compare = commands.add_parser("compare", help="compare two databases table by table")
     compare.add_argument("first")
     compare.add_argument("second")
+    keygen = commands.add_parser("keygen", help="generate the RSA-4096 backup key pair")
+    keygen.add_argument("private_key", help="private-key output path (public path is BACKUP_PUBLIC_KEY)")
     args = parser.parse_args()
 
     if getattr(args, "database", "unused") is None:
         args.database = test_database()
+    if args.command == "keygen":
+        try:
+            cmd_keygen(args)
+        except BackupMediaError as exc:
+            raise SystemExit(f"Error: {exc}")
+        return
     media = BackupMedia.from_env()
     handlers = {
         "full": lambda: cmd_backup(args, media, create_full_backup),

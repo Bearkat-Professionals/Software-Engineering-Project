@@ -4,13 +4,15 @@
       "name": "full-20261117-140300",
       "kind": "full",
       "created_at": "2026-11-17T14:03:00",
-      "size_bytes": 1843200
+      "size_bytes": 1843200,
+      "encrypted": true
     },
     {
       "name": "before-restore-20261116-090000",
       "kind": "safety",
       "created_at": "2026-11-16T09:00:00",
-      "size_bytes": 900000
+      "size_bytes": 900000,
+      "encrypted": false
     }
   ],
   "last_attempt": {
@@ -21,5 +23,6 @@
     "status": "done",
     "reason": null
   },
-  "busy": null
+  "busy": null,
+  "warning": null
 }

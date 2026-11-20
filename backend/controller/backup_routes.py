@@ -65,7 +65,9 @@ def register(app: Flask, services: Services) -> None:
     @requires_backup
     def verify_backup(name: str) -> ResponseReturnValue:
         _check_name(name)
-        result = services.backups.verify(name)
+        body = json_body()
+        private_key, passphrase = _key_material(body)
+        result = services.backups.verify(name, private_key_pem=private_key, passphrase=passphrase)
         if not result.ok:
             return _refusal(result)
         return jsonify(name=name, ok=not result.problems, problems=list(result.problems))
@@ -74,8 +76,11 @@ def register(app: Flask, services: Services) -> None:
     @requires_backup
     def restore_backup(name: str) -> ResponseReturnValue:
         _check_name(name)
-        confirm = json_body().get("confirm")
+        body = json_body()
+        confirm = body.get("confirm")
+        private_key, passphrase = _key_material(body)
         result = services.backups.restore(name, confirm if isinstance(confirm, str) else "", g.user.user_id,
+                                          private_key_pem=private_key, passphrase=passphrase,
                                           on_start=lambda: _sign_out_others(services))
         if not result.ok:
             return _refusal(result)
@@ -88,15 +93,17 @@ def register(app: Flask, services: Services) -> None:
 
 def listing_json(listing: BackupListing) -> dict[str, Any]:
     return {"backups": [{"name": listed.name, "kind": listed.kind, "created_at": listed.created,
-                         "size_bytes": listed.size_bytes} for listed in listing.backups],
+                         "size_bytes": listed.size_bytes, "encrypted": listed.encrypted}
+                        for listed in listing.backups],
             "last_attempt": _attempt_json(listing.last_attempt),
-            "busy": _running_json(listing.busy)}
+            "busy": _running_json(listing.busy),
+            "warning": listing.warning}
 
 
 def backup_json(stored: StoredBackup) -> dict[str, Any]:
-    """Only these four fields, never where the file is."""
+    """Only public metadata, never where the file or key is."""
     return {"name": stored.name, "kind": backup_kind(stored.name), "created_at": stored.modified_at,
-            "size_bytes": stored.size_bytes}
+            "size_bytes": stored.size_bytes, "encrypted": stored.encrypted}
 
 
 def _attempt_json(attempt: LastAttempt | None) -> dict[str, Any] | None:
@@ -118,6 +125,14 @@ def _check_name(name: str) -> None:
     """A name BB-9 would refuse is answered like one that doesn't exist: 404."""
     if not is_safe_name(name):
         abort(404, description=f"There's no backup named '{name[:60]}'.")
+
+
+def _key_material(body: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Read one-request key material without retaining or returning it."""
+    private_key = body.get("private_key")
+    passphrase = body.get("passphrase")
+    return (private_key if isinstance(private_key, str) else None,
+            passphrase if isinstance(passphrase, str) else None)
 
 
 def _sign_out_others(services: Services) -> None:
