@@ -1,5 +1,5 @@
 // Imports
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../auth/AuthProvider";
 import { api } from "../../components/api";
@@ -45,6 +45,8 @@ export default function BackupScreen() {
     const [confirming, setConfirming] = useState(null);
     const [typed, setTyped] = useState("");
     const [problems, setProblems] = useState(null);
+    const [passphrase, setPassphrase] = useState("");
+    const privateKeyInput = useRef(null);
 
     useEffect(() => {
 
@@ -79,6 +81,32 @@ export default function BackupScreen() {
 
     }
 
+    function backupNamed(name) {
+
+        return listing?.backups?.find((backup) => backup.name === name);
+
+    }
+
+    function clearKeyMaterial() {
+
+        setPassphrase("");
+
+        if (privateKeyInput.current) privateKeyInput.current.value = "";
+
+    }
+
+    async function oneUseKeyFor(name) {
+
+        if (!backupNamed(name)?.encrypted) return {};
+
+        const file = privateKeyInput.current?.files?.[0];
+
+        if (!file) throw new Error("Choose the private key for this encrypted backup.");
+
+        return { private_key: await file.text(), passphrase };
+
+    }
+
     async function onBackup() {
 
         setWaiting(true);
@@ -109,9 +137,11 @@ export default function BackupScreen() {
 
         try {
 
+            const keyMaterial = await oneUseKeyFor(name);
+
             const data = await api(`/api/backups/${encodeURIComponent(name)}/verify`, {
                 method: "POST",
-                body: {},
+                body: keyMaterial,
             });
 
             if (data.ok && (!data.problems || data.problems.length === 0)) {
@@ -128,6 +158,7 @@ export default function BackupScreen() {
 
         } finally {
 
+            clearKeyMaterial();
             setWaiting(false);
 
         }
@@ -159,9 +190,11 @@ export default function BackupScreen() {
 
         try {
 
+            const keyMaterial = await oneUseKeyFor(confirming);
+
             await api(`/api/backups/${encodeURIComponent(confirming)}/restore`, {
                 method: "POST",
-                body: { confirm: typed },
+                body: { confirm: typed, ...keyMaterial },
             });
 
             const name = confirming;
@@ -175,6 +208,7 @@ export default function BackupScreen() {
 
         } finally {
 
+            clearKeyMaterial();
             setWaiting(false);
 
         }
@@ -195,6 +229,28 @@ export default function BackupScreen() {
               {busy ? "Working..." : "Back up now"}
             </button>
           </p>
+
+          {listing?.warning && <p role="alert">{listing.warning}</p>}
+
+          {listing?.backups?.some((backup) => backup.encrypted) && (
+            <section>
+              <h2>Encrypted backup key</h2>
+              <p>The key and passphrase are used for one verify or restore request, then cleared.</p>
+              <label>
+                Private key (PEM)
+                <input ref={privateKeyInput} type="file" accept=".pem,.key,text/plain" />
+              </label>
+              <label>
+                Private key passphrase
+                <input
+                  type="password"
+                  value={passphrase}
+                  onChange={(event) => setPassphrase(event.target.value)}
+                  autoComplete="off"
+                />
+              </label>
+            </section>
+          )}
 
           {listing?.busy && (
             <p>
@@ -244,6 +300,7 @@ export default function BackupScreen() {
                   <th scope="col">Kind</th>
                   <th scope="col">Created</th>
                   <th scope="col">Size</th>
+                  <th scope="col">Protection</th>
                   <th scope="col">Actions</th>
                 </tr>
               </thead>
@@ -254,6 +311,7 @@ export default function BackupScreen() {
                     <td>{backup.kind}</td>
                     <td>{formatLastSeen(backup.created_at)}</td>
                     <td>{formatSize(backup.size_bytes)}</td>
+                    <td>{backup.encrypted ? "Encrypted" : "Unencrypted"}</td>
                     <td>
                       <button type="button" onClick={() => onVerify(backup.name)} disabled={busy}>
                         Verify
