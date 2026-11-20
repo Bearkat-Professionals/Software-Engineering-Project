@@ -9,7 +9,7 @@ import { AWAY_MESSAGE, holdNotice, useEditHold } from "../../components/useEditH
 // oui is not a signature type. Prefixes belong to a vendor.
 const EVIDENCE_TYPES = ["mdns", "ssdp", "netbios_llmnr", "reverse_dns"];
 const SAVED = "Saved. Scans use this from the next scan.";
-const HOLD_TYPES = { vendor: "vendor", "device-types": "device_type", signatures: "device_signature" };
+const HOLD_TYPES = { vendors: "vendor", "device-types": "device_type", signatures: "device_signature" };
 
 // Empty values for an add form.
 function blankFields() {
