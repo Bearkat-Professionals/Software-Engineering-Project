@@ -17,7 +17,7 @@ const SAMPLES = {
 // A failed request. reasons, existingId, and changedAt come from reference-data errors.
 export class ApiError extends Error {
 
-  constructor(message, { status = 0, unreachable = false, reasons = null, existingId = null, changedAt = null, deviceId = null } = {}) {
+  constructor(message, { status = 0, unreachable = false, reasons = null, existingId = null, changedAt = null, deviceId = null, heldBy = null } = {}) {
     
     super(message);
   
@@ -28,6 +28,7 @@ export class ApiError extends Error {
     this.existingId = existingId;
     this.changedAt = changedAt;
     this.deviceId = deviceId;
+    this.heldBy = heldBy;
   
   }
 }
@@ -173,6 +174,7 @@ export async function api(path, { method = "GET", body, blob = false } = {}) {
       existingId: payload?.existing_id ?? null,
       changedAt: payload?.changed_at ?? null,
       deviceId: payload?.device_id ?? null,
+      heldBy: Array.isArray(payload?.held_by) ? payload.held_by : null,
       
     });
 
