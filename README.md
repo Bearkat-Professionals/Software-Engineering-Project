@@ -759,6 +759,52 @@ Example: check that a backup of the real database rebuilds it exactly in the tes
 ```
 The last command should end with `All tables match.`
 
+### From the app: the backup API (2.5, #171)
+Admins only (`BACKUP_RESTORE`; anyone else gets 403, logged). Every POST sends JSON, `{}` when there's nothing to send.
+
+| Request | Body | Success | Refusals |
+|---|---|---|---|
+| `GET /api/backups` | | 200 | |
+| `POST /api/backups` | `{}` | 201 | 409 another backup or restore is running, 500 failed |
+| `POST /api/backups/<name>/verify` | `{}` | 200 | 404 |
+| `POST /api/backups/<name>/restore` | `{"confirm": "<name>"}` | 200 | 400, 404, 409, 500 |
+
+```json
+GET 200 {"backups": [{"name": "full-20261117-140300", "kind": "full",
+                      "created_at": "2026-11-17T14:03:00", "size_bytes": 1843200}],
+         "last_attempt": {"action": "backup", "name": "full-20261117-140300", "by": "sam",
+                          "at": "2026-11-17T14:03:00", "status": "done", "reason": null},
+         "busy": null}
+POST /api/backups 201 {"backup": {"name": "full-...", "kind": "full", "created_at": "...", "size_bytes": 1843200}}
+verify 200 {"name": "full-...", "ok": false, "problems": ["Table vendor: 3 rows expected, 2 found."]}
+restore 200 {"restored": "full-...", "safety_backup": "before-restore-...",
+             "rows_restored": {"device": 41, "vendor": 38412}, "signed_out": true}
+```
+Refusals are `{"error": "...", "reasons": [...]}`, plus `"problems"` when a backup fails verification.
+
+- **Confirming a restore:** `confirm` must be the backup's name, exactly. Anything else is 400 "Type the backup's name exactly to confirm." and nothing happens.
+- **The safety backup:** before replacing anything, a restore takes a full backup named `before-restore-<time>`. Restoring that one undoes the restore.
+- **Everyone is signed out after a restore.** Just before the database is replaced, every other session and every edit hold ends; after it succeeds, your own session ends too. Everyone signs in again against the restored accounts. A refused restore signs nobody out; if the restore itself fails after it started, the others are already signed out but nothing was changed, and you stay signed in to read why.
+- **Refused while a scan runs** (409), and a scan can't start while a restore runs.
+- **`kind`** is `full`, `partial`, `safety` (a `before-restore-...` backup) or `other`.
+- A name that isn't a valid backup name (e.g. `../x`) gets the same 404 as one that doesn't exist. Replies never contain where the files are.
+- A failed backup (e.g. the folder can't be written) answers 500 with the reason, and logs "would send alert 'backup_failed'" (email alerts aren't built yet).
+- **Keep `BACKUP_DIR` on admin-only storage.** Backups hold every account's password hash; anyone who can read the folder can try to crack them.
+
+Trying it with PowerShell, as an admin (the app running with `.\dev app`):
+```powershell
+$base = "http://127.0.0.1:5001/api"          # your APP_PORT
+$secure = Read-Host "Password" -AsSecureString
+$login = @{ username = "your-admin"; password = [System.Net.NetworkCredential]::new("", $secure).Password } | ConvertTo-Json
+Invoke-RestMethod "$base/login" -Method Post -ContentType "application/json" -Body $login -SessionVariable s | Out-Null
+$json = @{ ContentType = "application/json"; WebSession = $s }
+Invoke-RestMethod "$base/backups" -WebSession $s | ConvertTo-Json -Depth 4               # list
+$b = Invoke-RestMethod "$base/backups" -Method Post -Body '{}' @json                      # back up now
+Invoke-RestMethod "$base/backups/$($b.backup.name)/verify" -Method Post -Body '{}' @json  # check it
+Invoke-RestMethod "$base/backups/$($b.backup.name)/restore" -Method Post @json `
+    -Body (@{ confirm = $b.backup.name } | ConvertTo-Json)                                # restore: signs everyone out
+```
+
 ## Contributers
 * Blaine Pavlock
 * Cullen Tolmsoff

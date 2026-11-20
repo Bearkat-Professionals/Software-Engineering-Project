@@ -9,7 +9,9 @@ Listens on 127.0.0.1 only, with debug mode off.
 import logging
 import os
 
+from backend.black_boxes.backup_media import BackupMedia
 from backend.config import DatabaseConfig
+from backend.services.backup import BackupRecoveryService
 from backend.controller.app_controller import Services, create_app, on_scan_finished
 from backend.controller.auth import read_secret_key                                   
 from backend.data_access.account_settings import UserStore
@@ -85,7 +87,8 @@ def main() -> None:
                         users=users, access=AccessControlService(users), reference=reference,
                         device_maintenance=device_maintenance,
                         device_detail=build_device_detail_service(engine),     # search uses `devices`
-                        edit_holds=holds)
+                        edit_holds=holds,
+                        backups=BackupRecoveryService(engine, BackupMedia.from_env(), users, ScanStore(engine)))
     app = create_app(services, secret_key=secret_key)      # https=True once HTTPS arrives (M7)
     try:
         app.run(host=HOST, port=port, debug=False)

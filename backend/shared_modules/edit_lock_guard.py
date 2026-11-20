@@ -126,6 +126,15 @@ class EditLockGuard:
                 self._remove(hold_id)
             return len(ended)
 
+    def release_all(self) -> int:
+        """Ends every hold, everyone's (a restore replaces the records and the accounts).
+        Returns how many."""
+        with self._lock:
+            ended = len(self._holds)
+            self._holds.clear()
+            self._sessions.clear()
+            return ended
+
     def held_by_others(self, key: RecordKey, user_id: int) -> list[Hold]:
         """Live holds on the record by users other than user_id, oldest first, one
         per user (their oldest): two tabs are still one person editing."""
