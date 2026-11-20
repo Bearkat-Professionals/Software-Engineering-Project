@@ -52,6 +52,8 @@ COMMANDS: dict[str, Command] = {
                       "time a ping sweep at several worker counts (#81)"),
     "backup": Command("backend.data_access.backup_recovery.check_backup",
                       "back up, list, verify, restore or compare databases (3.5)"),
+    "cmpexp": Command("backend.services.reporting.compare_exports",
+                      "check that two JSON exports (e.g. Windows and Linux) have the same structure (NFR-08)"),
     "oui":    Command("database.scripts.load_oui_data",
                       "load the IEEE OUI list (oui.csv) into vendor and oui_prefix (test DB by default)"),
 }
@@ -63,12 +65,16 @@ def build_command(name: str, extra: list[str]) -> list[str]:
     return [sys.executable, "-m", command.module, *command.fixed_args, *extra]
 
 
+def launcher(platform: str | None = None) -> str:
+    return ".\\dev" if (platform or sys.platform) == "win32" else "python3 dev.py"
+
+
 def show_commands() -> None:
-    print("Usage: py -3.13 dev.py COMMAND [arguments for that tool]\n")
+    print(f"Usage: {launcher()} COMMAND [arguments for that tool]\n")
     width = max(len(name) for name in COMMANDS)
     for name, command in COMMANDS.items():
         print(f"  {name:<{width}}  {command.summary}")
-    print("\nAdd --help after a command for that tool's own options, e.g. dev.py chd --help")
+    print(f"\nAdd --help after a command for that tool's own options, e.g. {launcher()} chd --help")
 
 
 def main(argv: list[str] | None = None) -> int:

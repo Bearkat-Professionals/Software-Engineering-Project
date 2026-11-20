@@ -74,6 +74,16 @@ class MainTests(unittest.TestCase):
                 for name in dev.COMMANDS:
                     self.assertIn(name, printed)
 
+    def test_the_usage_line_fits_this_system(self) -> None:      
+        self.assertEqual(dev.launcher("win32"), ".\\dev")
+        self.assertEqual(dev.launcher("linux"), "python3 dev.py")
+        self.assertEqual(dev.launcher("darwin"), "python3 dev.py")
+        with mock.patch("sys.platform", "linux"):
+            printed = run_main([])[1]
+        self.assertIn("Usage: python3 dev.py COMMAND", printed)
+        self.assertIn("e.g. python3 dev.py chd --help", printed)
+        self.assertNotIn("py -3.13", printed)
+
     def test_unknown_command_is_an_error_and_runs_nothing(self) -> None:
         with mock.patch("dev.subprocess.run") as run:
             code, printed = run_main(["chdd"])
