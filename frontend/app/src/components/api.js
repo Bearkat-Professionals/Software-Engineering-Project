@@ -2,6 +2,9 @@
 import scanStarted from "../samples/scan-started.json";
 import scanStatusIdle from "../samples/scan-status-idle.json";
 import devices from "../samples/devices.json";
+import scans from "../samples/scans.json";
+import changeReport from "../samples/change-report.json";
+import exportSample from "../samples/export.json";
 
 // Local stand-ins used only when VITE_USE_SAMPLES is true.
 const SAMPLES = {
@@ -29,7 +32,8 @@ export class ApiError extends Error {
   }
 }
 
-export async function api(path, { method = "GET", body } = {}) {
+
+export async function api(path, { method = "GET", body, blob = false } = {}) {
 
   // Sample mode never calls the server. The signed-in user is a fixed editor.
   if (import.meta.env.VITE_USE_SAMPLES === "true") {
@@ -64,6 +68,25 @@ export async function api(path, { method = "GET", body } = {}) {
       };
 
     }
+
+    // A downlaod gets the export sample as a file with a timestamp
+    if (blob) {
+
+      const day = new Date().toISOString().slice(0, 10);
+
+      return new Response(JSON.stringify(exportSample, null, 2), {
+
+        headers: {
+
+          "Content-Type": "application/json",
+          "Content-Disposition": `attachment; filename="network-devices-${day}.json"`,
+        }
+      })
+    }
+
+    if (method === "GET" && path.split("?")[0] === "/api/scans") return scans;
+
+    if (method === "GET" && path.startsWith("/api/reports/changes")) return changeReport;
 
     const sample = SAMPLES[`${method} ${path}`];
 
@@ -100,6 +123,9 @@ export async function api(path, { method = "GET", body } = {}) {
     throw new ApiError("Can't reach the server", { unreachable: true });
 
   }
+
+  // Dowloading wants an ACTUAL file. A failed download goes through error checks
+  if (blob && response.ok) return response; 
 
   // Logout and other empty successes have no JSON body.
   if (response.status === 204) return null;

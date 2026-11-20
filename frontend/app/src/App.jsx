@@ -9,6 +9,7 @@ import LoginPage from "./pages/LoginPage";
 import UsersPage from "./pages/UsersPage";
 import DeviceList from "./views/devices/DeviceList";
 import ScanScreen from "./views/scans/ScanScreen";
+import ChangeReport from "./views/reports/ChangeReport";
 import ReferenceScreen from "./views/reference_settings/ReferenceScreen";
 import ReferenceForm from "./views/reference_settings/ReferenceForm";
 import DeviceDetail from "./views/devices/DeviceDetail";
@@ -37,6 +38,8 @@ export default function App() {
             <Route element={<Layout />}>
 
               <Route path="/" element={<Navigate to="/scans" replace />} />
+
+              <Route path="/reports/changes" element={<ChangeReport />} />
 
               <Route path="/scans" element={<ScanScreen />} />
 

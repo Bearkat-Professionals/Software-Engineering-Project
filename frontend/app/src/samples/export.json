@@ -1,0 +1,25 @@
+{
+    "format": "network-device-export",
+    "format_version": 1,
+    "exported_at": "2026-11-19T06:00:00Z",
+    "exported_by": "sam",
+    "scope": {
+      "kind": "devices",
+      "filters": { "device_type_id": null, "vendor_id": null, "network_status": null, "flagged_status": null, "trusted_status": null, "is_randomized_mac": null, "confidence_min": null, "confidence_max": null, "seen_from": null, "seen_to": null, "text": null },
+      "sort": "last_seen",
+      "descending": true
+    },
+    "device_count": 1,
+    "devices": [
+      {
+        "device_id": 5,
+        "observed": { "mac": "3C:52:82:AA:10:02", "is_randomized_mac": false, "ip": "192.168.1.23", "hostname": "NPI1A2B3C", "network_status": "offline", "first_seen": "2026-10-26T19:03:09Z", "last_seen": "2026-11-17T15:00:06Z" },
+        "identification": { "type": "printer", "vendor": "HP Inc.", "name": "Office printer", "model": "LaserJet 4000", "level": "identified", "confidence_score": 55 },
+        "user_marks": { "trusted": true, "flagged": false, "flag_set_by_user": false },
+        "evidence": [
+          { "evidence_type": "oui", "raw_value": "3C:52:82", "weight": 20, "signature_id": null, "counted": true }
+        ]
+      }
+    ],
+    "scan": null
+  }

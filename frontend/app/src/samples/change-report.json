@@ -1,0 +1,18 @@
+{
+    "from_scan": { "scan_id": 11, "scope": "192.168.1.0/24", "started_at": "2026-11-17T09:00:00", "outcome": "success" },
+    "to_scan": { "scan_id": 12, "scope": "192.168.1.0/24", "started_at": "2026-11-18T09:00:00", "outcome": "partial" },
+    "new": [
+      { "device_id": 21, "name": null, "type": "unknown", "vendor": "Apple, Inc.", "mac": "F0:D1:A9:12:34:56", "is_randomized_mac": false, "old_ip": null, "new_ip": "192.168.1.40", "old_hostname": null, "new_hostname": "sams-iphone", "first_seen_in_this_scan": true },
+      { "device_id": 8, "name": "<b>Guest</b> phone", "type": "phone", "vendor": "unknown", "mac": "DA:A1:19:0C:22:7E", "is_randomized_mac": true, "old_ip": null, "new_ip": "192.168.1.52", "old_hostname": null, "new_hostname": null, "first_seen_in_this_scan": false }
+    ],
+    "missing": [
+      { "device_id": 5, "name": "Office printer", "type": "printer", "vendor": "HP Inc.", "mac": "3C:52:82:AA:10:02", "is_randomized_mac": false, "old_ip": "192.168.1.23", "new_ip": null, "old_hostname": "NPI1A2B3C", "new_hostname": null, "first_seen_in_this_scan": false }
+    ],
+    "changed": [
+      { "device_id": 3, "name": "Living room TV", "type": "tv", "vendor": "Samsung Electronics", "mac": "8C:79:F5:01:02:03", "is_randomized_mac": false, "old_ip": "192.168.1.20", "new_ip": "192.168.1.31", "old_hostname": "samsung-tv", "new_hostname": "samsung-tv", "first_seen_in_this_scan": false },
+      { "device_id": 4, "name": null, "type": "computer", "vendor": "Dell Inc.", "mac": "B8:CA:3A:44:55:66", "is_randomized_mac": false, "old_ip": "192.168.1.15", "new_ip": "192.168.1.15", "old_hostname": "desktop-old", "new_hostname": "desktop-lab", "first_seen_in_this_scan": false }
+    ],
+    "outside_scope": 2,
+    "randomized": { "new": 1, "missing": 0, "changed": 0 },
+    "partial_warning": true
+  }

@@ -1,0 +1,10 @@
+{
+    "scans": [
+      { "scan_id": 12, "scope": "192.168.1.0/24", "started_by": "sam", "started_at": "2026-11-18T09:00:00", "ended_at": "2026-11-18T09:00:14", "outcome": "partial", "devices_seen": 5 },
+      { "scan_id": 11, "scope": "192.168.1.0/24", "started_by": "sam", "started_at": "2026-11-17T09:00:00", "ended_at": "2026-11-17T09:00:12", "outcome": "success", "devices_seen": 6 },
+      { "scan_id": 9, "scope": "192.168.0.0/23", "started_by": "alex", "started_at": "2026-11-15T16:30:00", "ended_at": "2026-11-15T16:30:25", "outcome": "success", "devices_seen": 8 }
+    ],
+    "page": 1,
+    "per_page": 20,
+    "total": 3
+  }
