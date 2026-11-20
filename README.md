@@ -374,9 +374,9 @@ Any role.
 
 | Parameter | Value |
 |---|---|
-| `type`, `vendor` | a device type or vendor id |
+| `type` (or `type_id`), `vendor` (or `vendor_id`) | a device type or vendor id |
 | `status` | `online` or `offline` |
-| `flagged`, `trusted` | `true` or `false` |
+| `flagged`, `trusted`, `randomized` | `true` or `false` (`randomized`: a made-up MAC address) |
 | `confidence_min`, `confidence_max` | 0 to 100 |
 | `seen_from`, `seen_to` | a date like `2026-11-07` (whole days) |
 | `q` | part of the name, hostname, IP or MAC (at most 100 characters) |
@@ -581,6 +581,72 @@ POST and PUT answer the same shape, so the form can show who else has the record
 - Taking a hold needs the right to change that record: `EDIT_DEVICES` for a device, `EDIT_REFERENCE_DATA` for the rest. A viewer gets 403, logged.
 - A hold lasts 2 minutes unless renewed, so a closed tab frees the record within 2 minutes. Signing out releases that session's holds at once. Holds live in the app's memory: restarting the app ends them all.
 - A hold is a courtesy, not the safety net: `loaded_at` (the version guard) is what stops a lost update. The hold id is a secret like your session; don't log it.
+
+### Reports and export (#156)
+| Request | Needs | Success | Refusals |
+|---|---|---|---|
+| `GET /api/scans?page=1&per_page=20` | any role (`VIEW_DATA`) | 200, the finished scans, newest first | 400 bad paging |
+| `GET /api/reports/changes?from=4&to=9` | any role (`VIEW_DATA`) | 200, what changed between the two | 400 only one of `from`/`to`, the same scan twice, the later one first, fewer than two finished scans; 404 a scan that doesn't exist or hasn't finished |
+| `GET /api/export?scope=devices&<filters>` | `EXPORT` (every role today) | 200, a JSON file of the devices | 400 a bad filter (every reason listed, as for the device list) or more than 10,000 devices |
+| `GET /api/export?scope=scan&scan_id=9` | `EXPORT` | 200, a JSON file of one scan and its devices | 400 missing or bad `scope` or `scan_id`; 404 a scan that doesn't exist or hasn't finished |
+
+**Finished scans.** Only completed scans (success or partial) are listed; running and failed ones can't be compared.
+```json
+{"scans": [{"scan_id": 12, "scope": "192.168.1.0/24", "started_by": "sam", "started_at": "2026-11-18T09:00:00",
+            "ended_at": "2026-11-18T09:00:14", "outcome": "partial", "devices_seen": 5}],
+ "page": 1, "per_page": 20, "total": 3}
+```
+
+**The change report.** Send both `from` and `to`, or neither for the latest two finished scans.
+```json
+{"from_scan": {"scan_id": 11, "scope": "192.168.1.0/24", "started_at": "2026-11-17T09:00:00", "outcome": "success"},
+ "to_scan":   {"scan_id": 12, "scope": "192.168.1.0/24", "started_at": "2026-11-18T09:00:00", "outcome": "partial"},
+ "new": [{"device_id": 21, "name": null, "type": "unknown", "vendor": "Apple, Inc.", "mac": "F0:D1:A9:12:34:56",
+          "is_randomized_mac": false, "old_ip": null, "new_ip": "192.168.1.40",
+          "old_hostname": null, "new_hostname": "sams-iphone", "first_seen_in_this_scan": true}],
+ "missing": [], "changed": [],
+ "outside_scope": 2, "randomized": {"new": 1, "missing": 0, "changed": 0}, "partial_warning": true}
+```
+- `new` is in the later scan but not the earlier one; `first_seen_in_this_scan` tells "never seen before" from "back again". `missing` is in the earlier scan, not the later one, and inside the later scan's range. `changed` has a different IP or hostname.
+- `outside_scope` counts devices from the earlier scan that the later scan didn't look for. `randomized` counts the devices with made-up MAC addresses in each list (they can look new each time). `partial_warning` is true when either scan was partial.
+
+**The export** is a file download, with these headers:
+```
+Content-Type: application/json; charset=utf-8
+Content-Disposition: attachment; filename="devices-2026-11-16T2005Z.json"     (or "scan-42-2026-11-16T2005Z.json")
+Cache-Control: no-store
+```
+The time in the file name is the export's own `exported_at`, in UTC. The device filters and `sort`/`order` are the device list's (above), so the screen can pass its URL straight through. The file:
+```json
+{"format": "network-device-export", "format_version": 1,
+ "exported_at": "2026-11-16T20:05:31Z", "exported_by": "sam",
+ "scope": {"kind": "devices", "filters": {"flagged_status": true, "...": null}, "sort": "last_seen", "descending": true},
+ "device_count": 1,
+ "devices": [
+   {"device_id": 7,
+    "observed": {"mac": "70:13:01:65:8E:F7", "is_randomized_mac": false, "ip": "192.168.1.20", "hostname": "echo",
+                 "network_status": "online", "first_seen": "2026-11-10T14:03:09Z", "last_seen": "2026-11-16T19:58:12Z"},
+    "identification": {"type": "smart speaker", "vendor": "Vantiva", "name": "Amazon Echo", "model": null,
+                       "level": "partial", "confidence_score": 55},
+    "user_marks": {"trusted": false, "flagged": true, "flag_set_by_user": false},
+    "evidence": [{"evidence_type": "mdns", "raw_value": "_amazon._tcp", "weight": 35, "signature_id": 11, "counted": true}]}],
+ "scan": null}
+```
+With `scope=scan`, `scope` is `{"kind": "scan", "scan_id": 9}`, `devices` are the devices that scan saw, and `scan` holds the scan (`scan_id`, `scope`, `started_by`, `started_at`, `ended_at`, `outcome`, `errors`, `observations`). Times in the file are UTC with a `Z`. It never contains password hashes, session ids or the scan's settings (AT-10).
+
+**By hand.** Sign in once, keep the cookie, then download. curl (Git Bash):
+```bash
+curl -c cookies.txt -H "Content-Type: application/json" -d '{"username": "sam", "password": "..."}' http://127.0.0.1:5000/api/login
+curl -b cookies.txt "http://127.0.0.1:5000/api/reports/changes"
+curl -b cookies.txt -OJ "http://127.0.0.1:5000/api/export?scope=devices&flagged=true"
+```
+PowerShell:
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5000/api/login -ContentType "application/json" -Body '{"username": "sam", "password": "..."}' -SessionVariable s
+Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/scans" -WebSession $s
+Invoke-WebRequest -Uri "http://127.0.0.1:5000/api/export?scope=scan&scan_id=9" -WebSession $s -OutFile export.json
+```
+`-OJ` saves the file under the server's name. Don't share `cookies.txt` or the session: it signs in as you.
 
 ## CRUD test page and server (development only)
 A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.

@@ -19,6 +19,7 @@ from backend.controller.auth import (ACCESS_RULE, IDLE_MAX_S, SESSION_MAX_S, che
 from backend.records import User
 from backend.records.enums import UserRole
 from backend.services.access_control.access_control_service import WRONG_LOGIN
+from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_session import ScanState, ScanStatusReport
 from tests.controller.test_device_routes import FakeDeviceMaintenance, FakePickers
 from tests.controller.test_api_routes import FakeDevices, FakeScanManager, FakeSessions
@@ -87,6 +88,16 @@ class EveryRouteIsProtectedTests(AuthTestCase):
                 with self.assertLogs(AUTH_LOG, level="INFO"):
                     self.assertEqual(self.call(method, path).status_code, 401)
         self.assertEqual(self.manager.calls, [])
+
+    def test_the_report_and_export_routes_are_guarded_by_their_permission(self) -> None:     # #156
+        expected = {"/api/scans": Permission.VIEW_DATA, "/api/reports/changes": Permission.VIEW_DATA,
+                    "/api/export": Permission.EXPORT}
+        rules = {rule.rule: self.app.view_functions[rule.endpoint] for rule in self.app.url_map.iter_rules()}
+        for path, permission in expected.items():
+            with self.subTest(route=path):
+                self.assertEqual(getattr(rules[path], ACCESS_RULE, None), permission)
+                with self.assertLogs(AUTH_LOG, level="INFO"):
+                    self.assertEqual(self.client.get(path).status_code, 401)
 
 
 class SignInTests(AuthTestCase):

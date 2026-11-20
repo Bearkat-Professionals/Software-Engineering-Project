@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from flask import Flask, g, jsonify, request
 from werkzeug.exceptions import HTTPException
 
-from backend.controller import api_routes, auth, device_routes, hold_routes, reference_routes, user_routes
+from backend.controller import (api_routes, auth, device_routes, hold_routes, reference_routes, report_routes,
+                                user_routes)
 from backend.controller.auth import requires
 from backend.data_access.account_settings import UserStore
 from backend.data_access.network_data import DeviceStore, ScanStore
@@ -32,6 +33,8 @@ from backend.shared_modules.edit_lock_guard import EditLockGuard
 from backend.services.records.reference_maintenance import ReferenceMaintenance
 from backend.services.records.device_maintenance import DeviceMaintenance
 from backend.services.reporting import DeviceDetailService
+from backend.services.reporting.change_report import ChangeReportService
+from backend.services.reporting.export_json import ExportService
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +52,8 @@ class Services:
     reference: ReferenceMaintenance | None = None     # None only in tests that don't use reference data
     device_maintenance: DeviceMaintenance | None = None   # None only in tests that don't change devices
     device_detail: DeviceDetailService | None = None      # None only in tests that don't read one device
+    change_report: ChangeReportService | None = None      # None only in tests that don't compare scans
+    export: ExportService | None = None                   # None only in tests that don't export
     edit_holds: EditLockGuard = field(default_factory=EditLockGuard)   # SH-2; main.py shares one with the services
 
 
@@ -91,6 +96,7 @@ def register_routes(app: Flask, services: Services) -> None:
     device_routes.register(app, services)       # one device: read, add, edit, mark, delete; the pickers (2.3.1)
     user_routes.register(app, services)         # account administration and change-password (#92)
     hold_routes.register(app, services)         # edit holds: take, renew, release (SH-2, #141)
+    report_routes.register(app, services)       # finished scans, the change report, the export (#156)
 
 
 def on_scan_finished(result: ScanResult) -> None:
