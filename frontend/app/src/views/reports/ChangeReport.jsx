@@ -9,7 +9,7 @@ import { useMessages } from "../../components/Messages";
 
 const SCANS_URL = "/api/scans";
 const CHANGES_URL = "/api/reports/changes";
-const EXPORT_SCAN_URL = "/api/export/scan";
+const EXPORT_URL = "/api/export";
 
 // when the scan starts, its range, and whether it was partial.
 function scanLabel(scan) {
@@ -164,7 +164,7 @@ export default function ChangeReport() {
         setExporting(true);
 
         try {
-            await downloadFile(`${EXPORT_SCAN_URL}/${encodeURIComponent(toId)}`, `scan-${toId}.json`);
+            await downloadFile(`${EXPORT_URL}?scope=scan&scan_id=${encodeURIComponent(toId)}`, `scan-${toId}.json`);
         } catch (err) {
             showMessage("error", err.message);
         } finally {

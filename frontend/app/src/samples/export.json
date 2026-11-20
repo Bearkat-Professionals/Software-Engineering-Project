@@ -3,7 +3,12 @@
     "format_version": 1,
     "exported_at": "2026-11-19T06:00:00Z",
     "exported_by": "sam",
-    "scan": null,
+    "scope": {
+      "kind": "devices",
+      "filters": { "device_type_id": null, "vendor_id": null, "network_status": null, "flagged_status": null, "trusted_status": null, "is_randomized_mac": null, "confidence_min": null, "confidence_max": null, "seen_from": null, "seen_to": null, "text": null },
+      "sort": "last_seen",
+      "descending": true
+    },
     "device_count": 1,
     "devices": [
       {
@@ -15,5 +20,6 @@
           { "evidence_type": "oui", "raw_value": "3C:52:82", "weight": 20, "signature_id": null, "counted": true }
         ]
       }
-    ]
+    ],
+    "scan": null
   }

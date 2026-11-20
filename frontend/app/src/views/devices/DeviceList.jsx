@@ -401,13 +401,12 @@ export default function DeviceList() {
 
       filters.delete("page");
       filters.delete("per_page");
-
-      const text = filters.toString();
+      filters.set("scope", "devices");
 
       setExporting(true);
 
       try {
-        await downloadFile(text === "" ? "/api/export/devices" : `/api/export/devices?${text}`, "devices.json");
+        await downloadFile(`/api/export?${filters}`, "devices.json");
       } catch (err) {
         showMessage("error", err.message);
       } finally {
