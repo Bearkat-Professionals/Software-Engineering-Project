@@ -14,7 +14,7 @@ from flask import Flask
 from flask.testing import FlaskClient
 
 from backend.controller.app_controller import Services, create_app
-from backend.controller.auth import (ACCESS_RULE, IDLE_MAX_S, SESSION_MAX_S, check_secret_key,
+from backend.controller.auth import (ACCESS_RULE, IDLE_MAX_S, SESSION_MAX_S, check_secret_key, make_a_key_command,
                                      read_secret_key)
 from backend.records import User
 from backend.records.enums import UserRole
@@ -294,6 +294,15 @@ class SecretKeyTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "SECRET_KEY"):
                 read_secret_key()
+
+    def test_how_to_make_a_key_is_shown_for_this_system(self) -> None:     # Linux and macOS have no `py` (#174)
+        self.assertTrue(make_a_key_command("win32").startswith("py -3.13 -c "))
+        for platform in ("linux", "darwin"):
+            with self.subTest(platform=platform):
+                self.assertTrue(make_a_key_command(platform).startswith("python3 -c "))
+        with mock.patch("sys.platform", "linux"):
+            with self.assertRaisesRegex(ValueError, r"Make one with: python3 -c .*token_hex"):
+                check_secret_key("short")
 
     def test_the_app_refuses_to_start_with_a_short_key(self) -> None:
         users = FakeUsers()
