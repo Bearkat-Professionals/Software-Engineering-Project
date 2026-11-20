@@ -53,12 +53,13 @@ class FakeBackups:
         self.calls.append(("create", user_id))
         return self.answer or BackupResult(BackupStatus.DONE, backup=STORED)
 
-    def verify(self, name: str) -> BackupResult:
-        self.calls.append(("verify", name))
+    def verify(self, name: str, **key_material) -> BackupResult:
+        self.calls.append(("verify", name, key_material))
         return self.answer or BackupResult(BackupStatus.DONE)
 
-    def restore(self, name: str, confirm: str, user_id: int, *, on_start: Callable[[], None]) -> BackupResult:
-        self.calls.append(("restore", name, confirm, user_id))
+    def restore(self, name: str, confirm: str, user_id: int, *, on_start: Callable[[], None],
+                **key_material) -> BackupResult:
+        self.calls.append(("restore", name, confirm, user_id, key_material))
         result = self.answer or BackupResult(BackupStatus.DONE, safety_backup="before-restore-20261117-150000-123",
                                              rows_restored={"device": 41, "vendor": 38412})
         if result.ok:
@@ -100,21 +101,24 @@ class SuccessTests(BackupTestCase):
         response = self.admin.get("/api/backups")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {
-            "backups": [{"name": NAME, "kind": "full", "created_at": "2026-11-17T14:03:00", "size_bytes": 1843200}],
+            "backups": [{"name": NAME, "kind": "full", "created_at": "2026-11-17T14:03:00",
+                         "size_bytes": 1843200, "encrypted": False}],
             "last_attempt": {"action": "backup", "name": NAME, "by": "ada", "at": "2026-11-17T14:03:00",
                              "status": "done", "reason": None},
-            "busy": {"action": "restore", "by": "sam", "since": "2026-11-17T14:03:00"}})
+            "busy": {"action": "restore", "by": "sam", "since": "2026-11-17T14:03:00"},
+            "warning": None})
 
     def test_nothing_yet(self) -> None:
         self.backups.listing = BackupListing((), None, None)
         self.assertEqual(self.admin.get("/api/backups").get_json(),
-                         {"backups": [], "last_attempt": None, "busy": None})
+                         {"backups": [], "last_attempt": None, "busy": None, "warning": None})
 
     def test_back_up_now(self) -> None:
         response = self.admin.post("/api/backups", json={})
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.get_json(), {"backup": {"name": NAME, "kind": "full",
-                                                          "created_at": "2026-11-17T14:03:00", "size_bytes": 1843200}})
+                                                          "created_at": "2026-11-17T14:03:00",
+                                                          "size_bytes": 1843200, "encrypted": False}})
         self.assertEqual(self.backups.calls, [("create", ADA.user_id)])
 
     def test_verify_good_and_bad(self) -> None:
@@ -124,13 +128,23 @@ class SuccessTests(BackupTestCase):
         self.assertEqual(self.admin.post(f"/api/backups/{NAME}/verify", json={}).get_json(),
                          {"name": NAME, "ok": False, "problems": ["Table vendor: 3 rows expected, 2 found."]})
 
+    def test_key_material_is_forwarded_but_never_returned(self) -> None:
+        private_key, passphrase = "PRIVATE KEY CONTENT", "one-use secret"
+        response = self.admin.post(f"/api/backups/{NAME}/verify",
+                                   json={"private_key": private_key, "passphrase": passphrase})
+        self.assertEqual(self.backups.calls[-1],
+                         ("verify", NAME, {"private_key_pem": private_key, "passphrase": passphrase}))
+        self.assertNotIn(private_key, response.get_data(as_text=True))
+        self.assertNotIn(passphrase, response.get_data(as_text=True))
+
     def test_restore(self) -> None:
         with self.assertLogs(ROUTES_LOG, "WARNING"):                            # "signed out 0 other session(s)"
             response = self.admin.post(f"/api/backups/{NAME}/restore", json={"confirm": NAME})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.get_json(), {"restored": NAME, "safety_backup": "before-restore-20261117-150000-123",
                                                "rows_restored": {"device": 41, "vendor": 38412}, "signed_out": True})
-        self.assertEqual(self.backups.calls, [("restore", NAME, NAME, ADA.user_id)])
+        self.assertEqual(self.backups.calls, [("restore", NAME, NAME, ADA.user_id,
+                                               {"private_key_pem": None, "passphrase": None})])
 
 
 # ---- refusals ----------------------------------------------------------------------------
