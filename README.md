@@ -12,13 +12,13 @@ Software-Engineering-Project/
 │   ├── app/                             # product UI (React + Vite); calls the application API
 │   │   └── src/
 │   │       ├── auth/                    # session, permission checks, and the sign-in guard
-│   │       ├── components/              # API helper, header, shared messages, display formatting
-│   │       ├── pages/                   # login page
+│   │       ├── components/              # API helper, header, shared messages, display formatting, password change
+│   │       ├── pages/                   # login and user management
 │   │       ├── samples/                 # sample JSON used when the API is not running
 │   │       ├── styles/
 │   │       └── views/
 │   │           ├── scans/               # start a scan and follow its progress
-│   │           ├── devices/             # paged device list
+│   │           ├── devices/             # paged device list, plus add, edit, mark, and delete
 │   │           └── reference_settings/  # vendors, device types, signatures, and OUI prefixes
 │   ├── crud-react/                      # dev-only CRUD tester (React + Vite), not the product UI
 │   ├── components/                      # empty placeholder from the original layout
@@ -27,13 +27,14 @@ Software-Engineering-Project/
 │
 ├── backend/                             # Tier 2 (plus data-access code of Tier 3)
 │   ├── records/                         # DeviceRecord, EvidenceItem, ScanRecord, etc.
+│   ├── config/                          # empty placeholder
 │   ├── controller/                      # sign-in, scans, devices, and reference-data routes
 │   ├── services/                        # Tier 2 modules
 │   │   ├── access_control/
 │   │   ├── scan/                        # discovery, identification, and the scan session
 │   │   ├── records/                     # device and reference-data changes
 │   │   ├── reporting/
-│   │   └── backup/
+│   │   └── backup/                      # empty placeholder
 │   ├── shared_modules/
 │   ├── black_boxes/
 │   │   ├── read_arp_cache/
@@ -130,6 +131,23 @@ Run the unit tests (they use no network, so they pass offline):
 
 For other modules' tests, use `tests/fakes/fake_network.py` instead of real pings.
 
+## ARP cache (BB-1 Read ARP Cache)
+Reads the operating system's ARP table without admin rights: `arp -a` on Windows, `ip -4 neigh show` (or `/proc/net/arp`) on Linux, and `arp -an` on macOS. It returns `None` when the table can't be read, and never raises for a missing command or a timeout.
+
+```python
+from backend.black_boxes.read_arp_cache import read_arp_cache
+
+read_arp_cache()                # every entry
+read_arp_cache("192.168.1.1")   # just that IP's entry ([] if it isn't there)
+```
+
+macOS support is built from documented output and has not been run on a real Mac.
+
+Print this machine's ARP table:
+```
+.\dev arp
+```
+
 ## Scan speed settings (#81)
 The ping sweep runs many pings at once. Two settings control it:
 
@@ -165,6 +183,12 @@ After Host Discovery, a scan asks each host what it is (2.2.3), with all four me
 | `SCAN_EVIDENCE_WAIT_S` | 5 | 1 to 10 | how long each method waits for answers (one reverse DNS lookup gives up after 2 seconds) |
 
 A method that's turned on but can't run (e.g. another program holds UDP port 5353) is listed in the scan's errors as `mdns unavailable: ...`, the others still run, and the scan ends `partial`. A method turned off isn't an error. With every method on, the phase takes about `SCAN_EVIDENCE_WAIT_S` seconds (5 by default), and never more than `SCAN_EVIDENCE_WAIT_S` + 5.
+
+**What mDNS evidence looks like.** One line per service a device announces: `service=...; host=...; name=...; model=...`. `host` is the device's own `.local` name without `.local`, and the same name its hostname comes from. Any `;` inside a value becomes `,`, so a name can't fake another field. For example, an Echo Show that only announces Spotify Connect gives:
+```
+service=_spotify-connect._tcp; host=echoshow; name=SpotifyConnect
+```
+Signatures match anywhere in that line, so `host=echo` (in the starter signatures) finds Echos by their host name. Evidence that matches no signature isn't stored, so the new format only affects new scans.
 
 See what each host says, without saving anything:
 ```

@@ -35,6 +35,7 @@ SCAN_OPEN_LOCK = "network_scanner.scan_open"
 SCAN_OPEN_WAIT_S = 5
 DEFAULT_PER_PAGE = 20
 MAX_PER_PAGE = 200
+IN_CHUNK = 1000
 # A scan that can be compared (#153): it ran to the end, fully or with some methods missing
 COMPARABLE_OUTCOMES = (ScanOutcome.SUCCESS, ScanOutcome.PARTIAL)
 
@@ -292,6 +293,32 @@ class ScanStore:
     def evidence_for(self, device_id: int, unit: Any = None) -> list[IdentificationEvidence]:
         """The evidence behind a device's identification, oldest first."""
         return self._evidence.list(unit, device_id=device_id)
+
+    def observations_for(self, scan_id: int, unit: Any = None) -> list[ScanObservation]: #Javier changed
+         return self._observations.list(unit, scan_id=scan_id)
+
+
+    def evidence_for_devices(self, device_ids: list[int], unit: Any = None) -> dict[int, list[IdentificationEvidence]]:
+        ids = sorted(set(device_ids))    #Javier change
+        found = {}
+        for device_id in ids:
+            found[device_id] = []
+
+        with _unit_of_work(self._engine, unit) as cursor:
+            for start in range(0, len(ids), IN_CHUNK):
+                chunk = ids[start:start + IN_CHUNK]
+                marks = []
+                for device_id in chunk:
+                    marks.append("%s")
+                sql = "SELECT " + _columns(IdentificationEvidence, "e") + " FROM `identification_evidence` e WHERE e.`device_id` IN (" + ", ".join(marks) + ") ORDER BY e.`evidence_id`"
+                cursor.execute(sql, chunk)
+                for row in cursor.fetchall():
+                    evidence = IdentificationEvidence.from_row(row)
+                    found[evidence.device_id].append(evidence)
+        return found
+
+
+    
 
 # Both scans' observations, joined to the device and its vendor and type names (2.4.3).
 # Data rule: scan_observation is found by its scan_id index, device by its primary key.

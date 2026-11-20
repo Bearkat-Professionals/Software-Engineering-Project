@@ -13,7 +13,7 @@ from unittest import mock
 
 from backend.black_boxes.read_arp_cache import ArpEntry, ArpEntryType, read_arp_cache
 from backend.black_boxes.read_arp_cache.parser import (normalize_mac, parse_arp_output, parse_linux_addresses,
-                                                      parse_linux_neigh, parse_proc_net_arp)
+                                                      parse_linux_neigh, parse_macos_arp, parse_proc_net_arp)
 from tests.fakes.fake_arp_cache import FakeArpCache
 
 RUN = "backend.black_boxes.read_arp_cache.read_arp_cache.subprocess.run"
@@ -127,8 +127,8 @@ class ReadArpCacheTests(unittest.TestCase):
         run.assert_not_called()
 
     @mock.patch(RUN)
-    def test_other_operating_systems_are_unavailable_for_now(self, run):    # Windows and Linux are built
-        for platform in ("freebsd14", "aix", "darwin"):                    # macOS: #174
+    def test_other_operating_systems_are_unavailable_for_now(self, run):    # Windows, Linux and macOS are built
+        for platform in ("freebsd14", "aix"):
             with self.subTest(platform=platform), mock.patch("sys.platform", platform):
                 self.assertIsNone(read_arp_cache())
         run.assert_not_called()
@@ -294,6 +294,79 @@ class FakeArpCacheTests(unittest.TestCase):
         self.assertIsNone(FakeArpCache(unavailable=True).read_arp_cache())
 
 
+# ---- macOS (#176): made-up output, never run on a real Mac ----------------------
+
+EN0 = {"en0": "192.168.1.50"}
+
+
+class MacosParserTests(unittest.TestCase):
+    def test_short_macs_are_padded(self):
+        self.assertEqual(normalize_mac("70:13:1:65:8e:f7"), "70:13:01:65:8E:F7")
+        self.assertEqual(normalize_mac("aa-bb-cc-dd-ee-ff"), "AA:BB:CC:DD:EE:FF")   # Windows still works
+        self.assertEqual(normalize_mac("02:13:01:65:8e:f7"), "02:13:01:65:8E:F7")   # Linux still works
+
+    def test_incomplete_is_skipped_and_permanent_is_static(self):
+        entries = parse_macos_arp(fixture("macos_arp_an.txt"), EN0)
+        self.assertEqual(entries, [
+            linux_entry("192.168.1.1", "70:13:01:65:8E:F7", "192.168.1.50", DYNAMIC),
+            linux_entry("192.168.1.255", "FF:FF:FF:FF:FF:FF", "192.168.1.50", DYNAMIC),   # broadcast kept
+            linux_entry("224.0.0.251", "01:00:5E:00:00:FB", "192.168.1.50", STATIC),      # permanent
+        ])
+        unknown = parse_macos_arp(fixture("macos_arp_an.txt"), {})
+        self.assertEqual({e.interface_ip for e in unknown}, {""})                         # no adapter info
+
+    def test_no_entry_gives_an_empty_list(self):
+        self.assertEqual(parse_macos_arp("192.168.1.99 (192.168.1.99) -- no entry", EN0), [])
+
+
+def fake_mac_commands(arp_out=None, arp_code=0, ipconfig_code=0):
+    """Stands in for subprocess.run: answers `arp` and `ipconfig getifaddr`."""
+    arp_out = fixture("macos_arp_an.txt") if arp_out is None else arp_out
+
+    def run(command, **kwargs):
+        if command[0] == "arp":
+            return finished(command, arp_out, arp_code)
+        return finished(command, "192.168.1.50\n", ipconfig_code)
+    return run
+
+
+@mock.patch("sys.platform", "darwin")
+class MacosReadArpCacheTests(unittest.TestCase):
+    def test_success_asks_each_adapter_once(self):
+        with mock.patch(RUN, side_effect=fake_mac_commands()) as run:
+            entries = read_arp_cache()
+        self.assertEqual(len(entries), 3)
+        self.assertEqual({e.interface_ip for e in entries}, {"192.168.1.50"})
+        self.assertEqual([c.args[0] for c in run.call_args_list],
+                         [["arp", "-an"], ["ipconfig", "getifaddr", "en0"]])
+        for c in run.call_args_list:
+            self.assertEqual(c.kwargs["env"]["LC_ALL"], "C")
+
+    def test_one_ip_is_passed_to_arp(self):
+        line = "192.168.1.1 (192.168.1.1) at 70:13:1:65:8e:f7 on en0 ifscope [ethernet]\n"
+        with mock.patch(RUN, side_effect=fake_mac_commands(arp_out=line)) as run:
+            entries = read_arp_cache("192.168.1.1")
+        self.assertEqual(run.call_args_list[0].args[0], ["arp", "-n", "192.168.1.1"])
+        self.assertEqual([e.ip_address for e in entries], ["192.168.1.1"])
+
+    def test_no_entry_is_empty_not_unavailable(self):
+        text = "192.168.1.99 (192.168.1.99) -- no entry\n"
+        with mock.patch(RUN, side_effect=fake_mac_commands(arp_out=text, arp_code=1)):
+            self.assertEqual(read_arp_cache("192.168.1.99"), [])
+
+    def test_missing_command_or_timeout_is_unavailable(self):
+        for problem in (FileNotFoundError("arp"), subprocess.TimeoutExpired(cmd="arp", timeout=10)):
+            with self.subTest(problem=type(problem).__name__), mock.patch(RUN, side_effect=problem):
+                self.assertIsNone(read_arp_cache())
+
+    def test_a_failed_run_is_unavailable(self):
+        with mock.patch(RUN, side_effect=fake_mac_commands(arp_out="", arp_code=1)):
+            self.assertIsNone(read_arp_cache())
+
+    def test_a_failed_ipconfig_leaves_interface_ip_empty(self):
+        with mock.patch(RUN, side_effect=fake_mac_commands(ipconfig_code=1)):
+            entries = read_arp_cache()
+        self.assertEqual({e.interface_ip for e in entries}, {""})
+
 if __name__ == "__main__":
     unittest.main()
-    
