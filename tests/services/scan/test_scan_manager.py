@@ -153,6 +153,26 @@ class FullScanTests(ManagerTestCase):
         self.assertEqual(result.outcome, ScanOutcome.SUCCESS)
         self.assertEqual((self.stored(result).gateway_ip, self.stored(result).gateway_mac), (None, None))
 
+    def test_gateway_reader_failure_does_not_fail_the_scan(self) -> None:
+        def broken_gateway(local_ip: str | None) -> Gateway | None:
+            raise OSError("route table unavailable")
+
+        with self.assertLogs("backend.services.scan.scan_manager", "WARNING"):
+            result = self.run_scan(read_gateway=broken_gateway)
+
+        self.assertEqual(result.outcome, ScanOutcome.SUCCESS)
+        self.assertEqual(result.summary.created, 2)
+        self.assertEqual(result.errors, ())
+
+    def test_gateway_database_failure_does_not_fail_the_scan(self) -> None:
+        with mock.patch.object(self.store, "set_gateway", side_effect=ConnectionError("database went away")):
+            with self.assertLogs("backend.services.scan.scan_manager", "WARNING"):
+                result = self.run_scan(read_gateway=lambda local_ip: Gateway(ROUTER_IP, local_ip or "unknown"))
+
+        self.assertEqual(result.outcome, ScanOutcome.SUCCESS)
+        self.assertEqual(result.summary.created, 2)
+        self.assertEqual(result.errors, ())
+
     def test_new_flagged_devices_become_alert_candidates(self) -> None:
         result = self.run_scan()
         self.assertEqual(result.alerts, (AlertCandidate(AlertEventName.NEW_UNIDENTIFIED_DEVICE, 101),
