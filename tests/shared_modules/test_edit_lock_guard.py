@@ -233,6 +233,15 @@ class LimitTests(unittest.TestCase):
 
 class SessionTests(unittest.TestCase):
 
+    def test_release_all_ends_everyones_holds(self) -> None:
+        guard, _ = make_guard()
+        guard.take(DEVICE_7, SAM, "session-a")
+        guard.take(VENDOR_7, ALEX, "session-b")
+        self.assertEqual(guard.release_all(), 2)
+        self.assertEqual(guard.count(), 0)
+        self.assertEqual(guard.release_session("session-a"), 0)    # nothing left behind for the session
+        self.assertEqual(guard.release_all(), 0)                    # again: fine
+
     def test_release_session_releases_only_that_sessions_holds(self) -> None:
         guard, _ = make_guard()
         guard.take(DEVICE_7, SAM, "session-a")

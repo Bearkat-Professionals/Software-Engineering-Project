@@ -140,6 +140,14 @@ class SessionRegistry:
             with self._lock:
                 self._sessions.pop(sid, None)
 
+    def end_all(self, keep: str | None = None) -> int:
+        """Ends every session except `keep` (a restore signs everyone else out). Returns how many."""
+        with self._lock:
+            ended = [sid for sid in self._sessions if sid != keep]
+            for sid in ended:
+                del self._sessions[sid]
+            return len(ended)
+
 @dataclass(frozen=True)
 class _AccessState:
     sessions: SessionRegistry
@@ -243,6 +251,23 @@ def _end_with_holds(services: Services, sessions: SessionRegistry, sid: Any) -> 
     if isinstance(sid, str):
         services.edit_holds.release_session(sid)
     sessions.end(sid)
+
+
+def sign_out_everyone_else(services: Services) -> int:
+    """Ends every session but this request's, and every edit hold (a restore replaces the
+    accounts and the records they were editing). Their next request gets 401 and goes to the
+    login screen. Returns how many sessions ended."""
+    state: _AccessState = current_app.extensions[EXTENSION]
+    ended = state.sessions.end_all(keep=current_session_id())
+    services.edit_holds.release_all()
+    return ended
+
+
+def sign_out_here(services: Services) -> None:
+    """Ends this request's own session; the reply tells the browser to drop the cookie."""
+    state: _AccessState = current_app.extensions[EXTENSION]
+    _end_with_holds(services, state.sessions, session.get("sid"))
+    session.clear()
 
 
 def current_session_id() -> str | None:

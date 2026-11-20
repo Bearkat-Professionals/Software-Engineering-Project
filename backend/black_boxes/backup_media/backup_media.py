@@ -28,6 +28,11 @@ SUFFIX = ".json.gz"
 # Blocks names like "../../secrets" that would escape the backup folder.
 _SAFE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
+def is_safe_name(name: object) -> bool:
+    """True for a name this module will accept: letters, digits, dot, dash and underscore,
+    starting with a letter or digit, and no "..". Callers use it to refuse a bad name
+    before asking for the backup, e.g. a name taken from a URL."""
+    return isinstance(name, str) and _SAFE_NAME.fullmatch(name) is not None and ".." not in name
 
 class BackupMediaError(Exception):
     """A backup could not be written or read (bad name, missing, damaged, disk problem)."""
@@ -91,7 +96,7 @@ class BackupMedia:
     # ---- helpers -----------------------------------------------------------
 
     def _path_for(self, name: str) -> Path:
-        if not _SAFE_NAME.fullmatch(name) or ".." in name:
+        if not is_safe_name(name):
             raise BackupMediaError(f"'{name}' is not a valid backup name")
         return self._folder / f"{name}{SUFFIX}"
 
