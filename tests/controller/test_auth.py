@@ -14,11 +14,12 @@ from flask import Flask
 from flask.testing import FlaskClient
 
 from backend.controller.app_controller import Services, create_app
-from backend.controller.auth import (ACCESS_RULE, IDLE_MAX_S, SESSION_MAX_S, check_secret_key,
+from backend.controller.auth import (ACCESS_RULE, IDLE_MAX_S, SESSION_MAX_S, check_secret_key, make_a_key_command,
                                      read_secret_key)
 from backend.records import User
 from backend.records.enums import UserRole
 from backend.services.access_control.access_control_service import WRONG_LOGIN
+from backend.services.access_control.permissions import Permission
 from backend.services.scan.scan_session import ScanState, ScanStatusReport
 from tests.controller.test_device_routes import FakeDeviceMaintenance, FakePickers
 from tests.controller.test_api_routes import FakeDevices, FakeScanManager, FakeSessions
@@ -87,6 +88,16 @@ class EveryRouteIsProtectedTests(AuthTestCase):
                 with self.assertLogs(AUTH_LOG, level="INFO"):
                     self.assertEqual(self.call(method, path).status_code, 401)
         self.assertEqual(self.manager.calls, [])
+
+    def test_the_report_and_export_routes_are_guarded_by_their_permission(self) -> None:     # #156
+        expected = {"/api/scans": Permission.VIEW_DATA, "/api/reports/changes": Permission.VIEW_DATA,
+                    "/api/export": Permission.EXPORT}
+        rules = {rule.rule: self.app.view_functions[rule.endpoint] for rule in self.app.url_map.iter_rules()}
+        for path, permission in expected.items():
+            with self.subTest(route=path):
+                self.assertEqual(getattr(rules[path], ACCESS_RULE, None), permission)
+                with self.assertLogs(AUTH_LOG, level="INFO"):
+                    self.assertEqual(self.client.get(path).status_code, 401)
 
 
 class SignInTests(AuthTestCase):
@@ -283,6 +294,15 @@ class SecretKeyTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "SECRET_KEY"):
                 read_secret_key()
+
+    def test_how_to_make_a_key_is_shown_for_this_system(self) -> None:     # Linux and macOS have no `py` (#174)
+        self.assertTrue(make_a_key_command("win32").startswith("py -3.13 -c "))
+        for platform in ("linux", "darwin"):
+            with self.subTest(platform=platform):
+                self.assertTrue(make_a_key_command(platform).startswith("python3 -c "))
+        with mock.patch("sys.platform", "linux"):
+            with self.assertRaisesRegex(ValueError, r"Make one with: python3 -c .*token_hex"):
+                check_secret_key("short")
 
     def test_the_app_refuses_to_start_with_a_short_key(self) -> None:
         users = FakeUsers()

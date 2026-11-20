@@ -14,6 +14,7 @@ import ReferenceScreen from "./views/reference_settings/ReferenceScreen";
 import ReferenceForm from "./views/reference_settings/ReferenceForm";
 import DeviceDetail from "./views/devices/DeviceDetail";
 import DeviceForm from "./views/devices/DeviceForm";
+import BackupScreen from "./views/backups/BackupScreen";
 
 export default function App() {
 
@@ -48,6 +49,12 @@ export default function App() {
               <Route path="/users" element={
                 <RequirePermission permission="MANAGE_USERS">
                   <UsersPage />
+                </RequirePermission>
+              } />
+
+              <Route path="/backups" element={
+                <RequirePermission permission="BACKUP_RESTORE">
+                  <BackupScreen />
                 </RequirePermission>
               } />
 

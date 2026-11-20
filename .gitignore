@@ -91,7 +91,7 @@ docs/
 frontend/crud-react/node_modules/
 
 # Database backups (contain password hashes)
-backups/
+/backups/
 
 # IPython
 profile_default/

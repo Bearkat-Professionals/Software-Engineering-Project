@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -51,7 +52,10 @@ ACCOUNT_DISABLED = "This account is disabled."
 DATABASE_DOWN = "The database is unavailable; see the server log"
 NOT_JSON = "Send this request as JSON (Content-Type: application/json)."
 LOGIN_EXAMPLE = 'Send JSON like {"username": "sam", "password": "..."}.'
-MAKE_A_KEY = 'py -3.13 -c "import secrets; print(secrets.token_hex(32))"'
+
+def make_a_key_command(platform: str | None = None) -> str:
+    python = "py -3.13" if (platform or sys.platform) == "win32" else "python3"
+    return f'{python} -c "import secrets; print(secrets.token_hex(32))"'
 
 class UserFinder(Protocol):
     def find (self, user_id: int) -> User| None: ...
@@ -63,7 +67,7 @@ def check_secret_key(key: str | None) -> str:
     key = (key or "").strip()
     if len(key) < SECRET_KEY_MIN:
         raise ValueError(f"SECRET_KEY in .env must be at least {SECRET_KEY_MIN} characters. "
-                         f"Make one with: {MAKE_A_KEY}")
+                         f"Make one with: {make_a_key_command()}")
     return key
 
 def read_secret_key() -> str:
@@ -251,7 +255,6 @@ def _end_with_holds(services: Services, sessions: SessionRegistry, sid: Any) -> 
     if isinstance(sid, str):
         services.edit_holds.release_session(sid)
     sessions.end(sid)
-
 
 def sign_out_everyone_else(services: Services) -> int:
     """Ends every session but this request's, and every edit hold (a restore replaces the

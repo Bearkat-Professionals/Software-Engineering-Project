@@ -237,7 +237,7 @@ export default function ReferenceScreen() {
 
             showMessage("error", err.message);
 
-            if (err.status === 409) {
+            if (err.status === 409 && err.heldBy == null) {
 
                 const data = await api(`/api/reference/${kind}/${pending.id}`);
 

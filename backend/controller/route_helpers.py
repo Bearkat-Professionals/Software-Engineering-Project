@@ -9,9 +9,11 @@ from collections.abc import Callable
 from datetime import datetime, date
 from typing import Any, Protocol
 
-from flask import abort, request
+from flask import abort, jsonify, request
 
+from backend.data_access.network_data import DeviceSearch
 from backend.records import User
+from backend.services.reporting.search_devices import parse_search
 
 MAX_PAGE = 1_000_000            # keeps OFFSET far inside what MySQL accepts
 NOT_AN_OBJECT = "Send the values as a JSON object."
@@ -32,6 +34,18 @@ def whole_number(name: str, *, default: int, largest: int) -> int:
     if not cleaned.isdecimal() or not 1 <= int(cleaned) <= largest:
         abort(400, description=f"{name} must be a whole number from 1 to {largest}, not '{text}'.")
     return int(cleaned)
+
+
+def device_search_from_query(args: Any) -> DeviceSearch:
+    """The device filters and sort in the query (?flagged=true&sort=ip...) as a DeviceSearch,
+    for the device list and the export alike (#156). The checks are parse_search's (#119);
+    any bad value stops with 400 {"error", "reasons"}, every reason naming its field."""
+    search, reasons = parse_search(args)
+    if reasons:
+        response = jsonify(error="The search can't be run.", reasons=reasons)
+        response.status_code = 400
+        abort(response)
+    return search
 
 
 def json_body() -> dict[str, Any]:

@@ -103,6 +103,7 @@ On macOS/Linux, or anywhere without `dev.cmd`: `py -3.13 dev.py test` or `python
 | `ident` | `backend.services.scan.check_identification` | after a scan, list every device's vendor, type, score, level and flag, checked against its stored evidence (#69, test database; `--database NAME` for another) |
 | `speed` | `backend.services.scan.check_sweep_speed` | time a ping sweep at 1, 8, 32 and 64 workers and print a table for the PR (#81) |
 | `backup` | `backend.data_access.backup_recovery.check_backup` | back up, list, verify, restore or compare databases (3.5) |
+| `cmpexp` | `backend.services.reporting.compare_exports` | check that two JSON exports (e.g. from Windows and Linux) have the same keys, key order and types (NFR-08) |
 | `oui` | `database.scripts.load_oui_data` | load the IEEE OUI list into vendor and oui_prefix (`.\dev oui path\to\oui.csv`) |
 
 Add `--help` after any command for that tool's own options, e.g. `.\dev chd --help`. The long `python -m ...` commands still work. To add a tool, add one line to `COMMANDS` in `dev.py`.
@@ -374,9 +375,9 @@ Any role.
 
 | Parameter | Value |
 |---|---|
-| `type`, `vendor` | a device type or vendor id |
+| `type` (or `type_id`), `vendor` (or `vendor_id`) | a device type or vendor id |
 | `status` | `online` or `offline` |
-| `flagged`, `trusted` | `true` or `false` |
+| `flagged`, `trusted`, `randomized` | `true` or `false` (`randomized`: a made-up MAC address) |
 | `confidence_min`, `confidence_max` | 0 to 100 |
 | `seen_from`, `seen_to` | a date like `2026-11-07` (whole days) |
 | `q` | part of the name, hostname, IP or MAC (at most 100 characters) |
@@ -582,6 +583,72 @@ POST and PUT answer the same shape, so the form can show who else has the record
 - A hold lasts 2 minutes unless renewed, so a closed tab frees the record within 2 minutes. Signing out releases that session's holds at once. Holds live in the app's memory: restarting the app ends them all.
 - A hold is a courtesy, not the safety net: `loaded_at` (the version guard) is what stops a lost update. The hold id is a secret like your session; don't log it.
 
+### Reports and export (#156)
+| Request | Needs | Success | Refusals |
+|---|---|---|---|
+| `GET /api/scans?page=1&per_page=20` | any role (`VIEW_DATA`) | 200, the finished scans, newest first | 400 bad paging |
+| `GET /api/reports/changes?from=4&to=9` | any role (`VIEW_DATA`) | 200, what changed between the two | 400 only one of `from`/`to`, the same scan twice, the later one first, fewer than two finished scans; 404 a scan that doesn't exist or hasn't finished |
+| `GET /api/export?scope=devices&<filters>` | `EXPORT` (every role today) | 200, a JSON file of the devices | 400 a bad filter (every reason listed, as for the device list) or more than 10,000 devices |
+| `GET /api/export?scope=scan&scan_id=9` | `EXPORT` | 200, a JSON file of one scan and its devices | 400 missing or bad `scope` or `scan_id`; 404 a scan that doesn't exist or hasn't finished |
+
+**Finished scans.** Only completed scans (success or partial) are listed; running and failed ones can't be compared.
+```json
+{"scans": [{"scan_id": 12, "scope": "192.168.1.0/24", "started_by": "sam", "started_at": "2026-11-18T09:00:00",
+            "ended_at": "2026-11-18T09:00:14", "outcome": "partial", "devices_seen": 5}],
+ "page": 1, "per_page": 20, "total": 3}
+```
+
+**The change report.** Send both `from` and `to`, or neither for the latest two finished scans.
+```json
+{"from_scan": {"scan_id": 11, "scope": "192.168.1.0/24", "started_at": "2026-11-17T09:00:00", "outcome": "success"},
+ "to_scan":   {"scan_id": 12, "scope": "192.168.1.0/24", "started_at": "2026-11-18T09:00:00", "outcome": "partial"},
+ "new": [{"device_id": 21, "name": null, "type": "unknown", "vendor": "Apple, Inc.", "mac": "F0:D1:A9:12:34:56",
+          "is_randomized_mac": false, "old_ip": null, "new_ip": "192.168.1.40",
+          "old_hostname": null, "new_hostname": "sams-iphone", "first_seen_in_this_scan": true}],
+ "missing": [], "changed": [],
+ "outside_scope": 2, "randomized": {"new": 1, "missing": 0, "changed": 0}, "partial_warning": true}
+```
+- `new` is in the later scan but not the earlier one; `first_seen_in_this_scan` tells "never seen before" from "back again". `missing` is in the earlier scan, not the later one, and inside the later scan's range. `changed` has a different IP or hostname.
+- `outside_scope` counts devices from the earlier scan that the later scan didn't look for. `randomized` counts the devices with made-up MAC addresses in each list (they can look new each time). `partial_warning` is true when either scan was partial.
+
+**The export** is a file download, with these headers:
+```
+Content-Type: application/json; charset=utf-8
+Content-Disposition: attachment; filename="devices-2026-11-16T2005Z.json"     (or "scan-42-2026-11-16T2005Z.json")
+Cache-Control: no-store
+```
+The time in the file name is the export's own `exported_at`, in UTC. The device filters and `sort`/`order` are the device list's (above), so the screen can pass its URL straight through. The file:
+```json
+{"format": "network-device-export", "format_version": 1,
+ "exported_at": "2026-11-16T20:05:31Z", "exported_by": "sam",
+ "scope": {"kind": "devices", "filters": {"flagged_status": true, "...": null}, "sort": "last_seen", "descending": true},
+ "device_count": 1,
+ "devices": [
+   {"device_id": 7,
+    "observed": {"mac": "70:13:01:65:8E:F7", "is_randomized_mac": false, "ip": "192.168.1.20", "hostname": "echo",
+                 "network_status": "online", "first_seen": "2026-11-10T14:03:09Z", "last_seen": "2026-11-16T19:58:12Z"},
+    "identification": {"type": "smart speaker", "vendor": "Vantiva", "name": "Amazon Echo", "model": null,
+                       "level": "partial", "confidence_score": 55},
+    "user_marks": {"trusted": false, "flagged": true, "flag_set_by_user": false},
+    "evidence": [{"evidence_type": "mdns", "raw_value": "_amazon._tcp", "weight": 35, "signature_id": 11, "counted": true}]}],
+ "scan": null}
+```
+With `scope=scan`, `scope` is `{"kind": "scan", "scan_id": 9}`, `devices` are the devices that scan saw, and `scan` holds the scan (`scan_id`, `scope`, `started_by`, `started_at`, `ended_at`, `outcome`, `errors`, `observations`). Times in the file are UTC with a `Z`. It never contains password hashes, session ids or the scan's settings (AT-10).
+
+**By hand.** Sign in once, keep the cookie, then download. curl (Git Bash):
+```bash
+curl -c cookies.txt -H "Content-Type: application/json" -d '{"username": "sam", "password": "..."}' http://127.0.0.1:5000/api/login
+curl -b cookies.txt "http://127.0.0.1:5000/api/reports/changes"
+curl -b cookies.txt -OJ "http://127.0.0.1:5000/api/export?scope=devices&flagged=true"
+```
+PowerShell:
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:5000/api/login -ContentType "application/json" -Body '{"username": "sam", "password": "..."}' -SessionVariable s
+Invoke-RestMethod -Uri "http://127.0.0.1:5000/api/scans" -WebSession $s
+Invoke-WebRequest -Uri "http://127.0.0.1:5000/api/export?scope=scan&scan_id=9" -WebSession $s -OutFile export.json
+```
+`-OJ` saves the file under the server's name. Don't share `cookies.txt` or the session: it signs in as you.
+
 ## CRUD test page and server (development only)
 A small tool for checking the database by hand: list, add, edit and delete rows in any table. **It is a developer tool, not part of the product.** It skips login, roles, validation and the audit log, so it only listens on your own machine and the real application never imports it.
 
@@ -628,58 +695,105 @@ Errors come back as `{"error": "message"}`. Add rows in dependency order: `devic
 
 ## Starting and setting up the Server
 
-### MariaDB on Linux
-Step 1: Installing MariaDB & Start it (Run the following commands in your terminal)
+### Running on Linux (and macOS)
+Everything runs without admin rights once it's installed: `sudo` is only needed to install packages, set up the database and open the firewall. Every `.\dev <command>` in this README is `python3 dev.py <command>` here. **macOS** follows the same steps but hasn't been run on a real Mac yet (#174): install the packages with Homebrew instead of `apt`, and allow Python when macOS asks to accept incoming connections.
 
-- sudo pacman -S mariaDB (If on Arch Linux)
-- sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql
-- sudo systemctl enable --now mariadb
+**1. Install what's needed.** On Debian or Ubuntu:
+```
+sudo apt update
+sudo apt install git python3 python3-venv python3-pip iputils-ping iproute2 mariadb-server
+```
+On Arch: `sudo pacman -S git python python-pip iputils iproute2 mariadb`, then `sudo mariadb-install-db --user=mysql --basedir=/usr --datadir=/var/lib/mysql` once before starting it.
+- Python 3.13 or newer (`python3 --version`).
+- MariaDB 10.5+ or MySQL 8.0.16+ (`mariadb --version`). Older versions lack features the schema uses.
+- `ping` and `ip` are missing on some minimal installs. Without `ping` a scan ends `partial`; without `ip` the ARP table and gateway are read from `/proc` instead.
+- Node.js 20.19 or newer for the screens (`node -v`). Distribution packages are often older; https://nodejs.org lists other ways to install it.
 
-Step 2: Create the account and test database (Run the following commands in your terminal)
+**2. Get the code and its Python packages**, in a virtual environment:
+```
+git clone https://github.com/Bearkat-Professionals/Software-Engineering-Project.git
+cd Software-Engineering-Project
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+Run every later command from this folder with the environment active. In a new terminal, run `source .venv/bin/activate` first.
 
-You're going to start MariaDB and run the following commands.
-
-- CREATE USER '[your_user_here]'@'127.0.0.1' IDENTIFIED BY '[your_password_here]';
-- CREATE DATABASE IF NOT EXISTS network_device_scanner_test
-      CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-- GRANT ALL PRIVILEGES ON network_device_scanner_test.* TO '[your_user_here]'@'127.0.0.1';
-- FLUSH PRIVILEGES;
+**3. Create the databases.** Start the server and open its console:
+```
+sudo systemctl enable --now mariadb
+sudo mariadb
+```
+Then, choosing your own password:
+```sql
+CREATE USER 'katscan'@'127.0.0.1' IDENTIFIED BY 'choose-a-password';
+CREATE DATABASE network_device_scanner CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE DATABASE network_device_scanner_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+GRANT ALL PRIVILEGES ON network_device_scanner.* TO 'katscan'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON network_device_scanner_test.* TO 'katscan'@'127.0.0.1';
+FLUSH PRIVILEGES;
 EXIT;
+```
+Load the schema and both seed files into **both** databases (each command asks for the password):
+```
+for db in network_device_scanner network_device_scanner_test; do
+  for file in database/schema/database_schema.sql database/seed/seed_reference_data.sql database/seed/seed_signatures.sql; do
+    mariadb -h 127.0.0.1 -u katscan -p "$db" < "$file"
+  done
+done
+```
+**Don't run the files in `database/migrations/` on a new database.** The schema already contains them, and `004_scan_gateway.sql` would fail with "Duplicate column". The migrations are only for a database created before they existed: run the new ones once, in number order, on both databases.
 
-Step 2.1: Creating your .env
+**4. Create `.env`** in the project folder (git ignores it). Make the secret key with `python3 -c "import secrets; print(secrets.token_hex(32))"`:
+```
+DB_HOST=127.0.0.1
+DB_PORT=3306
+DB_USER=katscan
+DB_PASSWORD=choose-a-password
+DB_NAME=network_device_scanner
+SECRET_KEY=<the 64 characters it printed>
+APP_PORT=5001
+```
+Check it with `python3 dev.py conn`.
 
-- Create your .env file and then input the following
-- DB_HOST=127.0.0.1
-- DB_PORT=3306
-- DB_USER=[your_user_here]
-- DB_NAME=network_device_scanner
+**5. Run the tests.** Everything should pass, including the database tests (they use the `_test` database):
+```
+python3 dev.py test
+```
+The database tests empty the test database's tables, so steps 6 and 7 use the real one.
 
-Step 3: Load the schema and the seed (I ran these commands in my IDE)
+**6. Load vendor names and create the first admin**, both in the real database. Download the IEEE OUI list from https://standards-oui.ieee.org/oui/oui.csv, then:
+```
+python3 dev.py oui path/to/oui.csv --database network_device_scanner
+python3 dev.py admin --database network_device_scanner
+```
 
-- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/schema/database_schema.sql
-- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/seed/seed_reference_data.sql
-- mariadb -h 127.0.0.1 -P 3306 -u [your_user_here] -p network_device_scanner_test < database/seed/seed_signatures.sql
+**7. Let mDNS and SSDP answers in.** Devices answer from your network to ports a firewall blocks. With `ufw` (Ubuntu), if `sudo ufw status` says it's active, allow UDP from your own network only, using your range:
+```
+sudo ufw allow from 192.168.1.0/24 proto udp
+```
+With another firewall, allow incoming UDP from your own subnet the same way. Without this, `python3 dev.py ev` hears nothing from mDNS and SSDP, but nothing fails.
 
-`seed_signatures.sql` adds the starter device types and identification signatures after
-the required `seed_reference_data.sql` rows. It is safe to run more than once: an
-existing type or signature is left unchanged rather than duplicated.
+**8. Check discovery on your network.** None of these need admin rights:
+```
+python3 dev.py arp                       # the ARP table
+python3 dev.py gw --for 192.168.1.0/24   # the gateway facing your network
+python3 dev.py ev                        # what each device says (mDNS, SSDP, ...)
+```
 
-Step 4: Install python requirements (Run the following commands inside your IDE terminal)
+**9. Start the app and the screens**, in two terminals:
+```
+python3 dev.py app                       # terminal 1: http://127.0.0.1:5001/api/health
+```
+```
+cd frontend/app                          # terminal 2
+npm ci
+echo "VITE_USE_SAMPLES=false" > .env.local
+npm run dev
+```
+Open http://127.0.0.1:5173, sign in as the admin, and start a scan of your range.
 
-- python3 -m venv .venv
-- source .venv/bin/activate
-- python -m pip install -r requirements.txt
-
-Step 5: Start the CRUD server with the virtual environment (Run the following commands inside your IDE termnial)
-
-- source .venv/bin/activate
-- python3 -m backend.dev_tools.crud_server
-- Then start the test page in a second terminal: see "CRUD test page and server" above
-
-
-If everything was setup and ran correctly you should see a message stating:
-
-WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+**WSL2 doesn't count as Linux here.** It sits behind a virtual network and sees only one neighbour. Use a real Linux machine, or a virtual machine with a bridged network adapter.
 
 ### MAMP on Windows/MacOS
 

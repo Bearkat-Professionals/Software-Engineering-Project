@@ -5,6 +5,7 @@ import devices from "../samples/devices.json";
 import scans from "../samples/scans.json";
 import changeReport from "../samples/change-report.json";
 import exportSample from "../samples/export.json";
+import backups from "../samples/backups.json";
 
 // Local stand-ins used only when VITE_USE_SAMPLES is true.
 const SAMPLES = {
@@ -17,7 +18,7 @@ const SAMPLES = {
 // A failed request. reasons, existingId, and changedAt come from reference-data errors.
 export class ApiError extends Error {
 
-  constructor(message, { status = 0, unreachable = false, reasons = null, existingId = null, changedAt = null, deviceId = null } = {}) {
+  constructor(message, { status = 0, unreachable = false, reasons = null, existingId = null, changedAt = null, deviceId = null, heldBy = null } = {}) {
     
     super(message);
   
@@ -28,6 +29,7 @@ export class ApiError extends Error {
     this.existingId = existingId;
     this.changedAt = changedAt;
     this.deviceId = deviceId;
+    this.heldBy = heldBy;
   
   }
 }
@@ -43,7 +45,7 @@ export async function api(path, { method = "GET", body, blob = false } = {}) {
       return {
 
         user: { username: "sam", role: "editor" },
-        permissions: ["VIEW_DATA", "EXPORT", "START_SCAN", "EDIT_DEVICES", "EDIT_REFERENCE_DATA"],
+        permissions: ["VIEW_DATA", "EXPORT", "START_SCAN", "EDIT_DEVICES", "EDIT_REFERENCE_DATA", "BACKUP_RESTORE"],
 
       }
 
@@ -87,6 +89,44 @@ export async function api(path, { method = "GET", body, blob = false } = {}) {
     if (method === "GET" && path.split("?")[0] === "/api/scans") return scans;
 
     if (method === "GET" && path.startsWith("/api/reports/changes")) return changeReport;
+
+    if (method === "GET" && path === "/api/backups") return backups;
+
+    if (method === "POST" && path === "/api/backups") {
+
+      return {
+
+        backup: {
+
+          name: "full-20261119-120000",
+          kind: "full",
+          created_at: "2026-11-19T12:00:00",
+          size_bytes: 1000,
+
+        }, 
+
+      }; 
+
+    }
+
+    if (method === "POST" && /^\/api\/backups\/[^/]+\/verify$/.test(path)) {
+
+      return { name: path.split("/")[3], ok: true, problems: [] };
+
+    }
+
+    if (method === "POST" && /^\/api\/backups\/[^/]+\/restore$/.test(path)) {
+
+      return {
+
+        restored: path.split("/")[3],
+        safety_backup: "before-restore-20261119-120100",
+        rows_restored: { device: 2 },
+        signed_out: true,
+
+      };
+
+    }
 
     const sample = SAMPLES[`${method} ${path}`];
 
@@ -173,6 +213,7 @@ export async function api(path, { method = "GET", body, blob = false } = {}) {
       existingId: payload?.existing_id ?? null,
       changedAt: payload?.changed_at ?? null,
       deviceId: payload?.device_id ?? null,
+      heldBy: Array.isArray(payload?.held_by) ? payload.held_by : null,
       
     });
 

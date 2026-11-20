@@ -80,6 +80,13 @@ export function AuthProvider({ children }) {
 
     },
 
+    clearSession() {
+
+      setUser(null);
+      setPermissions([]);
+
+    },
+
     // True when the signed-in role includes this permission name.
     can(permission) {
 
